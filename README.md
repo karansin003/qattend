@@ -426,3 +426,10 @@ zyada ho sakta hai.
   (`NODE_ENV=production` + reverse proxy).
 - Bot sirf **apne registered users** ke apne QUMS accounts ka data scrape karta hai
   (unki di hui credentials se). Responsible use + university policy follow karo.
+
+## License
+
+Copyright © 2026 Karan Kumar.
+
+This project is publicly available for viewing and educational reference.
+Unauthorized copying, redistribution, or presenting this project as your own work is not permitted.
