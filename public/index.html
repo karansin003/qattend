@@ -8,13 +8,34 @@
 </head>
 <body>
   <nav class="nav">
-    <div class="brand"><span class="dot"></span> QUMS Attendance Bot</div>
-    <div class="links">
-      <span class="pill" id="userEmail">…</span>
+    <div class="brand"><span class="dot"></span> 🎓 QUMS Attendance Bot</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="active">Dashboard</a>
       <a href="/qums-setup">QUMS Setup</a>
-      <a href="/logout">Logout</a>
+      <a href="#help">Help</a>
+    </div>
+    <div class="nav-actions">
+      <span class="pill" id="userEmail">…</span>
+      <span class="avatar" aria-hidden="true">👤</span>
+      <a href="/logout" class="nav-logout">Logout</a>
+      <button id="navToggle" class="nav-toggle" aria-label="Menu" aria-expanded="false">☰</button>
     </div>
   </nav>
+
+  <!-- mobile slide-out drawer (sirf <=640px pe visible) -->
+  <div id="drawerOverlay" class="drawer-overlay"></div>
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">🎓 QUMS Attendance Bot</div>
+    <nav class="drawer-nav">
+      <a href="/dashboard">🏠 Dashboard</a>
+      <a href="/qums-setup">⚙️ QUMS Setup</a>
+      <a href="#quickActionsCard">🗓️ Schedule</a>
+      <a href="#telegram-card">💬 Telegram</a>
+      <a href="#account-card">👤 Profile</a>
+      <a href="#help">❓ Help</a>
+      <a href="/logout" class="drawer-logout">🚪 Logout</a>
+    </nav>
+  </aside>
 
   <div class="container">
     <div id="setupBanner" class="banner warn hidden">
@@ -51,7 +72,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="quickActionsCard">
       <div class="section-title">⚡ Quick Actions (tumhare Telegram chat pe)</div>
       <div class="row">
         <button class="accent" id="testMorningBtn">🌅 Aaj ki Classes (8:30 AM wala)</button>
@@ -60,18 +81,18 @@
       </div>
       <!-- <div class="form-hint">Roz subah 8:30 AM schedule + raat 9 PM summary + watcher alerts automatically aate hain. "Refresh my schedule" weekly cache ko force-refresh karta hai (semester me schedule badle to).</div> -->
     <br>
-      <div class="row" style="align-items: center;">
+      <div class="row" id="telegram-card" style="align-items: center;">
         <span id="tgState" class="sub">Telegram status…</span>
         <button id="tgUnlinkBtn" class="hidden">Disconnect</button>
       </div>
-      <div class="row" style="align-items: center;">
+      <div class="row" id="account-card" style="align-items: center;">
         <span id="qumsState" class="sub">QUMS: …</span>
         <button id="qumsLogoutBtn" class="hidden">QUMS Logout</button>
       </div>
       <div id="testStatus" class="form-ok hidden"></div>
     </div>
 
-    <footer>
+    <footer id="help">
       Guidance portal ke EXACT counts pe based hai (estimation sirf fallback).
       Scheduler: subah 8:30 AM aaj ki classes + raat 9 PM summary (IST). Watcher: college hours 08:30–17:00 me teacher mark karte hi alert.
     </footer>
@@ -284,6 +305,21 @@
     loadAttendance();
     loadTelegramStatus();
     startTgPoll();
+
+    // ---- mobile hamburger drawer (UI only — koi API/logic change nahi) ----
+    const drawer = $('drawer'), drawerOverlay = $('drawerOverlay'), navToggleBtn = $('navToggle');
+    function setDrawer(open) {
+      drawer.classList.toggle('open', open);
+      drawerOverlay.classList.toggle('open', open);
+      navToggleBtn.setAttribute('aria-expanded', String(open));
+      navToggleBtn.textContent = open ? '✕' : '☰';
+      drawer.setAttribute('aria-hidden', String(!open));
+      document.body.classList.toggle('drawer-open', open);
+    }
+    navToggleBtn.addEventListener('click', () => setDrawer(!drawer.classList.contains('open')));
+    drawerOverlay.addEventListener('click', () => setDrawer(false));
+    drawer.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => setDrawer(false)));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
   </script>
 </body>
 </html>

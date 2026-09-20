@@ -1,21 +1,22 @@
 /* QUMS Attendance Bot — university-portal style theme */
 :root {
-  --navy: #700a3f;
-  --navy-2: #c34f8b;
-  --navy-3: #902d60;
-  --navy-4: #4f072d;
-  --amber: #f5a623;
-  --amber-dark: #d98c0f;
-  --bg: #eef2f8;
+  --navy: #1e3a8a;
+  --navy-2: #2563eb;
+  --navy-3: #1d4ed8;
+  --navy-4: #172554;
+  --sky: #38bdf8;
+  --amber: #f59e0b;
+  --amber-dark: #d97706;
+  --bg: #f8fafc;
   --card: #ffffff;
-  --text: #1e2a3a;
-  --muted: #6b7a90;
+  --text: #0f172a;
+  --muted: #64748b;
   --ok: #16a34a;
   --bad: #dc2626;
-  --line: #d9e2ef;
-  --focus-ring: rgba(234, 83, 161, 0.22);
-  --shadow: 0 2px 12px rgba(112, 10, 63, 0.1), 0 1px 3px rgba(112, 10, 63, 0.06);
-  --shadow-lift: 0 6px 18px rgba(112, 10, 63, 0.16);
+  --line: #e2e8f0;
+  --focus-ring: rgba(37, 99, 235, 0.22);
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
+  --shadow-lift: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 
 * {
@@ -33,19 +34,23 @@ body {
 }
 
 ::selection {
-  background: rgba(245, 166, 35, 0.35);
+  background: rgba(56, 189, 248, 0.35);
 }
 
 /* ---- navbar ---- */
 .nav {
-  background: linear-gradient(90deg, var(--navy) 0%, var(--navy-2) 60%, var(--navy-3) 130%);
+  background: var(--navy);
   color: #fff;
-  padding: 0 22px;
-  height: 60px;
+  padding: 0 20px;
+  min-height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   box-shadow: var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
 .nav .brand {
@@ -53,43 +58,106 @@ body {
   align-items: center;
   gap: 10px;
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   letter-spacing: .2px;
+  white-space: nowrap;
 }
 
 .nav .brand .dot {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--amber);
-  box-shadow: 0 0 0 3px rgba(245, 166, 35, .25);
+  background: var(--sky);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, .25);
 }
 
-.nav .links {
+.nav-links {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 6px;
   font-size: .9rem;
 }
 
-.nav .links a {
-  color: #ffe3f2;
+.nav-links a {
+  color: #dbeafe;
   text-decoration: none;
-  transition: color .15s ease;
+  padding: 7px 12px;
+  border-radius: 8px;
+  transition: background .15s ease, color .15s ease;
 }
 
-.nav .links a:hover {
+.nav-links a:hover {
   color: #fff;
-  text-decoration: underline;
-  text-underline-offset: 5px;
-  text-decoration-color: rgba(245, 166, 35, .8);
-  text-decoration-thickness: 2px;
+  background: rgba(255, 255, 255, .12);
 }
 
-.nav .links .pill {
+.nav-links a.active {
+  color: #fff;
+  background: rgba(255, 255, 255, .16);
+  font-weight: 600;
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nav .pill {
   background: rgba(255, 255, 255, .12);
   padding: 4px 12px;
   border-radius: 999px;
+  font-size: .82rem;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--sky);
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .95rem;
+  flex: none;
+}
+
+.nav-logout {
+  color: #dbeafe;
+  text-decoration: none;
+  font-size: .88rem;
+  padding: 7px 12px;
+  border-radius: 8px;
+  transition: background .15s ease, color .15s ease;
+}
+
+.nav-logout:hover {
+  color: #fff;
+  background: rgba(220, 38, 38, .55);
+}
+
+.nav-toggle {
+  display: none;
+  background: rgba(255, 255, 255, .12);
+  color: #fff;
+  border: 0;
+  font-size: 1.2rem;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* ---- mobile drawer (sirf <=640px pe visible) ---- */
+.drawer,
+.drawer-overlay {
+  display: none;
 }
 
 /* ---- layout ---- */
@@ -160,15 +228,15 @@ button:disabled {
 button.accent,
 a.btn.accent {
   background: var(--amber);
-  color: #4a2f00;
-  box-shadow: 0 2px 8px rgba(217, 140, 15, .25);
+  color: #78350f;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, .25);
 }
 
 button.accent:hover,
 a.btn.accent:hover {
   background: var(--amber-dark);
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(217, 140, 15, .35);
+  color: #78350f;
+  box-shadow: 0 4px 14px rgba(217, 119, 6, .35);
 }
 
 a.btn {
@@ -178,7 +246,7 @@ a.btn {
 
 button:focus-visible,
 .btn:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--sky);
   outline-offset: 2px;
 }
 
@@ -206,19 +274,19 @@ button.link {
   border: 1.5px solid var(--line);
   border-radius: 8px;
   font-size: .95rem;
-  background: #fdfafc;
+  background: #f8fafc;
   transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: var(--navy-3);
+  border-color: var(--navy-2);
   background: #fff;
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .form-input::placeholder {
-  color: #9aa8bb;
+  color: #94a3b8;
 }
 
 .form-error {
@@ -277,11 +345,16 @@ button.link {
 /* ---- auth pages ---- */
 .auth-bg {
   min-height: 100vh;
-  background: radial-gradient(1100px 500px at 85% -10%, rgba(234, 83, 161, 0.35), transparent 60%), linear-gradient(135deg, var(--navy) 0%, var(--navy-3) 100%);
+  background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 28px 16px;
+}
+
+/* login page: pure white background (user request) */
+.auth-bg.auth-white {
+  background: #ffffff;
 }
 
 .auth-card {
@@ -289,7 +362,8 @@ button.link {
   max-width: 420px;
   background: #fff;
   border-radius: 18px;
-  box-shadow: 0 18px 50px rgba(79, 7, 45, .35);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 50px rgba(30, 58, 138, .14);
   padding: 32px 30px;
 }
 
@@ -311,30 +385,33 @@ button.link {
 }
 
 .auth-foot a {
-  color: var(--navy-3);
+  color: var(--navy-2);
   font-weight: 600;
 }
 
 .auth-foot a:hover {
-  color: var(--navy-2);
+  color: var(--navy);
 }
 
-/* ---- chips ---- */
+/* ---- summary cards (chips) — JS generated, sirf styling ---- */
 .chips {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 14px 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 14px 0 16px;
 }
 
 .chip {
   background: var(--card);
   border: 1px solid var(--line);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: .84rem;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: .78rem;
   color: var(--muted);
   box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   transition: box-shadow .15s ease;
 }
 
@@ -344,8 +421,8 @@ button.link {
 
 .chip b {
   color: var(--navy);
-  font-size: 1.05rem;
-  margin-left: 4px;
+  font-size: 1.15rem;
+  font-weight: 700;
 }
 
 /* ---- table ---- */
@@ -383,11 +460,11 @@ tr:last-child td {
 }
 
 tr:nth-child(even) td {
-  background: #fdf6fa;
+  background: #f8fafc;
 }
 
 tbody tr:hover td {
-  background: #fdeef6;
+  background: #eff6ff;
 }
 
 .pct-ok {
@@ -444,9 +521,9 @@ tbody tr:hover td {
 }
 
 .banner.info {
-  background: #fdeef5;
-  border: 1px solid #f5bcd7;
-  color: var(--navy-2);
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: var(--navy);
 }
 
 .banner a {
@@ -501,9 +578,11 @@ footer {
 
 /* ---- loading state (#status) — pure CSS shimmer + hourglass (koi JS change nahi) ---- */
 #status {
-  background: linear-gradient(90deg, #e9f7ee 25%, #f4fdf7 50%, #e9f7ee 75%);
+  background: linear-gradient(90deg, #eff6ff 25%, #f8fafc 50%, #eff6ff 75%);
   background-size: 200% 100%;
   animation: status-shimmer 1.6s ease-in-out infinite;
+  color: var(--navy);
+  border-color: #bfdbfe;
 }
 
 #status::before {
@@ -538,27 +617,110 @@ footer {
 
 @media (max-width: 640px) {
 
-  /* navbar wrap — overflow na ho */
+  /* desktop nav hidden — hamburger + slide-out drawer */
+  .nav-links,
+  .nav-logout,
+  .avatar {
+    display: none;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+  }
+
   .nav {
-    height: auto;
-    flex-wrap: wrap;
     padding: 10px 14px;
-    gap: 8px;
-    row-gap: 8px;
   }
 
-  .nav .brand {
-    font-size: .95rem;
-  }
-
-  .nav .links {
-    gap: 10px;
-    font-size: .82rem;
-    flex-wrap: wrap;
-  }
-
-  .nav .links .pill {
+  .nav .pill {
+    max-width: 130px;
+    font-size: .75rem;
     padding: 3px 10px;
+  }
+
+  .drawer {
+    display: block;
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: 264px;
+    max-width: 85vw;
+    background: var(--card);
+    z-index: 1000;
+    padding: 18px 14px;
+    overflow-y: auto;
+    transform: translateX(105%);
+    visibility: hidden;
+    transition: transform .25s ease, visibility .25s ease;
+    box-shadow: -10px 0 40px rgba(15, 23, 42, .18);
+  }
+
+  .drawer.open {
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .drawer-head {
+    font-weight: 700;
+    color: var(--navy);
+    font-size: .95rem;
+    padding: 4px 8px 12px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 10px;
+  }
+
+  .drawer-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .drawer-nav a {
+    color: var(--text);
+    text-decoration: none;
+    font-size: .92rem;
+    font-weight: 600;
+    padding: 11px 12px;
+    border-radius: 10px;
+    transition: background .15s ease, color .15s ease;
+  }
+
+  .drawer-nav a:hover {
+    background: #eff6ff;
+    color: var(--navy-2);
+  }
+
+  .drawer-nav a.drawer-logout {
+    color: var(--bad);
+    margin-top: 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+
+  .drawer-nav a.drawer-logout:hover {
+    background: #fef2f2;
+    color: var(--bad);
+  }
+
+  .drawer-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, .45);
+    z-index: 999;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+
+  .drawer-overlay.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  body.drawer-open {
+    overflow: hidden;
   }
 
   /* container + cards compact */
@@ -568,7 +730,7 @@ footer {
 
   .card {
     padding: 16px;
-    border-radius: 10px;
+    border-radius: 12px;
   }
 
   h1 {
@@ -597,14 +759,19 @@ footer {
     min-width: 140px;
   }
 
-  /* chips + banners compact */
+  /* summary cards — 2-column grid, last chip full width (Period/Overall) */
   .chips {
-    gap: 8px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .chip:last-child {
+    grid-column: 1 / -1;
   }
 
   .chip {
-    padding: 6px 12px;
-    font-size: .8rem;
+    padding: 10px 12px;
+    font-size: .75rem;
   }
 
   .banner {
@@ -612,20 +779,7 @@ footer {
     font-size: .85rem;
   }
 
-
-  /* Login page: white background */
-  .auth-bg.auth-white {
-    background: #ffffff;
-  }
-
-  .auth-bg.auth-white .auth-card {
-    border: 1px solid var(--line);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
-  }
-
-  /* QUMS Logout button — mobile overlap fix: full-width apni line pe, upar se clean gap.
-     (flex row me span ke margin-bottom ki wajah se button text ke bahut close/overlap
-      jaisa dikhta tha — ye usko apni full-width line pe le aata hai; desktop untouched) */
+  /* QUMS Logout button — full-width apni line pe, upar se clean gap */
   #qumsLogoutBtn {
     position: static;
     display: block;
@@ -653,36 +807,16 @@ footer {
 }
 
 /* ---- Reset / Delete QUMS Connection (#permanentQumsResetBtn) ----
-   Ye button src/server.js (withQumsResetControl) se <body> ke END me inject hota hai
-   INLINE position:fixed; right:18px; bottom:18px ke saath (floating culprit).
-   Ye override usko NORMAL DOCUMENT FLOW me laata hai — koi floating nahi, koi
-   overlap nahi. Red outline/text/background (inline #b91c1c) ko haath nahi lagaya.
-   NOTE: button DOM me <body> ka last child hai (card ke andar nahi) — isliye ye
-   page ke bottom pe, container-width ke saath center-aligned dikhega. */
+   src/server.js (withQumsResetControl) is button ko ab #quickActionsCard
+   (dashboard) / #setupCard (qums-setup) ke ANDAR inject karta hai — normal
+   document flow, card ke bottom pe, floating khatam. Red outline/text/background
+   (inline #b91c1c) preserve — sirf position/size override. */
 #permanentQumsResetBtn {
   position: static !important;
-  /* inline position:fixed ko neutralize */
   inset: auto !important;
-  /* inline right/bottom ko neutralize */
   z-index: auto !important;
-  /* inline z-index:99999 ko neutralize */
   display: block !important;
+  width: 100% !important;
   box-sizing: border-box;
-  width: auto !important;
-  max-width: 1100px !important;
-  /* .container jaisa width — center aligned */
-  margin: 16px auto 24px !important;
-  /* requirement #5: 16px top spacing */
-  padding-top: 12px !important;
-  /* requirement #6: divider ke saath breathing */
-  border-top: 1px solid var(--line) !important;
-  /* requirement #6: subtle top divider */
-}
-
-/* Mobile (375/390/412px): almost full-width, side margins se overflow safe */
-@media (max-width: 640px) {
-  #permanentQumsResetBtn {
-    margin: 16px 12px 24px !important;
-    /* width:auto + side margins = no overflow */
-  }
+  margin: 18px 0 0 !important;
 }

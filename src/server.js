@@ -179,7 +179,8 @@ function withQumsResetControl(html) {
         window.location.href = j.redirect || '/qums-setup';
       } catch (e) { alert(e.message || 'QUMS reset failed'); btn.disabled = false; btn.textContent = 'Reset / Delete QUMS Connection'; }
     };
-    document.body.appendChild(btn);
+    const resetTarget = document.getElementById('quickActionsCard') || document.getElementById('setupCard') || document.body;
+    resetTarget.appendChild(btn);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addReset); else addReset();
 })();
