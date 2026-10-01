@@ -222,7 +222,7 @@ app.get('/', sendPage('home.html'));
 app.get('/register', sendPage('register.html'));
 app.get('/login', sendPage('login.html'));
 app.get('/forgot', sendPage('forgot.html'));
-app.get('/reset', sendPage('reset.html'));
+app.get('/reset', (req, res) => res.redirect('/login'));
 
 // ---- public information pages (no auth required) ----
 app.get('/features', sendPage('features.html'));

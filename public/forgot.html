@@ -32,19 +32,7 @@
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
       const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
       const auth = authMod.getAuth(app);
-      try {
-        await authMod.sendPasswordResetEmail(auth, email, {
-          url: `${location.origin}/reset`,
-          handleCodeInApp: false,
-        });
-      } catch (err) {
-        if (err && err.code === 'auth/unauthorized-continue-uri') {
-          console.warn('[firebase] continue-url unauthorized for domain, falling back to standard email link');
-          await authMod.sendPasswordResetEmail(auth, email);
-          return;
-        }
-        throw err;
-      }
+      await authMod.sendPasswordResetEmail(auth, email);
     }
 
     $('btn').addEventListener('click', async () => {
