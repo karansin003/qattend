@@ -163,27 +163,18 @@
      * The SDK is loaded lazily; if it cannot load (offline / CDN blocked),
      * registration falls back to the legacy backend path (firebaseUnavailable).
      */
-    const firebaseConfig = {
-      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
-      authDomain: "qums-forgot-password-test.firebaseapp.com",
-      projectId: "qums-forgot-password-test",
-      storageBucket: "qums-forgot-password-test.firebasestorage.app",
-      messagingSenderId: "823963861077",
-      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
-      measurementId: "G-17L8V2XLE7"
-    };
-
     let firebaseSdk = null;
 
     async function loadFirebase() {
       if (firebaseSdk) return firebaseSdk;
+      const { firebaseConfig } = await import('/firebase-config.js');
       const appMod = await import(
         "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"
       );
       const authMod = await import(
         "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"
       );
-      const app = appMod.initializeApp(firebaseConfig);
+      const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
       firebaseSdk = {
         auth: authMod.getAuth(app),
         createUserWithEmailAndPassword: authMod.createUserWithEmailAndPassword,

@@ -26,17 +26,8 @@
      * (public web config only). The backend first confirms the email belongs
      * to a registered application user; unregistered emails get no email.
      */
-    const firebaseConfig = {
-      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
-      authDomain: "qums-forgot-password-test.firebaseapp.com",
-      projectId: "qums-forgot-password-test",
-      storageBucket: "qums-forgot-password-test.firebasestorage.app",
-      messagingSenderId: "823963861077",
-      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
-      measurementId: "G-17L8V2XLE7"
-    };
-
     async function sendFirebaseResetEmail(email) {
+      const { firebaseConfig } = await import('/firebase-config.js');
       const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
       const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
