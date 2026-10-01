@@ -12,7 +12,7 @@ provides a responsive web dashboard plus a public website.
 
 > Replace this URL with your current Render URL if it has changed.
 
-**Live App:** https://attendence-tracker-9nkf.onrender.com
+**Live App:** https://qattend.onrender.com
 
 ---
 
