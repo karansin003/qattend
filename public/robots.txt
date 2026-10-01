@@ -1,4 +1,11 @@
 # QAttend — public site
+# Google AdSense crawlers explicitly allowed
+User-agent: Mediapartners-Google
+Allow: /
+
+User-agent: Google-Display-Ads-Bot
+Allow: /
+
 # Public information pages are crawlable. API endpoints, authenticated pages,
 # admin pages, and logout action are disallowed.
 User-agent: *

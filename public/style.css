@@ -301,6 +301,7 @@ button.link {
   margin: 14px 0 6px;
   text-transform: uppercase;
   letter-spacing: .04em;
+  text-align: left;
 }
 
 .form-input {
@@ -631,13 +632,15 @@ tbody tr:hover td {
 
 .steps {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 20px;
   color: var(--muted);
   font-size: .88rem;
+  text-align: left;
 }
 
 .steps li {
   margin-bottom: 6px;
+  text-align: left;
 }
 
 .steps li::marker {
@@ -1914,7 +1917,8 @@ a.btn-danger:hover {
   margin-bottom: 8px;
 }
 
-.ad-slot-body {
+.ad-slot-body,
+.ad-slot-content {
   min-height: 60px;
   display: flex;
   align-items: center;
@@ -2026,7 +2030,8 @@ a.btn-danger:hover {
     padding: 8px 10px 10px;
   }
 
-  .ad-slot-body {
+  .ad-slot-body,
+  .ad-slot-content {
     min-height: 50px;
   }
 }

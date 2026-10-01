@@ -65,8 +65,12 @@ ok('U4 dashboard ad slot lives inside the content container (not full-bleed)', /
 const css = read(path.join(PUBLIC, 'style.css'));
 ok('U4 .ad-slot CSS exists and is visible (no display:none default)', /\.ad-slot\s*\{[^}]*width:\s*min\(728px/.test(css));
 ok('U4 .ad-slot is responsive on mobile', /@media \(max-width: 640px\)[\s\S]{0,4000}\.ad-slot/.test(css));
-const anyFakeAds = pages.some((f) => /adsbygoogle|ca-pub-|googlesyndication/.test(read(path.join(PUBLIC, f))));
-ok('U4 no fake AdSense script/publisher id anywhere', !anyFakeAds);
+const OFFICIAL_CLIENT = 'ca-pub-6097963574439559';
+const homeHtml = read(path.join(PUBLIC, 'home.html'));
+ok('U4 home.html has official AdSense verification script', homeHtml.includes(`client=${OFFICIAL_CLIENT}`));
+const otherPages = pages.filter((f) => f !== 'home.html');
+const unauthorizedAds = otherPages.some((f) => /adsbygoogle|ca-pub-|googlesyndication/.test(read(path.join(PUBLIC, f))));
+ok('U4 no unauthorized or fake AdSense script on other pages', !unauthorizedAds);
 ok('U4 no ads.txt shipped', !fs.existsSync(path.join(PUBLIC, 'ads.txt')));
 
 /* ---------------- U5: one Telegram poller / one /start handler ---------------- */
