@@ -1,70 +1,147 @@
 /**
- * Telegram alerts for operational problems (session expiry etc.).
- * Rule: only send if Telegram is configured AND the user has linked their
- * account (telegramChatId), and at most once per COOLDOWN window — no spam.
+ * Telegram alerts for operational problems (QUMS session expiry).
+ *
+ * Contract:
+ *   - sent ONLY when Telegram is configured AND that user linked their account
+ *     (telegramChatId) — otherwise silently skipped, never a crash;
+ *   - at most ONE alert per REAL expiry event, per user. The state lives in
+ *     PostgreSQL (session_expiry_state) so a Render/Supabase restart cannot
+ *     re-send it; the cooldown is per user, never global;
+ *   - the alert carries a single inline button "🔄 Reconnect QUMS" that opens
+ *     {APP_BASE_URL}/qums-setup?reconnect=1 (production host from env, never
+ *     localhost). The user solves the QUMS captcha manually — QAttend never
+ *     bypasses or automates it, and no credential/session data goes to Telegram;
+ *   - a successful reconnect clears the state, so a LATER expiry alerts again.
  */
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 const { isConfigured, sendMessage } = require('./telegram');
+const db = require('./db');
 
-const ALERT_STATE_FILE = path.join(__dirname, '..', 'data', 'session_alert_state.json');
-const COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
+const COOLDOWN_MS = db.SESSION_ALERT_COOLDOWN_MS;
 
-const SESSION_EXPIRED_TEXT =
-  '⚠️ *QUMS session expire ho gaya hai*\n' +
-  'Attendance updates (watcher + 9 PM summary) band ho gaye hain.\n\n' +
-  'Fix: Dashboard kholo → *QUMS Setup* → "Reconnect QUMS" — sirf captcha solve karna hai (QID/password dobara nahi).\n' +
-  '(Server restart ki zaroorat nahi.)';
-
-function readCooldown() {
-  try {
-    return JSON.parse(fs.readFileSync(ALERT_STATE_FILE, 'utf8'));
-  } catch { 
-    return {};
-  }
+/** Public base URL (same resolution order as server.js — Render-safe). */
+function baseUrl() {
+  const explicit = String(process.env.APP_BASE_URL || '').trim();
+  const render = String(process.env.RENDER_EXTERNAL_URL || '').trim();
+  const fallback = `http://localhost:${Number(process.env.PORT) || 10000}`;
+  return (explicit || render || fallback).replace(/\/+$/, '');
 }
 
-function writeCooldown(state) {
-  fs.mkdirSync(path.dirname(ALERT_STATE_FILE), { recursive: true });
-  fs.writeFileSync(ALERT_STATE_FILE, JSON.stringify(state));
+/** Reconnect page (GET) — the existing authenticated QUMS setup page. */
+function reconnectUrl() {
+  return `${baseUrl()}/qums-setup?reconnect=1`;
+}
+
+// ---- exact user-facing copy (English only; single source of truth) ----
+const SESSION_EXPIRED_TEXT = [
+  '⚠️ *QUMS Session Expired*',
+  '',
+  'Your QUMS session has expired. Please reconnect QUMS to resume attendance and assignment updates.',
+  '',
+  '🔐 Reconnect QUMS',
+].join('\n');
+
+const RECONNECTED_TEXT = [
+  '✅ *QUMS Reconnected*',
+  '',
+  'Your QUMS session has been restored. Attendance and assignment monitoring has resumed.',
+].join('\n');
+
+/** Inline keyboard with the Reconnect button (URL button — no data payload). */
+function reconnectButton() {
+  return {
+    inline_keyboard: [[{ text: '🔐 Reconnect QUMS', url: reconnectUrl() }]],
+  };
 }
 
 /**
- * Send the session-expired Telegram alert — but only if:
+ * Send the session-expired Telegram alert to ONE user — but only if:
  *   1. Telegram is configured (token present), and
- *   2. the user has linked their Telegram (telegramChatId), and
- *   3. we haven't alerted within the cooldown window.
- * userId: the app user whose QUMS session died.
- * Returns true if an alert was actually sent.
+ *   2. that user has linked their Telegram (telegramChatId), and
+ *   3. no alert was already sent for THIS expiry event.
+ *
+ * State is persisted in PostgreSQL (session_expiry_state) — restart-safe — and
+ * is always per user, so one user's expiry can never silence another's.
+ * `evidence` should only be set when the portal really returned a login page
+ * (SessionExpiredError). Network failures must call this with evidence=false,
+ * which records the error but sends nothing.
  */
-async function maybeNotifySessionExpired(log = console, userId) {
+async function maybeNotifySessionExpired(log = console, userId, { evidence = true } = {}) {
   try {
-    const state = readCooldown();
-    if (state.lastSentAt && Date.now() - state.lastSentAt < COOLDOWN_MS) {
-      log.log('[alerts] session-expiry alert cooldown me hai — skip.');
+    if (!userId) return false;
+    if (!evidence) {
+      // Temporary QUMS outage: record it, never alert (avoids Telegram spam).
+      await db.touchUserSync(userId, { error: 'qums-unreachable' }).catch(() => {});
+      log.log(`[alerts] user=${userId} QUMS unreachable — not treated as expiry, no alert sent.`);
+      return false;
+    }
+    // Reliable expiry evidence: mark the event if this is a new one.
+    const before = await db.getSessionExpiryState(userId);
+    const isNewEvent = !before || !before.expiredAt || before.resolvedAt;
+    if (isNewEvent) await db.markSessionExpired(userId, 'session-expired');
+    const state = await db.getSessionExpiryState(userId);
+    if (state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
+      log.log(`[alerts] user=${userId} expiry alert already sent for this event — skip.`);
       return false;
     }
     if (!isConfigured()) {
-      log.log('[alerts] Telegram configured nahi hai (TELEGRAM_BOT_TOKEN missing) — session-expiry alert skip.');
+      log.log('[alerts] Telegram not configured (TELEGRAM_BOT_TOKEN missing) — expiry alert skipped.');
       return false;
     }
-    if (!userId) {
-      log.log('[alerts] userId nahi mila — session-expiry alert skip.');
-      return false;
-    }
-    const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT);
+    const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, { replyMarkup: reconnectButton() });
     if (!sent) {
-      log.log('[alerts] user ka Telegram linked nahi hai — session-expiry alert skip (link hone pe agla cycle alert bhejega).');
+      log.log('[alerts] user has not linked Telegram — expiry alert skipped (the next cycle retries).');
       return false;
     }
-    writeCooldown({ lastSentAt: Date.now() });
-    log.log('[alerts] 📲 session-expiry Telegram alert bhej diya.');
+    await db.recordSessionExpiryAlert(userId);
+    await db.recordNotification(userId, 'session_expired', {}, log).catch(() => {});
+    log.log(`[alerts] 📲 session-expiry alert sent user=${userId} (Reconnect button attached).`);
     return true;
   } catch (err) {
-    log.error(`[alerts] session-expiry alert fail: ${err.message}`);
+    log.error(`[alerts] session-expiry alert failed: ${err.message}`);
     return false;
   }
 }
 
-module.exports = { maybeNotifySessionExpired, SESSION_EXPIRED_TEXT, COOLDOWN_MS };
+/**
+ * "✅ QUMS Reconnected" confirmation — sent only after a SUCCESSFUL manual
+ * reconnect (the user solved the captcha themselves). Never sent on failure.
+ */
+async function notifyQumsReconnected(log = console, userId) {
+  try {
+    if (!userId) return false;
+    await db.clearSessionExpiry(userId);
+    if (!isConfigured()) return false;
+    const sent = await sendMessage(userId, RECONNECTED_TEXT, log);
+    if (sent) {
+      await db.recordNotification(userId, 'qums_reconnected', {}, log).catch(() => {});
+      log.log(`[alerts] 📲 QUMS reconnected confirmation sent user=${userId}.`);
+    }
+    return sent;
+  } catch (err) {
+    log.error(`[alerts] reconnect confirmation failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Clear one user's session-expiry state — called after a SUCCESSFUL reconnect so
+ * a later expiry alerts again (PostgreSQL-backed; JSON fallback in db.js).
+ */
+async function clearSessionAlert(userId) {
+  try {
+    await db.clearSessionExpiry(userId);
+  } catch { /* clearing must never block the reconnect flow */ }
+}
+
+module.exports = {
+  maybeNotifySessionExpired,
+  notifyQumsReconnected,
+  clearSessionAlert,
+  reconnectUrl,
+  reconnectButton,
+  baseUrl,
+  SESSION_EXPIRED_TEXT,
+  RECONNECTED_TEXT,
+  COOLDOWN_MS,
+};

@@ -1,0 +1,12 @@
+# QAttend — public site
+# Public information pages are crawlable. API endpoints, authenticated pages and
+# the logout action are not. No Sitemap line is declared while no custom domain
+# is configured.
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /qums-setup
+Disallow: /telegram-setup
+Disallow: /logout
+Disallow: /reset

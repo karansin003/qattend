@@ -3,64 +3,112 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard — QUMS Attendance Bot</title>
+  <title>Dashboard — QAttend</title>
+  <meta name="description" content="QAttend dashboard — your QUMS attendance, connection status and quick actions." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="robots" content="noindex" />
   <link rel="stylesheet" href="/style.css" />
+  <script src="/site.js" defer></script>
 </head>
 <body>
-  <nav class="nav">
-    <div class="brand"><span class="dot"></span> 🎓 QUMS Attendance Bot</div>
-    <div class="nav-links">
-      <a href="/dashboard" class="active">Dashboard</a>
+  <header class="nav">
+    <a class="brand brand-link" href="/dashboard">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/dashboard">Dashboard</a>
       <a href="/qums-setup">QUMS Setup</a>
-      <a href="#help">Help</a>
-    </div>
+      <a href="/telegram-setup">Telegram</a>
+      <a href="/admin" id="adminLink" class="hidden">Admin</a>
+    </nav>
     <div class="nav-actions">
-      <span class="pill" id="userEmail">…</span>
-      <span class="avatar" aria-hidden="true">👤</span>
+      <span class="pill" id="userName">…</span>
       <a href="/logout" class="nav-logout">Logout</a>
-      <button id="navToggle" class="nav-toggle" aria-label="Menu" aria-expanded="false">☰</button>
+      <button id="navToggle" class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="drawer">☰</button>
     </div>
-  </nav>
+  </header>
 
-  <!-- mobile slide-out drawer (sirf <=640px pe visible) -->
+  <!-- mobile slide-out drawer (visible <=640px) — Dashboard / QUMS Setup / Telegram / Logout only -->
   <div id="drawerOverlay" class="drawer-overlay"></div>
-  <aside id="drawer" class="drawer" aria-hidden="true">
-    <div class="drawer-head">🎓 QUMS Attendance Bot</div>
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Mobile menu">
+    <div class="drawer-head">
+      <span>QAttend</span>
+      <button type="button" class="drawer-close" aria-label="Close menu">✕</button>
+    </div>
     <nav class="drawer-nav">
       <a href="/dashboard">🏠 Dashboard</a>
       <a href="/qums-setup">⚙️ QUMS Setup</a>
-      <a href="#quickActionsCard">🗓️ Schedule</a>
-      <a href="#telegram-card">💬 Telegram</a>
-      <a href="#account-card">👤 Profile</a>
-      <a href="#help">❓ Help</a>
+      <a href="/telegram-setup">💬 Telegram</a>
+      <a href="/admin" id="adminDrawerLink" class="hidden">🛡️ Admin</a>
       <a href="/logout" class="drawer-logout">🚪 Logout</a>
     </nav>
   </aside>
 
   <div class="container">
     <div id="setupBanner" class="banner warn hidden">
-      <span>⚠️ QUMS setup adhoora hai — QID + captcha login complete karo taaki alerts aana shuru hon.</span>
-      <a href="/qums-setup">Complete karo →</a>
+      <span>⚠️ QUMS setup is incomplete — complete the QID + captcha login so alerts can start.</span>
+      <a href="/qums-setup">Complete it →</a>
     </div>
     <div id="tgBanner" class="banner info hidden">
-      <span id="tgBannerText">💬 Telegram connected nahi hai — alerts yahin aayenge. Ek click me connect karo.</span>
+      <span id="tgBannerText">💬 Telegram is not connected — press the button and start the bot chat.</span>
       <a id="tgConnectBtn" class="btn accent hidden" href="#" target="_blank" rel="noopener">💬 Connect Telegram</a>
     </div>
 
     <div class="card">
       <div class="row" style="justify-content: space-between; align-items: flex-start;">
         <div>
-          <h1>📊 Attendance Dashboard</h1>
-          <div class="sub">75% requirement tracker — refresh pe live QUMS portal se data aata hai</div>
+          <h1 class="welcome-h1">Hello, <span id="welcomeName">Student</span> 👋 <span id="welcomeYearSem" class="badge-off hidden" style="font-size: 13px; font-weight: normal; margin-left: 6px; vertical-align: middle;"></span></h1>
+          <div class="sub">Your attendance and connection status — data comes live from QUMS.</div>
         </div>
-        <button id="refreshBtn">↻ Refresh</button>
+        <button id="refreshBtn" type="button">↻ Refresh Attendance</button>
+      </div>
+
+      <div class="status-grid">
+        <div class="status-card">
+          <div class="status-label">QUMS connection</div>
+          <div class="status-value">
+            <span class="status-dot off" id="qumsDot" aria-hidden="true"></span>
+            <span id="qumsState">QUMS: checking…</span>
+          </div>
+          <div class="status-note">
+            <a href="/qums-setup">Open QUMS Setup</a>
+            <button id="qumsLogoutBtn" class="link hidden" style="margin-left: 8px; color: var(--muted);" type="button">Logout</button>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-label">Telegram connection</div>
+          <div class="status-value">
+            <span class="status-dot off" id="tgDot" aria-hidden="true"></span>
+            <span id="tgState">Telegram: checking…</span>
+          </div>
+          <div class="status-note">
+            <a href="/telegram-setup">Open Telegram settings</a>
+            <button id="tgUnlinkBtn" class="link hidden" style="margin-left: 8px; color: var(--muted);" type="button">Disconnect</button>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-label">Overall attendance</div>
+          <div class="status-value" id="overallValue">—</div>
+          <div class="status-note" id="overallNote">Across all subjects</div>
+        </div>
+        <div class="status-card">
+          <div class="status-label">Today's classes</div>
+          <div class="status-value" id="todayCount">—</div>
+          <div class="status-note">
+            <button type="button" class="link" id="todayLoadBtn">Load today's classes</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="todayBox" class="hidden">
+        <div class="section-title" style="margin-top:16px;">Today's classes</div>
+        <ul class="today-list" id="todayList"></ul>
       </div>
 
       <div id="status" class="form-ok hidden"></div>
-
       <div class="chips" id="chips"></div>
-
-      <div id="errorBox" class="form-error hidden"></div>
+      <div id="errorBox" class="form-error hidden" role="alert" aria-live="polite"></div>
 
       <div class="table-wrap">
         <table id="table" hidden>
@@ -72,33 +120,45 @@
       </div>
     </div>
 
-    <div class="card" id="quickActionsCard">
-      <div class="section-title">⚡ Quick Actions (tumhare Telegram chat pe)</div>
-      <div class="row">
-        <button class="accent" id="testMorningBtn">🌅 Aaj ki Classes (8:30 AM wala)</button>
-        <button class="accent" id="testSummaryBtn">🌙 Attendance Summary (9 PM wala)</button>
-        <button id="refreshScheduleBtn">🔄 Refresh my schedule (force)</button>
-      </div>
-      <!-- <div class="form-hint">Roz subah 8:30 AM schedule + raat 9 PM summary + watcher alerts automatically aate hain. "Refresh my schedule" weekly cache ko force-refresh karta hai (semester me schedule badle to).</div> -->
-    <br>
-      <div class="row" id="telegram-card" style="align-items: center;">
-        <span id="tgState" class="sub">Telegram status…</span>
-        <button id="tgUnlinkBtn" class="hidden">Disconnect</button>
-      </div>
-      <div class="row" id="account-card" style="align-items: center;">
-        <span id="qumsState" class="sub">QUMS: …</span>
-        <button id="qumsLogoutBtn" class="hidden">QUMS Logout</button>
-      </div>
-      <div id="testStatus" class="form-ok hidden"></div>
+    <div class="card">
+      <div class="section-title">How QAttend notifies you</div>
+      <ul class="check-list">
+        <li>Today's classes each morning, with room and teacher.</li>
+        <li>Attendance updates when a teacher marks a period.</li>
+        <li>Alerts for attendance entered later for an earlier class date.</li>
+        <li>New assignment notifications, plus a reminder on the last date.</li>
+      </ul>
+      <p class="form-hint">Every message goes to your own Telegram chat only.</p>
     </div>
 
     <footer id="help">
-      Guidance portal ke EXACT counts pe based hai (estimation sirf fallback).
-      Scheduler: subah 8:30 AM aaj ki classes + raat 9 PM summary (IST). Watcher: college hours 08:30–17:00 me teacher mark karte hi alert.
+      Guidance is based on the portal's EXACT counts (estimation is fallback only).
+      Scheduler: 8:30 AM IST today's classes (IST). Watcher: alerts when a teacher marks attendance
+      (college hours 08:30–17:00 IST), including attendance marked later for an earlier class date.
+      Assignments: new-assignment notifications + a deadline reminder at 7:00 PM IST on the last date.
     </footer>
+
+    <!-- Advertisement — small reserved slot near the footer.
+         NO ad-network script, NO publisher id, NO fake creative. When an
+         approved provider is available, put its code inside [data-ad-slot]. -->
+    <aside class="ad-slot ad-slot-inline" aria-label="Advertisement">
+      <span class="ad-slot-label">Advertisement</span>
+      <div class="ad-slot-body" data-ad-slot="qattend-footer">
+        Ad space — reserved for a future approved ad unit
+      </div>
+    </aside>
+
+    <div id="qumsResetSlot" class="qums-reset-slot">
+      <button id="permanentQumsResetBtn" type="button">Reset / Delete QUMS Connection</button>
+    </div>
   </div>
 
   <script>
+    /*
+     * Dashboard:
+     *   - fetch /api/attendance, /api/me, /api/telegram/status, /api/telegram/unlink
+     *   - the mobile drawer lives in /site.js (no duplicate drawer logic here)
+     */
     const $ = (id) => document.getElementById(id);
     const statusEl = $('status'), chipsEl = $('chips'), tableEl = $('table'), tbodyEl = $('tbody');
     const errorBox = $('errorBox'), refreshBtn = $('refreshBtn');
@@ -122,6 +182,12 @@
       if (data.period && data.period.dateFrom) {
         chipsEl.appendChild(chip('Period', data.period.dateFrom + ' – ' + data.period.dateTo));
       }
+
+      // status card (overall attendance)
+      $('overallValue').textContent = data.overall ? data.overall.percentage + '%' : '—';
+      $('overallNote').textContent = s.below75 != null
+        ? s.below75 + ' subject(s) below 75%'
+        : 'Across all subjects';
 
       tbodyEl.innerHTML = '';
       (data.subjects || []).forEach((sub) => {
@@ -150,7 +216,11 @@
         stTd.appendChild(badge); tr.appendChild(stTd);
 
         const gTd = document.createElement('td');
-        const g = document.createElement('div'); g.className = 'guidance'; g.textContent = sub.guidance || '';
+        const g = document.createElement('div');
+        g.className = 'guidance';
+        const rawGuidance = sub.guidance || '';
+        // Remove redundant "(abhi 11/13 attended)." from dashboard
+        g.textContent = rawGuidance.replace(/\s*\((?:abhi|approx)[^)]*\)\.?/gi, '.').replace(/\.{2,}/g, '.').trim();
         gTd.appendChild(g); tr.appendChild(gTd);
 
         tbodyEl.appendChild(tr);
@@ -191,15 +261,30 @@
         const res = await fetch('/api/me');
         if (res.status === 401) { location.href = '/login'; return; }
         const me = await res.json();
-        $('userEmail').textContent = me.email;
+        // The dashboard shows the QUMS student NAME only — the email stays
+        // internal (auth/database) and is never rendered in the UI.
+        const name = me.studentName || 'Student';
+        $('userName').textContent = name;
+        $('welcomeName').textContent = name;
+        if (me.qumsYearSem) {
+          $('welcomeYearSem').textContent = me.qumsYearSem;
+          $('welcomeYearSem').classList.remove('hidden');
+        } else {
+          $('welcomeYearSem').classList.add('hidden');
+        }
         if (!me.qumsConfigured) $('setupBanner').classList.remove('hidden');
-        $('qumsState').textContent = me.qumsConfigured ? 'QUMS: connected ✅' : 'QUMS: setup pending — QUMS Setup karo';
+        $('qumsDot').className = 'status-dot ' + (me.qumsConfigured ? 'on' : 'off');
+        $('qumsState').textContent = me.qumsConfigured ? 'Connected ✅' : 'Setup pending';
         $('qumsLogoutBtn').classList.toggle('hidden', !me.qumsConfigured);
+        if (me.isAdmin) {
+          if ($('adminLink')) $('adminLink').classList.remove('hidden');
+          if ($('adminDrawerLink')) $('adminDrawerLink').classList.remove('hidden');
+        }
       } catch {}
     }
 
     $('qumsLogoutBtn').addEventListener('click', async () => {
-      if (!confirm('QUMS logout? Session file delete hogi (Reconnect me sirf captcha maangega).')) return;
+      if (!confirm('QUMS logout? The session file will be deleted (Reconnect will only ask for the captcha).')) return;
       $('qumsLogoutBtn').disabled = true;
       try {
         await fetch('/api/qums-logout', { method: 'POST' });
@@ -208,7 +293,29 @@
       loadMe();
     });
 
-    // ---- Telegram deep-link connecting (koi QR nahi) ----
+    if ($('permanentQumsResetBtn')) {
+      $('permanentQumsResetBtn').addEventListener('click', async () => {
+        if (!confirm('Are you sure you want to permanently reset and delete your QUMS connection and saved credentials?\n\nThis will clear your saved QID, saved password, session, and monitoring. You can then log in with a new QID.')) {
+          return;
+        }
+        $('permanentQumsResetBtn').disabled = true;
+        try {
+          const res = await fetch('/api/qums-reset', { method: 'POST' });
+          const data = await res.json();
+          if (data.ok) {
+            location.href = '/qums-setup';
+          } else {
+            alert(data.error || 'Reset failed');
+          }
+        } catch (err) {
+          alert('Error: ' + err.message);
+        } finally {
+          if ($('permanentQumsResetBtn')) $('permanentQumsResetBtn').disabled = false;
+        }
+      });
+    }
+
+    // ---- Telegram deep-link connecting (single poll loop, stops once linked) ----
     let tgPollTimer = null;
     function stopTgPoll() { if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; } }
 
@@ -218,29 +325,27 @@
         if (res.status === 401) { location.href = '/login'; return; }
         const st = await res.json();
         if (!st.configured) {
-          $('tgBannerText').textContent = '⚠️ Telegram token missing — server pe .env me TELEGRAM_BOT_TOKEN daal ke restart karo. (Isi wajah se test buttons abhi band hain.)';
+          $('tgBannerText').textContent = '⚠️ Telegram is not configured on this deployment — set TELEGRAM_BOT_TOKEN in the server environment and restart.';
           $('tgBanner').classList.remove('hidden');
           $('tgConnectBtn').classList.add('hidden');
-          $('tgState').textContent = 'Telegram: token missing — notifications disabled';
-          $('testMorningBtn').disabled = true;
-          $('testSummaryBtn').disabled = true;
+          $('tgDot').className = 'status-dot off';
+          $('tgState').textContent = 'Not available';
           $('tgUnlinkBtn').classList.add('hidden');
-          return; // polling CHALTI rahegi — token set+restart hote hi page khud update hoga
+          return; // polling stays on — a restart with the token set updates this page
         }
-        // configured -> test buttons wapas enable
-        $('testMorningBtn').disabled = false;
-        $('testSummaryBtn').disabled = false;
         if (st.connected) {
           $('tgBanner').classList.add('hidden');
-          $('tgState').textContent = '✅ Telegram connected — updates yahin aayenge';
+          $('tgDot').className = 'status-dot on';
+          $('tgState').textContent = 'Connected ✅';
           $('tgUnlinkBtn').classList.remove('hidden');
           stopTgPoll();
         } else {
-          $('tgBannerText').textContent = '💬 Telegram connected nahi hai — neeche button dabao, Telegram khulega, "Start" dabao — bas.';
+          $('tgBannerText').textContent = '💬 Telegram is not connected — press the button, Telegram opens, press "Start" — done.';
           $('tgBanner').classList.remove('hidden');
           $('tgConnectBtn').href = st.linkUrl;
           $('tgConnectBtn').classList.remove('hidden');
-          $('tgState').textContent = 'Telegram: connected nahi hai';
+          $('tgDot').className = 'status-dot off';
+          $('tgState').textContent = 'Not connected';
           $('tgUnlinkBtn').classList.add('hidden');
         }
       } catch {}
@@ -252,74 +357,72 @@
     }
 
     $('tgUnlinkBtn').addEventListener('click', async () => {
+      if (!confirm('Disconnect Telegram? No further messages will be sent to that chat.')) return;
       $('tgUnlinkBtn').disabled = true;
       try {
         await fetch('/api/telegram/unlink', { method: 'POST' });
       } catch {}
       $('tgUnlinkBtn').disabled = false;
       loadTelegramStatus();
+      startTgPoll(); // re-arm so a fresh link is detected
     });
 
-    async function runTestJob(morning, btn) {
+    // ---- Today's classes (existing GET /api/today — loaded on demand) ----
+    async function loadToday(btn) {
       btn.disabled = true;
-      const st = $('testStatus');
-      st.classList.add('hidden');
+      const box = $('todayBox'), list = $('todayList');
+      list.textContent = '';
+      const li = document.createElement('li');
+      li.textContent = 'Loading today\'s classes from QUMS…';
+      list.appendChild(li);
+      box.classList.remove('hidden');
       try {
-        const res = await fetch('/api/scheduler/run' + (morning ? '?morning=1' : ''), { method: 'POST' });
-        const raw = await res.text();
-        let data = {};
-        try { data = JSON.parse(raw); } catch { data = { error: raw.slice(0, 200) || 'Server ne HTML bheja' }; }
+        const res = await fetch('/api/today');
         if (res.status === 401) { location.href = '/login'; return; }
-        st.textContent = res.ok ? '✅ ' + (data.message || 'Message sent!') : '❌ ' + (data.error || 'fail') + (data.hint ? '  →  ' + data.hint : '');
-        if (!res.ok && (data.code === 'QumsSetupRequired' || data.code === 'SessionExpiredError')) {
-          setTimeout(() => { location.href = '/qums-setup'; }, 1500);
+        const data = await res.json();
+        list.textContent = '';
+        const periods = (data && data.periods) || [];
+        $('todayCount').textContent = res.ok ? String(periods.length) : '—';
+        if (!res.ok) {
+          const err = document.createElement('li');
+          err.textContent = (data.error || 'Could not load today\'s classes.') + (data.hint ? '  →  ' + data.hint : '');
+          list.appendChild(err);
+          return;
         }
+        if (!periods.length) {
+          const none = document.createElement('li');
+          none.textContent = 'No classes found for today.';
+          list.appendChild(none);
+          return;
+        }
+        periods.forEach((p) => {
+          const row = document.createElement('li');
+          const subject = document.createElement('span');
+          subject.textContent = (p.period ? p.period + ' · ' : '') + (p.subject || p.subjectCode || 'Class');
+          const meta = document.createElement('span');
+          meta.className = 'period';
+          meta.textContent = [p.duration, p.employee].filter(Boolean).join(' • ');
+          row.appendChild(subject);
+          row.appendChild(meta);
+          list.appendChild(row);
+        });
       } catch (err) {
-        st.textContent = '❌ ' + err.message;
+        list.textContent = '';
+        const errLi = document.createElement('li');
+        errLi.textContent = 'Network error: ' + err.message;
+        list.appendChild(errLi);
       }
-      st.classList.remove('hidden');
       btn.disabled = false;
     }
 
     refreshBtn.addEventListener('click', loadAttendance);
-    $('testMorningBtn').addEventListener('click', (e) => runTestJob(true, e.target));
-    $('testSummaryBtn').addEventListener('click', (e) => runTestJob(false, e.target));
-
-    $('refreshScheduleBtn').addEventListener('click', async (e) => {
-      const btn = e.target;
-      btn.disabled = true;
-      const st = $('testStatus');
-      st.classList.add('hidden');
-      try {
-        const res = await fetch('/api/schedule/refresh', { method: 'POST' });
-        const data = await res.json();
-        st.textContent = res.ok ? '✅ ' + (data.message || 'Schedule refreshed!') : '❌ ' + (data.error || 'fail') + (data.hint ? '  →  ' + data.hint : '');
-      } catch (err) {
-        st.textContent = '❌ ' + err.message;
-      }
-      st.classList.remove('hidden');
-      btn.disabled = false;
-    });
+    $('todayLoadBtn').addEventListener('click', (e) => loadToday(e.currentTarget));
 
     loadMe();
     loadAttendance();
     loadTelegramStatus();
     startTgPoll();
-
-    // ---- mobile hamburger drawer (UI only — koi API/logic change nahi) ----
-    const drawer = $('drawer'), drawerOverlay = $('drawerOverlay'), navToggleBtn = $('navToggle');
-    function setDrawer(open) {
-      drawer.classList.toggle('open', open);
-      drawerOverlay.classList.toggle('open', open);
-      navToggleBtn.setAttribute('aria-expanded', String(open));
-      navToggleBtn.textContent = open ? '✕' : '☰';
-      drawer.setAttribute('aria-hidden', String(!open));
-      document.body.classList.toggle('drawer-open', open);
-    }
-    navToggleBtn.addEventListener('click', () => setDrawer(!drawer.classList.contains('open')));
-    drawerOverlay.addEventListener('click', () => setDrawer(false));
-    drawer.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => setDrawer(false)));
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+    // (mobile drawer/active-nav/year are handled once by /site.js)
   </script>
 </body>
 </html>

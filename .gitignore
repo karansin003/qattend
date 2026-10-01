@@ -5,11 +5,9 @@ session_state.json
 .DS_Store
 *.log
 debug-*.txt
-data/app-sessions/
-data/qums-sessions/
-data/session_alert_state.json
-data/db.json
-data/db.json.tmp
-data/notified_periods/
-data/notified_periods.json
-data/notified_periods.test.json
+*.pem
+test/fixtures/
+
+# Local data & sessions
+data/*
+!data/.gitkeep

@@ -11,7 +11,17 @@
  *
  * Uses only Playwright's bundled Chromium — no QUMS credentials needed.
  */
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
+
+// ---- hermetic test isolation (MUST run before any ../src require) ----
+// src/scraper.js calls dotenv.config(), which would otherwise load the
+// developer's real .env (real DATABASE_URL) and make this suite hit a live
+// PostgreSQL database. Tests must never depend on the local .env or real data.
+process.env.DB_FILE = process.env.DB_FILE || path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qattend-parser-')), 'db.json');
+process.env.DATABASE_URL = '';
+
 const { chromium } = require('playwright');
 
 const scraperPath = path.join(__dirname, '..', 'src', 'scraper.js');
@@ -151,9 +161,9 @@ function extractFunction(src, name) {
     { period: 'P2', duration: '09:55-10:50', subject: 'DSA', subjectCode: 'CS35303', employee: 'DR. RAO' },
     { period: 'P3', duration: '10:50-11:45', subject: 'Cloud', subjectCode: 'CS35304', employee: 'PROF. M' },
   ]);
-  check('schedule: header', sched.includes('Aaj ki Classes'), true);
+  check('schedule: header', sched.includes("Today's Classes"), true);
   check('schedule: entry 1', sched.includes('1. *P2* (09:55-10:50)') && sched.includes('DSA (CS35303) — DR. RAO'), true);
-  check('schedule: empty day', formatMorningSchedule([]).includes('koi class schedule nahi'), true);
+  check('schedule: empty day', formatMorningSchedule([]).includes('No classes are scheduled today'), true);
 
   // crypto: AES-256-GCM roundtrip (wrong key -> null)
   const { encryptSecret, decryptSecret } = require(path.join(__dirname, '..', 'src', 'crypto.js'));
@@ -294,9 +304,11 @@ function extractFunction(src, name) {
   check('month: in-batch dup deduped', watcher.pendingMonthNotifications([expanded[0], expanded[0]], []).length, 1);
 
   const backMsg = watcher.buildBackdatedMessage({ ...expanded[0], teacher: 'BHANU PARTAP' });
-  check('month: message header', backMsg.startsWith('📌 *Attendance Update*'), true);
-  check('month: teacher+date+subject line', backMsg.includes('BHANU PARTAP ne 07 Sep 2026 ko Scala for Data Science (CS35365) ka attendance mark kiya'), true);
+  check('month: message header (English spec format)', backMsg.startsWith('📌 *Attendance Update*'), true);
+  check('month: real class date line (NOT the notify date)', backMsg.includes('Class Date: 7 September 2026'), true);
+  check('month: subject line', backMsg.includes('Subject: Scala for Data Science'), true);
   check('month: absent status emoji', backMsg.includes('Status: ❌ Absent'), true);
+  check('month: backdated explanation line', backMsg.includes('QUMS attendance was updated for a previous class.'), true);
   const multiMsg = watcher.buildBackdatedMessage(expanded[1]);
   check('month: multi-lecture status line', multiMsg.includes('Status: L1 ✅ Present | L2 ✅ Present'), true);
 
@@ -343,7 +355,7 @@ function extractFunction(src, name) {
   check('roomForRecord: no match -> empty', scraper.roomForRecord(liveTimetable, { date: '2026-09-14', subjectCode: 'XX99999' }), '');
   check('watcher msg: room line present', watcher.buildUpdateMessage({ ...todayRows[1], room: 'A-004' }).includes('Room: A-004'), true);
   check('watcher msg: no room -> no room line', watcher.buildUpdateMessage(todayRows[1]).includes('Room:'), false);
-  check('backdated msg: room line present', watcher.buildBackdatedMessage({ ...expanded[0], teacher: 'BHANU PARTAP', room: 'A-004' }).includes('Room: A-004'), true);
+  check('backdated msg: no room in spec format (room intentionally omitted)', watcher.buildBackdatedMessage({ ...expanded[0], teacher: 'BHANU PARTAP', room: 'A-004' }).includes('Room:'), false);
 
   // ---- 8c. multi-subject cell + API-first timetable (FillStudentTimeTable) ----
   const friEntries = scraper.parseTimetableCellEntries(
@@ -372,27 +384,17 @@ function extractFunction(src, name) {
     { period: '(P1)09:00 - 09:55', duration: '09:00 - 09:55', subject: 'X', subjectCode: 'XC1', room: '', teacher: 'T1', raw: 'x' },
   ]).includes('    T1'), true);
 
-  // ---- 9b. mailer (forgot-password: Resend -> SMTP fallback -> console) ----
+  // ---- 9b. mailer (forgot-password legacy: Resend -> console) ----
   const mailer = require(path.join(__dirname, '..', 'src', 'mailer.js'));
   {
     // env save/restore — baaki tests ka env na bigde
     const saved = {};
-    for (const k of ['RESEND_API_KEY', 'RESEND_FROM', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']) {
+    for (const k of ['RESEND_API_KEY', 'RESEND_FROM']) {
       saved[k] = process.env[k];
       delete process.env[k];
     }
     try {
       check('mailer: console mode jab kuch configured nahi', mailer.mailerProvider(), 'console');
-      check('mailer: smtpConfig null jab env nahi', mailer.smtpConfig(), null);
-
-      process.env.SMTP_HOST = 'smtp.test';
-      process.env.SMTP_USER = 'u@test';
-      process.env.SMTP_PASS = 'secret';
-      check('mailer: smtp provider jab sirf SMTP set', mailer.mailerProvider(), 'smtp');
-      check('mailer: smtp 587 -> STARTTLS (secure:false)', mailer.smtpConfig().secure, false);
-      process.env.SMTP_PORT = '465';
-      check('mailer: smtp 465 -> implicit TLS (secure:true)', mailer.smtpConfig().secure, true);
-      check('mailer: SMTP_PASS config me jaata hai, log me nahi', mailer.smtpConfig().auth.pass, 'secret');
 
       process.env.RESEND_API_KEY = 're_test_key_123';
       check('mailer: resend provider RESEND_API_KEY pe priority leta hai', mailer.mailerProvider(), 'resend');
@@ -443,10 +445,77 @@ function extractFunction(src, name) {
     }
   }
 
-  // ---- 9. scheduler cron (Fix #1: morning 8:30 AM, summary 9 PM) ----
-  const { MORNING_CRON, SUMMARY_CRON, TIMEZONE: SCHED_TZ } = require(path.join(__dirname, '..', 'src', 'scheduler.js'));
+  // ---- 9. scheduler cron (8:30 AM morning schedule; daily 9 PM summary removed) ----
+  const { MORNING_CRON, TIMEZONE: SCHED_TZ } = require(path.join(__dirname, '..', 'src', 'scheduler.js'));
   check('scheduler: morning cron = 8:30 AM IST', [MORNING_CRON, SCHED_TZ], ['30 8 * * *', 'Asia/Kolkata']);
-  check('scheduler: summary cron = 9 PM IST', [SUMMARY_CRON, SCHED_TZ], ['0 21 * * *', 'Asia/Kolkata']);
+  check('scheduler: 9 PM summary cron removed', 'SUMMARY_CRON' in require(path.join(__dirname, '..', 'src', 'scheduler.js')), false);
+
+  // ---- 10. assignment deadline reminder cron (7:00 PM IST, Part 7) ----
+  const assignmentsMod = require(path.join(__dirname, '..', 'src', 'assignments.js'));
+  check('assignments: reminder cron = 7:00 PM IST', [assignmentsMod.REMINDER_CRON, assignmentsMod.TIMEZONE], ['0 19 * * *', 'Asia/Kolkata']);
+
+  // ---- 11. QUMS date parsing (Part 5 — real portal date shapes) ----
+  check('qums date: YYYY-MM-DD', scraper.qumsDateToYMD('2026-09-25 00:00:00'), '2026-09-25');
+  check('qums date: DD/MM/YYYY', scraper.qumsDateToYMD('25/09/2026'), '2026-09-25');
+  check('qums date: DD-MM-YYYY', scraper.qumsDateToYMD('25-09-2026'), '2026-09-25');
+  check('qums date: DD MMM YYYY', scraper.qumsDateToYMD('25 Sep 2026'), '2026-09-25');
+  check('qums date: garbage -> null (never guess)', scraper.qumsDateToYMD('n/a'), null);
+  check('qums date: empty -> null', scraper.qumsDateToYMD(''), null);
+
+  // ---- 12. assignment row normalization (Part 5 — real QUMS fields) ----
+  const rawAssign = {
+    AssignmentDetailID: 42400,
+    ASSIGNMENT: 'OOP Assignment',
+    ASSIGNMENTSUBJECT: 'OOP Assignment',
+    CLASSSUBJECT: 'Java',
+    EMPLOYEENAME: 'DEEPAK BHATT',
+    Assignmenttype: 'Assignment',
+    DATEFROM: '22/09/2026',
+    DATETO: '25/09/2026',
+    AssignmentExt: '.pdf',
+    UploadFlag: 1,
+  };
+  const na = scraper.normalizeAssignmentRow(rawAssign, 'state');
+  check('assignment: id from AssignmentDetailID', na.id, '42400');
+  check('assignment: title', na.title, 'OOP Assignment');
+  check('assignment: subject from CLASSSUBJECT', na.subject, 'Java');
+  check('assignment: teacher from EMPLOYEENAME', na.teacher, 'DEEPAK BHATT');
+  check('assignment: deadline from DATETO', na.deadlineYMD, '2026-09-25');
+  check('assignment: assigned date from DATEFROM', na.assignedYMD, '2026-09-22');
+
+  // no unique id -> stable fingerprint from real fields (Part 6)
+  const noId = scraper.normalizeAssignmentRow({ ...rawAssign, AssignmentDetailID: '', AssignID: '' }, 'state');
+  const fp1 = assignmentsMod.assignmentFingerprint(noId);
+  const fp2 = assignmentsMod.assignmentFingerprint(scraper.normalizeAssignmentRow({ ...rawAssign, AssignmentDetailID: '', AssignID: '' }, 'state'));
+  check('assignment: fingerprint stable across fetches', fp1, fp2);
+  check('assignment: fingerprint is non-empty', fp1.length > 0, true);
+  check('assignment: key uses QUMS id when present', assignmentsMod.assignmentKey(na), 'new:42400');
+
+  // ---- 13. new-assignment detection + dedupe (Parts 5/6) ----
+  const knownA = ['new:42400'];
+  check('assignments: first sighting pending', assignmentsMod.pendingNewAssignments([na], []).length, 1);
+  check('assignments: duplicate suppressed (same id)', assignmentsMod.pendingNewAssignments([na], knownA).length, 0);
+  check('assignments: no title never notified', assignmentsMod.pendingNewAssignments([{ id: 'x', title: '' }], []).length, 0);
+  check('assignments: study material w/o deadline skipped', assignmentsMod.pendingNewAssignments([{ id: 'x', title: 'Notes', type: 'Study Material' }], []).length, 0);
+  check('assignments: in-batch dup deduped', assignmentsMod.pendingNewAssignments([na, na], []).length, 1);
+
+  // ---- 14. deadline reminder logic (Part 7) ----
+  check('reminders: deadline today -> 1', assignmentsMod.pendingDeadlineReminders([na], [], '2026-09-25').length, 1);
+  check('reminders: deadline NOT today -> 0', assignmentsMod.pendingDeadlineReminders([na], [], '2026-09-24').length, 0);
+  check('reminders: earlier day never reminds', assignmentsMod.pendingDeadlineReminders([na], [], '2026-09-20').length, 0);
+  check('reminders: already reminded -> 0', assignmentsMod.pendingDeadlineReminders([na], [assignmentsMod.reminderKey(na, '2026-09-25')], '2026-09-25').length, 0);
+  check('reminders: no deadline -> never reminds', assignmentsMod.pendingDeadlineReminders([{ id: 'y', title: 'T', type: 'Assignment' }], [], '2026-09-25').length, 0);
+  check('reminders: one reminder per assignment per date (in-batch)', assignmentsMod.pendingDeadlineReminders([na, na], [], '2026-09-25').length, 1);
+
+  // ---- 15. new-assignment + reminder Telegram texts (spec format) ----
+  const newMsg = require(path.join(__dirname, '..', 'src', 'messages.js')).formatNewAssignment(na);
+  check('assignment msg: header', newMsg.startsWith('📚 *New Assignment*'), true);
+  check('assignment msg: subject/assignment', newMsg.includes('Subject: Java') && newMsg.includes('Assignment: OOP Assignment'), true);
+  check('assignment msg: last date full format', newMsg.includes('Last Date: 25 September 2026'), true);
+  check('assignment msg: labeled QUMS link', newMsg.includes('🔗 Open QUMS: https://qums.quantumuniversity.edu.in/'), true);
+  const remMsg = require(path.join(__dirname, '..', 'src', 'messages.js')).formatAssignmentDeadlineReminder(na);
+  check('reminder msg: header', remMsg.startsWith('⚠️ *Assignment Deadline Reminder*'), true);
+  check('reminder msg: deadline-day wording', remMsg.includes('Today is the last date to submit this assignment.'), true);
 
   console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);

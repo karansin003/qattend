@@ -9,47 +9,143 @@
   <div class="auth-bg">
     <div class="auth-card">
       <h1>🔑 Reset Password</h1>
-      <div class="sub">Naya password set karo (link 1 hour me expire hota hai)</div>
-      <label class="form-label" for="token">Reset token (link me pre-filled hota hai)</label>
-      <input class="form-input" id="token" type="text" placeholder="token" />
-      <label class="form-label" for="password">Naya password (min 6 chars)</label>
-      <div class="pw-wrap">
-        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="new-password" />
-        <button type="button" class="pw-toggle" data-target="password">👁</button>
+      <div class="sub">Naya password set karo (reset link expire ho sakta hai)</div>
+      <div id="form">
+        <label class="form-label" for="password">Naya password (min 6 chars)</label>
+        <div class="pw-wrap">
+          <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="new-password" />
+          <button type="button" class="pw-toggle" data-target="password" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <label class="form-label" for="confirmPassword">Confirm password</label>
+        <div class="pw-wrap">
+          <input class="form-input" id="confirmPassword" type="password" placeholder="••••••••" autocomplete="new-password" />
+          <button type="button" class="pw-toggle" data-target="confirmPassword" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <div id="error" class="form-error hidden"></div>
+        <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Set New Password</button></div>
       </div>
-      <div id="error" class="form-error hidden"></div>
-      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Set New Password</button></div>
+      <!-- Reset code (oobCode/token) held in hidden fields only — never visible UI -->
+      <input type="hidden" id="oobCode" />
+      <input type="hidden" id="token" />
+      <div id="success" class="form-ok hidden" style="margin-top: 10px;">
+        Password reset successful. You can now login.
+      </div>
+      <div id="goLogin" class="auth-foot hidden" style="margin-top: 12px;">
+        <a href="/login" style="display: inline-block; text-decoration: none;">Go to Login →</a>
+      </div>
       <div class="auth-foot"><a href="/login">← back to login</a></div>
     </div>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
-    // token pre-fill from ?token=...
-    const urlToken = new URLSearchParams(location.search).get('token');
-    if (urlToken) $('token').value = urlToken;
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
+      authDomain: "qums-forgot-password-test.firebaseapp.com",
+      projectId: "qums-forgot-password-test",
+      storageBucket: "qums-forgot-password-test.firebasestorage.app",
+      messagingSenderId: "823963861077",
+      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
+      measurementId: "G-17L8V2XLE7"
+    };
+
+    /*
+     * Firebase password-reset links land back on THIS page with
+     * ?oobCode=...&mode=resetPassword (ActionCodeSettings.url = <origin>/reset).
+     * Old pre-Firebase token links (?token=...) still work via /api/reset.
+     */
+    const params = new URLSearchParams(location.search);
+    const oobCode = (params.get('oobCode') || '').trim();
+    const legacyToken = (params.get('token') || '').trim();
+
+    $('oobCode').value = oobCode;
+    $('token').value = legacyToken;
+
+    function showError(message) {
+      $('error').textContent = message;
+      $('error').classList.remove('hidden');
+    }
+
+    function showSuccess() {
+      $('form').classList.add('hidden');
+      $('success').classList.remove('hidden');
+      $('goLogin').classList.remove('hidden');
+    }
+
+    async function resetViaFirebase(code, password) {
+      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
+      const app = appMod.initializeApp(firebaseConfig);
+      await authMod.confirmPasswordReset(authMod.getAuth(app), code, password);
+    }
 
     $('btn').addEventListener('click', async () => {
       const btn = $('btn'); btn.disabled = true;
       $('error').classList.add('hidden');
       try {
-        const res = await fetch('/api/reset', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: $('token').value.trim(), password: $('password').value }),
-        });
-        const data = await res.json();
-        if (!res.ok) { $('error').textContent = data.error || 'Reset fail'; $('error').classList.remove('hidden'); return; }
-        location.href = '/login';
+        const password = $('password').value;
+        const confirm = $('confirmPassword').value;
+
+        if (!password || password.length < 6) {
+          showError('Password must contain at least 6 characters.');
+          return;
+        }
+        if (password !== confirm) {
+          showError('Passwords do not match.');
+          return;
+        }
+
+        if (oobCode) {
+          // PRIMARY — Firebase-managed reset (single-use oobCode, never shown).
+          await resetViaFirebase(oobCode, password);
+          showSuccess();
+          return;
+        }
+
+        if (legacyToken) {
+          // LEGACY — old in-flight token links (pre-Firebase emails).
+          const res = await fetch('/api/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ token: legacyToken, password }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showError(data.error || 'Reset fail'); return; }
+          showSuccess();
+          return;
+        }
+
+        showError('This reset link is invalid. Please request a new password reset email.');
       } catch (err) {
-        $('error').textContent = err.message; $('error').classList.remove('hidden');
-      } finally { btn.disabled = false; }
+        const code = (err && err.code) || '';
+        if (code === 'auth/expired-action-code') {
+          showError('This reset link has expired. Please request a new password reset email.');
+        } else if (code === 'auth/invalid-action-code' || code === 'auth/user-not-found') {
+          showError('This reset link is invalid or was already used. Please request a new one.');
+        } else if (code === 'auth/weak-password') {
+          showError('Password must contain at least 6 characters.');
+        } else {
+          showError('Could not reset the password right now. Please try again.');
+        }
+        console.error('reset-password error:', code || err.message);
+      } finally {
+        if ($('form').classList.contains('hidden')) btn.disabled = true;
+        else btn.disabled = false;
+      }
     });
-    // password show/hide toggle
+
+    // password show/hide toggles with clean SVG icons (no weird emoji)
+    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
     document.querySelectorAll('.pw-toggle').forEach((b) =>
       b.addEventListener('click', () => {
         const el = document.getElementById(b.dataset.target);
-        el.type = el.type === 'password' ? 'text' : 'password';
-        b.textContent = el.type === 'password' ? '👁' : '🙈';
+        if (!el) return;
+        const isPw = el.type === 'password';
+        el.type = isPw ? 'text' : 'password';
+        b.innerHTML = isPw ? EYE_OFF_SVG : EYE_SVG;
+        b.setAttribute('aria-label', isPw ? 'Hide password' : 'Show password');
       })
     );
   </script>

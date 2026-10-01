@@ -6,17 +6,22 @@ const fs = require('fs');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bcrypt = require('bcryptjs');
-const mailer = require('./mailer');
+// NOTE: mailer.js (Resend/SMTP) is NO LONGER used for password-reset emails —
+// Firebase Authentication owns the reset flow now (single sender, no
+// duplicates). The mailer module itself is untouched and its tests remain.
+const firebaseAuth = require('./firebaseAuth');
 
 const db = require('./db');
 const { encryptSecret } = require('./crypto');
 const { resolveUserRuntime } = require('./credentials');
-const { scrapeAttendance, scrapeTodaysAttendance } = require('./scraper');
+const { scrapeAttendance, scrapeTodaysAttendance, getStudentProfile, ensureStudentName } = require('./scraper');
 const { analyzeAttendance } = require('./calculator');
 const telegram = require('./telegram');
 const { sendMessage } = require('./telegram');
-const { startScheduler, runDailySummaryJob, runMorningScheduleJob, getMorningScheduleText } = require('./scheduler');
-const { startWatcher, runBaselineForUser } = require('./watcher');
+const { startScheduler, runMorningScheduleJob, catchUpMorningSchedule, getMorningScheduleText, getSchedulerStatus } = require('./scheduler');
+const { startWatcher, runBaselineForUser, getWatcherStatus } = require('./watcher');
+const { getAssignmentStatus } = require('./assignments');
+const { notifyQumsReconnected, clearSessionAlert } = require('./alerts');
 const qumsLogin = require('./qums-login-web');
 const { formatMorningSchedule, formatAttendanceMessage } = require('./messages');
 
@@ -99,11 +104,44 @@ async function requireAuth(req, res, next) {
   }
 }
 
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+function isUserAdmin(user) {
+  if (!user) return false;
+  if (user.isAdmin) return true;
+  if (user.email && ADMIN_EMAILS.includes(user.email.toLowerCase())) return true;
+  return false;
+}
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await currentUser(req);
+    if (!user) {
+      if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Login required', code: 'AUTH_REQUIRED' });
+      return res.redirect('/login');
+    }
+    req.appUser = user;
+    if (!isUserAdmin(user)) {
+      if (req.path.startsWith('/api/')) {
+        return res.status(403).json({ error: 'Admin access required', code: 'ADMIN_REQUIRED' });
+      }
+      return res.status(403).send('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>403 Forbidden</title><link rel="stylesheet" href="/style.css"></head><body style="padding:40px;text-align:center;"><h1>403 Forbidden</h1><p>You do not have administrative privileges to access this area.</p><p style="margin-top:20px;"><a href="/dashboard" class="btn" style="display:inline-block;padding:8px 16px;background:var(--primary,#1e3a8a);color:#fff;text-decoration:none;border-radius:6px;">Return to Dashboard</a></p></body></html>');
+    }
+    return next();
+  } catch (err) {
+    console.error('[admin auth] lookup failed:', err.message);
+    return res.status(500).json({ error: 'Authentication service temporarily unavailable.' });
+  }
+}
+
 function httpStatusFor(err) {
   if (err.name === 'QumsSetupRequired') return 403;
   if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') return 409;
   if (err.name === 'NoPendingLogin' || err.name === 'TelegramNotLinked') return 409;
-  if (err.name === 'QumsCredsMissing') return 400;
+  if (err.name === 'QumsCredsMissing' || err.name === 'QumsCredsRequired') return 400;
   if (err.name === 'ScrapeError') return 502;
   return 500;
 }
@@ -146,29 +184,71 @@ function safeServerError(res, err) {
 }
 
 // ---- page routes ----
-app.get('/', async (req, res) => {
-  if (!(await db.hasUsers())) return res.redirect('/register');
-  if (!(await currentUser(req))) return res.redirect('/login');
-  return res.redirect('/dashboard');
-});
-
 const sendPage = (name) => (req, res) => res.sendFile(path.join(PUBLIC_DIR, name));
+
+/**
+ * Contact page — optional REAL support address.
+ *
+ * `CONTACT_EMAIL` set (and valid) => the address is injected into the page.
+ * Not set => the page keeps its clearly-marked placeholder text. A guessed or
+ * invented support address is never rendered.
+ */
+function withContactEmail(html) {
+  const configured = String(process.env.CONTACT_EMAIL || '').trim();
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured);
+  const escapeHtml = (s) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return html
+    .replace(/__CONTACT_EMAIL__/g, valid ? escapeHtml(configured) : 'Not configured yet')
+    .replace(
+      /__CONTACT_EMAIL_NOTE__/g,
+      valid
+        ? 'This is the support address configured for this QAttend deployment.'
+        : 'Placeholder: this deployment has no support email configured yet (set CONTACT_EMAIL to publish a real one). Please use the GitHub channel instead.'
+    );
+}
+
+/**
+ * Home / Landing page (public).
+ *
+ * "/" used to redirect only: first run -> /register, signed out -> /login,
+ * signed in -> /dashboard. A production site needs a real public landing page,
+ * so "/" now serves home.html. Authenticated pages keep redirecting to /login
+ * exactly as before, and the landing nav swaps its Login/Register buttons for
+ * "Go to Dashboard" when a session already exists (existing /api/me).
+ */
+app.get('/', sendPage('home.html'));
+
 app.get('/register', sendPage('register.html'));
 app.get('/login', sendPage('login.html'));
 app.get('/forgot', sendPage('forgot.html'));
 app.get('/reset', sendPage('reset.html'));
 
+// ---- public information pages (no auth required) ----
+app.get('/features', sendPage('features.html'));
+app.get('/how-it-works', sendPage('how-it-works.html'));
+app.get('/about', sendPage('about.html'));
+app.get('/faq', sendPage('faq.html'));
+app.get('/privacy', sendPage('privacy.html'));
+app.get('/terms', sendPage('terms.html'));
+app.get('/contact', (req, res) => {
+  res.send(withContactEmail(fs.readFileSync(path.join(PUBLIC_DIR, 'contact.html'), 'utf8')));
+});
+
 function withQumsResetControl(html) {
   const script = `
 <script>
 (() => {
-  function addReset() {
-    if (document.getElementById('permanentQumsResetBtn')) return;
-    const btn = document.createElement('button');
-    btn.id = 'permanentQumsResetBtn';
-    btn.type = 'button';
-    btn.textContent = 'Reset / Delete QUMS Connection';
-    Object.assign(btn.style, { position:'fixed', right:'18px', bottom:'18px', zIndex:'99999', padding:'10px 14px', border:'1px solid #b91c1c', borderRadius:'8px', background:'#fff', color:'#b91c1c', cursor:'pointer', fontWeight:'700', boxShadow:'0 4px 14px rgba(0,0,0,.12)' });
+  function setupReset() {
+    let btn = document.getElementById('permanentQumsResetBtn');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.id = 'permanentQumsResetBtn';
+      btn.type = 'button';
+      btn.textContent = 'Reset / Delete QUMS Connection';
+      const resetTarget = document.getElementById('qumsResetSlot') || document.getElementById('setupCard') || document.querySelector('.card') || document.body;
+      resetTarget.appendChild(btn);
+    }
     btn.onclick = async () => {
       if (!confirm('QUMS connection permanently reset karna hai? Saved QID/password aur session delete ho jayenge.')) return;
       btn.disabled = true; btn.textContent = 'Resetting...';
@@ -179,10 +259,8 @@ function withQumsResetControl(html) {
         window.location.href = j.redirect || '/qums-setup';
       } catch (e) { alert(e.message || 'QUMS reset failed'); btn.disabled = false; btn.textContent = 'Reset / Delete QUMS Connection'; }
     };
-    const resetTarget = document.getElementById('quickActionsCard') || document.getElementById('setupCard') || document.body;
-    resetTarget.appendChild(btn);
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addReset); else addReset();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setupReset); else setupReset();
 })();
 </script>`;
   return html.includes('</body>') ? html.replace('</body>', script + '</body>') : html + script;
@@ -197,25 +275,146 @@ app.get('/qums-setup', requireAuth, (req, res) => {
   res.send(withQumsResetControl(fs.readFileSync(file, 'utf8')));
 });
 
+// ---- Telegram setup page (same deep-link flow, same single bot/poller) ----
+app.get('/telegram-setup', requireAuth, sendPage('telegram-setup.html'));
+
+// ---- Admin dashboard page (protected by requireAdmin) ----
+app.get('/admin', requireAdmin, sendPage('admin.html'));
+
 app.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/login'));
 });
 
 // ---- auth APIs (public; rate-limited) ----
+/**
+ * FIREBASE AUTH INTEGRATION (see src/firebaseAuth.js):
+ *   - Browser creates/authenticates the Firebase user (Web SDK) and sends the
+ *     ID token — NEVER a raw uid. The server crypto-verifies the token and
+ *     reads uid+email from the VERIFIED payload (client email is untrusted).
+ *   - The PostgreSQL/JSON app user remains the owner of QUMS credentials,
+ *     Telegram link, attendance, schedules. users.firebase_uid maps 1:1.
+ *   - Session model unchanged: req.session.userId = application user id.
+ *   - LEGACY FALLBACK: users created before Firebase integration still log in
+ *     with email+password (bcrypt) — they are migrated to firebaseUid on their
+ *     first Firebase login (requires a VERIFIED Firebase email, so only the
+ *     real mailbox owner can claim the mapping).
+ */
+
+/** Map a verified Firebase token onto the application user (create/link), safely. */
+async function resolveAppUserForFirebase(verified, candidatePassword) {
+  const { uid, email, emailVerified } = verified;
+  if (!email) return { error: 'missing-email' };
+
+  // 1) already mapped? -> done (uid is verified, so this is authoritative)
+  const byUid = await db.getUserByFirebaseUid(uid);
+  if (byUid) {
+    if (byUid.email !== email) {
+      // Firebase email changed for this uid — keep app record authoritative.
+      await db.updateUser(byUid.id, { email });
+      byUid.email = email;
+    }
+    return { user: byUid };
+  }
+
+  // 2) unmapped existing app user (pre-Firebase) -> safe migration
+  const byEmail = await db.getUserByEmail(email);
+  if (byEmail) {
+    if (!byEmail.firebaseUid) {
+      // ANTI-TAKEOVER GATE: linking a legacy account requires ownership proof —
+      // EITHER the legacy bcrypt password (typed on the login form; only the
+      // real owner knows it) OR a VERIFIED Firebase email (the verification
+      // mail goes to the real mailbox; a self-serve "mark verified" is not
+      // possible — tested against the live Identity Toolkit API).
+      const bcryptOk =
+        candidatePassword &&
+        (await bcrypt.compare(String(candidatePassword), byEmail.passwordHash || ''));
+      if (!bcryptOk && !emailVerified) {
+        return { error: 'link-not-authorized', user: byEmail };
+      }
+      return { user: await db.updateUser(byEmail.id, { firebaseUid: uid }) };
+    }
+    // firebaseUid set but different uid for the same email — stale Firebase
+    // user (deleted/recreated). Re-point to the current verified uid.
+    return { user: await db.updateUser(byEmail.id, { firebaseUid: uid }) };
+  }
+
+  // 3) brand-new user (bcrypt hash is a random unguessable placeholder —
+  //    password authority is Firebase now; legacy hash stays for old users)
+  return {
+    user: await db.createUser({
+      email,
+      passwordHash: bcrypt.hashSync(require('crypto').randomBytes(24).toString('hex'), 10),
+      firebaseUid: uid,
+    }),
+  };
+}
+
+/** Firebase token -> session. Shared by /api/register and /api/login.
+ *  Returns { user, redirect } or sends the response itself (null). */
+async function establishSessionFromIdToken(req, res, idToken, candidatePassword) {
+  let verified;
+  try {
+    verified = await firebaseAuth.verifyIdToken(idToken);
+  } catch (err) {
+    console.error('[auth] idToken verification failed:', err.code || err.name);
+    res.status(401).json({ error: firebaseAuth.friendlyTokenError(err) });
+    return null;
+  }
+
+  const result = await resolveAppUserForFirebase(verified, candidatePassword);
+  if (result.error === 'link-not-authorized') {
+    res.status(403).json({
+      error:
+        'This account needs one-time setup: login with your previous app password, or reset your password and verify your email, then login again.',
+      code: 'MIGRATE_PASSWORD',
+    });
+    return null;
+  }
+  if (!result || result.error === 'missing-email' || !result.user) {
+    res.status(401).json({ error: 'Could not resolve your account. Please try again.' });
+    return null;
+  }
+
+  req.session.userId = result.user.id;
+  return { user: result.user, redirect: result.user.qumsSessionPath ? '/dashboard' : '/qums-setup' };
+}
+
 app.post('/api/register', rateLimit('/api/register'), async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!validEmail(email)) return res.status(400).json({ error: 'Valid email daalo.' });
-    if (!password || String(password).length < 6) {
+    const { email, password, idToken, firebaseUnavailable } = req.body || {};
+    const normalizedEmail = firebaseAuth.normalizeEmail(email);
+    if (!validEmail(normalizedEmail)) return res.status(400).json({ error: 'Valid email daalo.' });
+    // With an ID token the password NEVER leaves the browser (Firebase enforces
+    // the 6-char minimum). Local validation applies to the legacy path only.
+    if (!idToken && (!password || String(password).length < 6)) {
       return res.status(400).json({ error: 'Password kam se kam 6 characters ka hona chahiye.' });
     }
-    if (await db.getUserByEmail(email)) {
-      return res.status(409).json({ error: 'Ye email already registered hai — Login karo.' });
+
+    // One application email == one application user (case-insensitive).
+    const existing = await db.getUserByEmail(normalizedEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'This email is already registered. Please login.' });
     }
-    const passwordHash = await bcrypt.hash(String(password), 10);
-    const user = await db.createUser({ email, passwordHash });
-    req.session.userId = user.id; // auto-login after register
-    res.json({ ok: true, redirect: '/qums-setup' });
+
+    // Preferred path: Firebase created the account; verify the ID token.
+    if (idToken) {
+      const outcome = await establishSessionFromIdToken(req, res, idToken);
+      if (!outcome) return; // response already sent (verification failure etc.)
+      console.log(`[auth] registered (Firebase) -> ${outcome.user.email}`);
+      return res.json({ ok: true, redirect: '/qums-setup' });
+    }
+
+    // Fallback ONLY when the Firebase SDK could not load in the browser
+    // (offline/CDN blocked) — keeps registration available, same bcrypt model.
+    if (firebaseUnavailable === true) {
+      const passwordHash = await bcrypt.hash(String(password), 10);
+      const user = await db.createUser({ email: normalizedEmail, passwordHash });
+      req.session.userId = user.id; // auto-login after register
+      console.log(`[auth] registered (legacy fallback — Firebase SDK unavailable) -> ${user.email}`);
+      return res.json({ ok: true, redirect: '/qums-setup', warning: 'Registered without Firebase (SDK unavailable).' });
+    }
+
+    return res.status(400).json({ error: 'Registration requires Firebase verification. Please retry.' });
   } catch (err) {
     safeServerError(res, err);
   }
@@ -223,12 +422,27 @@ app.post('/api/register', rateLimit('/api/register'), async (req, res) => {
 
 app.post('/api/login', rateLimit('/api/login'), async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    const user = await db.getUserByEmail(email);
+    const { email, password, idToken } = req.body || {};
+
+    // Preferred path: Firebase-authenticated ID token (verified server-side).
+    // The typed password accompanies the token ONLY as ownership proof for
+    // linking a pre-Firebase (unmapped) account — it is never stored.
+    if (idToken) {
+      const outcome = await establishSessionFromIdToken(req, res, idToken, password);
+      if (!outcome) return;
+      console.log(`[auth] login (Firebase) -> ${outcome.user.email}`);
+      return res.json({ ok: true, redirect: outcome.redirect });
+    }
+
+    // LEGACY FALLBACK: pre-Firebase users (or when the Firebase SDK could not
+    // load in the browser). Same behavior as before: bcrypt -> session.
+    const normalizedEmail = firebaseAuth.normalizeEmail(email);
+    const user = await db.getUserByEmail(normalizedEmail);
     if (!user || !(await bcrypt.compare(String(password || ''), user.passwordHash))) {
       return res.status(401).json({ error: 'wrong email or password.' });
     }
     req.session.userId = user.id;
+    console.log(`[auth] login (legacy bcrypt fallback) -> ${user.email}`);
     res.json({ ok: true, redirect: user.qumsSessionPath ? '/dashboard' : '/qums-setup' });
   } catch (err) {
     safeServerError(res, err);
@@ -236,50 +450,52 @@ app.post('/api/login', rateLimit('/api/login'), async (req, res) => {
 });
 
 /**
- * Always-ok response (user enumeration se bachne ke liye).
- * Email delivery: RESEND_API_KEY (Resend) -> SMTP fallback -> local console.
+ * Forgot password — Firebase-managed reset.
+ *
+ * Flow:
+ *   1. Check the email against the APPLICATION database (normalized).
+ *   2. Not registered  -> explicit error, NO email is sent (no enumeration by
+ *      e-mail, no user creation).
+ *   3. Registered      -> client calls Firebase sendPasswordResetEmail() with
+ *      continueUrl = <app>/reset. The reset email goes to the USER'S registered
+ *      address (never a hardcoded address), and Firebase owns the flow.
+ *
+ * The legacy mailer token path is retired for /api/forgot — Firebase is the
+ * single sender, so no duplicate reset emails are possible. /api/reset still
+ * accepts OLD in-flight token links (see below) and mailer.js stays intact.
  */
 app.post('/api/forgot', rateLimit('/api/forgot'), async (req, res) => {
   try {
-    const { email } = req.body || {};
-    const user = await db.getUserByEmail(email);
-    if (user) {
-      const token = require('crypto').randomBytes(24).toString('hex');
-      await db.storeResetToken(user.email, token);
-      // BASE_URL: APP_BASE_URL || RENDER_EXTERNAL_URL || localhost (normalized) —
-      // production me localhost KABHI nahi (Render pe upar wale dono set hote hain).
-      const link = `${BASE_URL}/reset?token=${token}`;
-      const emailContent = mailer.buildResetEmail(link);
-      // sendMail kabhi throw nahi karta — { ok, via, error? } deta hai.
-      const result = await mailer.sendMail({ to: user.email, ...emailContent });
-      if (result.ok) {
-        console.log(`[auth] reset email sent via ${result.via} -> ${user.email}`);
-      } else if (result.via === 'console') {
-        if (IS_PROD) {
-          // Production: token links ko logs me expose NAHI karte.
-          console.error('[auth] RESEND_API_KEY / SMTP configured nahi hai — password-reset link deliver nahi hoga.');
-          console.error('[auth] Fix: Render env me RESEND_API_KEY (+ RESEND_FROM, verified domain) ya SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS set karo.');
-        } else {
-          // Dev-only convenience: bina provider ke link console me (local testing).
-          console.log(`\n[auth] PASSWORD RESET LINK for ${user.email} (1h valid):\n${link}\n`);
-        }
-      } else {
-        console.error(`[auth] reset email send FAILED via ${result.via}: ${result.error}`);
-        if (!IS_PROD) {
-          // Dev fallback: send fail hua to link console me (local testing ke liye).
-          console.log(`\n[auth] (dev fallback) PASSWORD RESET LINK for ${user.email} (1h valid):\n${link}\n`);
-        }
-      }
+    const normalizedEmail = firebaseAuth.normalizeEmail(req.body?.email);
+    if (!validEmail(normalizedEmail)) {
+      return res.status(400).json({ ok: false, error: 'Valid email daalo.' });
     }
-    res.json({
+    const user = await db.getUserByEmail(normalizedEmail);
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        registered: false,
+        error: '❌ Email not registered\n\nThis email is not registered with QUMS Attendance Bot.\nPlease check your email address or create a new account.',
+      });
+    }
+    console.log(`[auth] forgot-password requested (Firebase flow) -> ${user.email}`);
+    return res.json({
       ok: true,
-      message: 'Agar ye email registered hai to reset link bana diya gaya hai. (Resend/SMTP configured ho to email aayega, warna local dev me server console me link print hota hai.)',
+      registered: true,
+      firebaseLinked: Boolean(user.firebaseUid),
+      message: 'Password reset email sent. Please check your inbox.',
     });
   } catch (err) {
     safeServerError(res, err);
   }
 });
 
+/**
+ * LEGACY reset endpoint — kept ONLY for old in-flight token emails that were
+ * sent before the Firebase integration (tokens are still stored/verified).
+ * New resets flow through Firebase: sendPasswordResetEmail() -> /reset page
+ * (oobCode) -> confirmPasswordReset() on the client. No new tokens are issued.
+ */
 app.post('/api/reset', rateLimit('/api/reset'), async (req, res) => {
   try {
     const { token, password } = req.body || {};
@@ -299,13 +515,27 @@ app.post('/api/reset', rateLimit('/api/reset'), async (req, res) => {
 
 // ---- protected data APIs (per-user) ----
 app.get('/api/me', requireAuth, async (req, res) => {
-  const user = await db.getUserById(req.session.userId);
+  let user = await db.getUserById(req.session.userId);
+  if (user && !user.studentName && user.qumsSessionPath && fs.existsSync(user.qumsSessionPath)) {
+    try {
+      await Promise.race([
+        ensureStudentName(user.id),
+        new Promise((resolve) => setTimeout(resolve, 2500)),
+      ]);
+      user = (await db.getUserById(req.session.userId)) || user;
+    } catch {}
+  }
+  const hasSavedCreds = Boolean(user && user.qumsQid && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(user.id))));
   res.json({
     email: user.email,
+    studentName: user.studentName || '',
+    qumsYearSem: user.qumsYearSem || '',
     qumsQid: user.qumsQid || '',
-    qumsConfigured: Boolean(user.qumsSessionPath),
+    qumsConfigured: Boolean(user.qumsSessionPath && fs.existsSync(user.qumsSessionPath)),
+    qumsCredentialsSaved: hasSavedCreds,
     telegramConnected: Boolean(user.telegramChatId),
     telegramConfigured: telegram.isConfigured(),
+    isAdmin: isUserAdmin(user),
   });
 });
 
@@ -361,18 +591,28 @@ app.all('/api/trigger-telegram', requireAuth, async (req, res) => {
   }
 });
 
-// ---- QUMS web login (HEADLESS captcha relay — koi visible window nahi) ----
+// ---- QUMS web login (HEADLESS captcha relay) ----
 app.post('/api/qums-login/start', requireAuth, async (req, res) => {
   try {
-    const { qid, password } = req.body || {};
-    // credsOverride sirf FIRST-TIME setup ke liye (frontend inputs). Reconnect
-    // me undefined -> qums-login DB se decrypt karke auto-fill karta hai.
+    const { qid, password, confirmSwitch } = req.body || {};
+    const finalQid = String(qid || req.appUser.qumsQid || '').trim();
+    const finalPassword = password != null && String(password).trim() !== '' ? String(password) : undefined;
+
     const result = await qumsLogin.startQumsLogin(
       req.session.userId,
-      qid && password ? { qid, password } : undefined
+      { qid: finalQid, password: finalPassword, confirmSwitch: Boolean(confirmSwitch) }
     );
     res.json(result); // { ok: true, captchaImage }
   } catch (err) {
+    if (err.name === 'IdentityConflictError' || err.code === 'IdentityConflict') {
+      return res.status(409).json({
+        ok: false,
+        identityConflict: true,
+        oldQid: err.oldQid,
+        newQid: err.newQid,
+        error: err.message,
+      });
+    }
     res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
   }
 });
@@ -380,46 +620,58 @@ app.post('/api/qums-login/start', requireAuth, async (req, res) => {
 app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
   try {
     const { captchaText, captcha } = req.body || {};
-    const result = await qumsLogin.submitQumsCaptcha(req.session.userId, captchaText || captcha);
+    const text = String(captchaText || captcha || '').trim();
+    const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text);
     if (result && result.ok) {
-      // Task 3: setup complete hote hi TURANT baseline — aaj ke MARKED periods
-      // ko dedupe states me seed karo (N.M. skip). Isse (a) already-marked
-      // periods ka alert-storm nahi hoga, (b) baaki bache periods pe marks
-      // hone par alert USI DIN se aayega. Fire-and-forget (API ko block na kare).
+      // Seed baseline marked periods for today and notify Telegram if reconnected
       runBaselineForUser(req.session.userId).catch((e) =>
         console.error('[qums-setup] baseline fetch fail:', e.message)
       );
+      notifyQumsReconnected(console, req.session.userId).catch((e) =>
+        console.error('[qums-setup] reconnect notification fail:', e.message)
+      );
     }
-    res.json(result); // { ok: true, sessionPath } ya { ok: false, error, captchaImage }
+    res.json(result); // { ok: true, sessionPath, studentName, yearSem } or { ok: false, error, captchaImage }
   } catch (err) {
     res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
   }
 });
 
-// ---- QUMS logout (manual) — session delete; creds DB me rehte hain (Reconnect sirf captcha) ----
+// ---- QUMS reset (permanent reset for req.session.userId only) ----
 app.post('/api/qums-reset', requireAuth, async (req, res) => {
   try {
-    const user = await db.getUserById(req.appUser.id);
-    const sp = user && user.qumsSessionPath;
-    if (sp && fs.existsSync(sp)) { try { fs.unlinkSync(sp); } catch {} }
-    await db.updateUser(req.appUser.id, {
+    const user = await db.getUserById(req.session.userId);
+    const sp = (user && user.qumsSessionPath) || db.sessionPathFor(req.session.userId);
+    if (sp && fs.existsSync(sp)) {
+      try { fs.unlinkSync(sp); } catch {}
+    }
+    await db.updateUser(req.session.userId, {
       qumsQid: '',
       qumsPasswordEncrypted: '',
       qumsSessionPath: '',
+      studentName: '',
+      qumsYearSem: '',
     });
-    res.json({ ok: true, redirect: '/qums-setup', message: 'QUMS connection permanently reset. Ab QID/password dobara enter karo.' });
+    await clearSessionAlert(req.session.userId);
+    res.json({
+      ok: true,
+      redirect: '/qums-setup',
+      message: 'QUMS connection permanently reset. Ab QID/password dobara enter karo.',
+    });
   } catch (err) {
     safeServerError(res, err);
   }
 });
 
+// ---- QUMS logout (deletes session file for req.session.userId only; retains QID for reconnect) ----
 app.post('/api/qums-logout', requireAuth, async (req, res) => {
   try {
-    const sp = req.appUser.qumsSessionPath;
+    const user = await db.getUserById(req.session.userId);
+    const sp = (user && user.qumsSessionPath) || db.sessionPathFor(req.session.userId);
     if (sp && fs.existsSync(sp)) {
       try { fs.unlinkSync(sp); } catch {}
     }
-    await db.updateUser(req.appUser.id, { qumsSessionPath: '' });
+    await db.updateUser(req.session.userId, { qumsSessionPath: '' });
     res.json({
       ok: true,
       message: 'QUMS logout — session delete ho gayi. Reconnect karne ke liye QUMS Setup → "Reconnect QUMS" (sirf captcha).',
@@ -429,50 +681,8 @@ app.post('/api/qums-logout', requireAuth, async (req, res) => {
   }
 });
 
-app.all('/api/scheduler/run', requireAuth, async (req, res) => {
-  // manual test trigger for the logged-in user's jobs (uses THEIR runtime creds)
-  // (GET + POST dono chalte hain — dashboard buttons ke liye)
-  try {
-    const morning = req.query.morning === '1';
-    const runtime = resolveUserRuntime(req.appUser);
-    if (morning) {
-      const { text } = await getMorningScheduleText(req.appUser); // cache-first merged
-      const sent = await sendMessage(req.appUser.id, text);
-      if (!sent) throw await telegramSendBlockError(req.appUser.id);
-      res.json({ success: true, message: 'Morning schedule message sent (aaj ki classes).' });
-    } else {
-      const subjects = await scrapeAttendance({ sessionPath: runtime.sessionPath });
-      const analysis = analyzeAttendance(subjects);
-      const sent = await sendMessage(req.appUser.id, formatAttendanceMessage(analysis));
-      if (!sent) throw await telegramSendBlockError(req.appUser.id);
-      res.json({ success: true, message: '9 PM-style summary sent.' });
-    }
-  } catch (err) {
-    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
-  }
-});
-
-// ---- Task 2: "Refresh my schedule" — weekly cache force-refresh (live merge) ----
-app.post('/api/schedule/refresh', requireAuth, async (req, res) => {
-  try {
-    const { text, mode } = await getMorningScheduleText(req.appUser, { forceRefresh: true });
-    const periods = (text.match(/^\d+\./gm) || []).length;
-    res.json({ success: true, mode, message: `Schedule refreshed (${periods} periods, source: ${mode}).` });
-  } catch (err) {
-    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
-  }
-});
 
 // ---- Telegram linking (deep-link flow — koi QR nahi) ----
-// app.get('/api/telegram/status', requireAuth, async (req, res) => {
-//   const code = await db.telegramLinkCodeFor(req.appUser.id);
-//   res.json({
-//     configured: telegram.isConfigured(),
-//     connected: Boolean(req.appUser.telegramChatId),
-//     botUsername: telegram.getBotUsername(),
-//     linkUrl: telegram.deepLink(code),
-//   });
-// });
 app.get('/api/telegram/status', requireAuth, async (req, res) => {
   const user = await db.getUserById(req.appUser.id);
   const code = await db.telegramLinkCodeFor(req.appUser.id);
@@ -488,6 +698,60 @@ app.get('/api/telegram/status', requireAuth, async (req, res) => {
 app.post('/api/telegram/unlink', requireAuth, async (req, res) => {
   await db.clearTelegramChatId(req.appUser.id);
   res.json({ ok: true, message: 'Telegram disconnected. Dobara connect karne ke liye "Connect Telegram" dabao.' });
+});
+
+// ---- Admin APIs (protected by requireAdmin; returns non-sensitive metadata only) ----
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || '');
+    const filter = String(req.query.filter || 'all');
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 25;
+    const data = await db.listUsersForAdmin({ search, filter, page, limit });
+    res.json(data);
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.get('/api/admin/health', requireAdmin, async (req, res) => {
+  try {
+    const stats = await db.adminStats();
+    const dbPing = await db.ping();
+    const notifs = await db.notificationStats(30);
+    const watcherStatus = typeof getWatcherStatus === 'function' ? getWatcherStatus() : {};
+    const assignmentStatus = typeof getAssignmentStatus === 'function' ? getAssignmentStatus() : {};
+    const schedulerStatus = typeof getSchedulerStatus === 'function' ? getSchedulerStatus() : {};
+    const telegramInfo = {
+      configured: telegram.isConfigured(),
+      ready: telegram.isReady(),
+      username: telegram.getBotUsername(),
+    };
+    res.json({
+      ok: true,
+      database: {
+        mode: stats.dbMode,
+        ping: dbPing,
+        ...stats.database,
+      },
+      telegram: telegramInfo,
+      scheduler: schedulerStatus,
+      watcher: watcherStatus,
+      assignments: assignmentStatus,
+      stats: {
+        totalUsers: stats.totalUsers,
+        newUsers24h: stats.newUsers24h,
+        newUsers7d: stats.newUsers7d,
+        qumsConnected: stats.qumsConnected,
+        sessionExpired: stats.sessionExpired,
+        telegramConnected: stats.telegramConnected,
+        notificationsSent: notifs,
+      },
+      serverTime: new Date().toISOString(),
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
 });
 
 // ---- misc ----
@@ -529,14 +793,18 @@ process.on('uncaughtException', (err) => {
     startScheduler();
     startWatcher();
     telegram.initTelegram();
+    // 8:30 IST par server band tha / late start hua -> aaj ka timetable ek baar
+    // catch-up bhej do (per-day marker same-day duplicate rokta hai).
+    catchUpMorningSchedule().catch((e) => console.error('[server] morning catch-up failed:', e.message));
 
-    app.listen(PORT, () => {
+    app.listen(PORT,() => {
   console.log(`[server] QUMS Attendance Bot (multi-user) running at ${BASE_URL}`);
   console.log(`[server] (listening on 0.0.0.0:${PORT}${IS_PROD ? ', production mode' : ', development mode'})`);
-  console.log('[server] Pages: /register /login /dashboard /qums-setup /forgot /reset');
+  console.log('[server] Pages: / (home) /features /how-it-works /about /faq /contact /privacy /terms | /register /login /dashboard /qums-setup /telegram-setup /forgot /reset');
   console.log('[server] APIs: /api/attendance | /api/today | /api/trigger-telegram | /health');
-  console.log('[server] Scheduler: 8:30 AM (aaj ki classes) + 9 PM (attendance summary) — saare users');
+  console.log('[server] Scheduler: 8:30 AM IST (today\'s classes) — saare users, missed-run recovery + boot catch-up (daily 9 PM summary removed)');
   console.log('[server] Watcher: per-class alerts, college hours 08:30-17:00 IST + backdated month-register loop');
+  console.log('[server] Assignments: new-assignment check (30 min) + deadline reminder 7:00 PM IST');
   if (!telegram.isConfigured()) {
     console.log('[server] Telegram: DISABLED — TELEGRAM_BOT_TOKEN set karo (Render env ya .env) aur restart; bina iske server theek chalega.');
   }

@@ -1,59 +1,699 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Register — QUMS Attendance Bot</title>
+  <meta charset="UTF-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Register — QAttend</title>
+
+  <meta name="description" content="Create a QAttend account to track your QUMS attendance and receive attendance and academic notifications on Telegram." />
+
+  <meta name="theme-color" content="#1e3a8a" />
+
+  <meta name="robots" content="noindex" />
+
   <link rel="stylesheet" href="/style.css" />
 </head>
+
 <body>
+
   <div class="auth-bg">
+
     <div class="auth-card">
-      <h1>🎓 Register</h1>
-      <div class="sub">Create an account — 3 steps: register → QUMS setup → done</div>
-      <label class="form-label" for="email">Email (login id)</label>
-      <input class="form-input" id="email" type="email" placeholder="tum@example.com" autocomplete="username" />
-      <label class="form-label" for="password">Your password (min 6 chars)</label>
-      <div class="pw-wrap">
-        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="new-password" />
-        <button type="button" class="pw-toggle" data-target="password">👁</button>
+
+      <!-- Branding -->
+      <div class="auth-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+
+      <p class="auth-tagline">Track. Alert. Stay Updated.</p>
+
+      <!-- Heading -->
+      <h1>Create your account</h1>
+
+      <div class="sub">
+        Three steps: register → QUMS setup → connect Telegram
       </div>
-      <div class="form-hint">Attendance alerts <b>Telegram</b> pe aayenge — account banne ke baad dashboard se "Connect Telegram" (ek click) karenge. QUMS ka QID/password NEXT step (QUMS Setup) me daaloge — wo encrypted store hota hai.</div>
-      <div id="error" class="form-error hidden"></div>
-      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Create Account</button></div>
-      <div class="auth-foot">Already registered ? <a href="/login">please Login</a></div>
+
+
+      <!-- Email -->
+      <label class="form-label" for="email">
+        Email (login id)
+      </label>
+
+      <input class="form-input" id="email" type="email" placeholder="tum@example.com" autocomplete="username"
+        required />
+
+
+      <!-- Password -->
+      <label class="form-label" for="password">
+        Your password (min 6 chars)
+      </label>
+
+      <div class="pw-wrap">
+
+        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="new-password"
+          minlength="6" required />
+
+        <button type="button" class="pw-toggle" id="passwordToggle" aria-label="Show password">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+
+      </div>
+
+
+      <!-- Confirm Password -->
+      <label class="form-label" for="confirmPassword">
+        Confirm your password
+      </label>
+
+      <div class="pw-wrap">
+
+        <input class="form-input" id="confirmPassword" type="password" placeholder="••••••••"
+          autocomplete="new-password" minlength="6" required />
+
+        <button type="button" class="pw-toggle" id="confirmPasswordToggle" aria-label="Show password">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+
+      </div>
+
+
+      <!-- Information -->
+      <div class="form-hint">
+
+        Your attendance notifications are delivered on
+        <b>Telegram</b>.
+
+        After creating the account you can press
+        <b>Connect Telegram</b>
+        on the dashboard.
+
+        <br><br>
+
+        You will enter your QUMS QID and password in the
+        <b>next step (QUMS Setup)</b>.
+
+        QUMS credentials are stored encrypted.
+
+      </div>
+
+
+      <!-- Error -->
+      <div id="error" class="form-error hidden" role="alert" aria-live="polite"></div>
+
+
+      <!-- Register Button -->
+      <div style="margin-top: 18px;">
+
+        <button id="btn" type="button" style="width: 100%;">
+          Create Account
+        </button>
+
+      </div>
+
+
+      <!-- Login -->
+      <div class="auth-foot">
+
+        Already registered?
+
+        <a href="/login">
+          Please Login
+        </a>
+
+      </div>
+
+
+      <div class="auth-foot" style="margin-top: 8px;">
+
+        <a href="/">
+          ← Back to home
+        </a>
+
+      </div>
+
     </div>
+
   </div>
+
+
   <script>
-    const $ = (id) => document.getElementById(id);
-    async function submit() {
-      const btn = $('btn'); btn.disabled = true;
-      $('error').classList.add('hidden');
-      try {
-        const res = await fetch('/api/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: $('email').value.trim(),
-            password: $('password').value,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) { $('error').textContent = data.error || 'Register fail'; $('error').classList.remove('hidden'); return; }
-        location.href = data.redirect || '/qums-setup';
-      } catch (err) {
-        $('error').textContent = err.message; $('error').classList.remove('hidden');
-      } finally { btn.disabled = false; }
+
+    /*
+     * ==========================================
+     * QUMS ATTENDANCE BOT - REGISTER
+     * ==========================================
+     */
+
+    const emailInput = document.getElementById("email");
+    const passwordInput = document.getElementById("password");
+    const registerButton = document.getElementById("btn");
+    const errorBox = document.getElementById("error");
+    const passwordToggle = document.getElementById("passwordToggle");
+    const confirmPasswordInput = document.getElementById("confirmPassword");
+    const confirmPasswordToggle = document.getElementById("confirmPasswordToggle");
+
+
+    /*
+     * ==========================================
+     * FIREBASE AUTHENTICATION (Web SDK, ESM CDN)
+     * ==========================================
+     * Public web config only — apiKey here is an identifier, not a secret.
+     * The SDK is loaded lazily; if it cannot load (offline / CDN blocked),
+     * registration falls back to the legacy backend path (firebaseUnavailable).
+     */
+    const firebaseConfig = {
+      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
+      authDomain: "qums-forgot-password-test.firebaseapp.com",
+      projectId: "qums-forgot-password-test",
+      storageBucket: "qums-forgot-password-test.firebasestorage.app",
+      messagingSenderId: "823963861077",
+      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
+      measurementId: "G-17L8V2XLE7"
+    };
+
+    let firebaseSdk = null;
+
+    async function loadFirebase() {
+      if (firebaseSdk) return firebaseSdk;
+      const appMod = await import(
+        "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"
+      );
+      const authMod = await import(
+        "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"
+      );
+      const app = appMod.initializeApp(firebaseConfig);
+      firebaseSdk = {
+        auth: authMod.getAuth(app),
+        createUserWithEmailAndPassword: authMod.createUserWithEmailAndPassword,
+        signInWithEmailAndPassword: authMod.signInWithEmailAndPassword,
+        sendPasswordResetEmail: authMod.sendPasswordResetEmail,
+        confirmPasswordReset: authMod.confirmPasswordReset
+      };
+      return firebaseSdk;
     }
-    $('btn').addEventListener('click', submit);
-    $('password').addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-    // password show/hide toggle
-    document.querySelectorAll('.pw-toggle').forEach((b) =>
-      b.addEventListener('click', () => {
-        const el = document.getElementById(b.dataset.target);
-        el.type = el.type === 'password' ? 'text' : 'password';
-        b.textContent = el.type === 'password' ? '👁' : '🙈';
-      })
+
+
+    /*
+     * Friendly messages for Firebase auth errors.
+     */
+    function firebaseErrorMessage(error) {
+      const code = (error && error.code) || "";
+      switch (code) {
+        case "auth/email-already-in-use":
+        case "auth/credential-already-in-use":
+          return "This email is already registered. Please login.";
+        case "auth/invalid-email":
+          return "Please enter a valid email address.";
+        case "auth/weak-password":
+          return "Password must contain at least 6 characters.";
+        case "auth/operation-not-allowed":
+          return "Email/Password sign-in is not enabled yet. Please contact the administrator.";
+        case "auth/too-many-requests":
+          return "Too many attempts. Please wait a while and try again.";
+        case "auth/network-request-failed":
+          return "Network problem while contacting the authentication service. Please check your internet connection.";
+        case "auth/user-disabled":
+          return "This account has been disabled. Please contact the administrator.";
+        default:
+          return "Registration failed. Please try again.";
+      }
+    }
+
+
+    /*
+     * Show error
+     */
+    function showError(message) {
+
+      errorBox.textContent = message;
+
+      errorBox.classList.remove("hidden");
+    }
+
+
+    /*
+     * Hide error
+     */
+    function hideError() {
+
+      errorBox.textContent = "";
+
+      errorBox.classList.add("hidden");
+    }
+
+
+    /*
+     * Basic email validation
+     */
+    function isValidEmail(email) {
+
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+    }
+
+
+    /*
+     * Set loading state
+     */
+    function setLoading(loading) {
+
+      registerButton.disabled = loading;
+
+      if (loading) {
+
+        registerButton.textContent = "Creating Account...";
+
+      } else {
+
+        registerButton.textContent = "Create Account";
+
+      }
+
+    }
+
+
+    /*
+     * Register user
+     */
+    async function submitRegistration() {
+
+      /*
+       * Prevent multiple requests
+       */
+      if (registerButton.disabled) {
+        return;
+      }
+
+
+      hideError();
+
+
+      /*
+       * Get values
+       */
+      const email = emailInput.value.trim().toLowerCase();
+
+      const password = passwordInput.value;
+
+
+      /*
+       * Validate email
+       */
+      if (!email) {
+
+        showError("Please enter your email address.");
+
+        emailInput.focus();
+
+        return;
+      }
+
+
+      if (!isValidEmail(email)) {
+
+        showError("Please enter a valid email address.");
+
+        emailInput.focus();
+
+        return;
+      }
+
+
+      /*
+       * Validate password
+       */
+      if (!password) {
+
+        showError("Please enter a password.");
+
+        passwordInput.focus();
+
+        return;
+      }
+
+
+      if (password.length < 6) {
+
+        showError(
+          "Password must contain at least 6 characters."
+        );
+
+        passwordInput.focus();
+
+        return;
+      }
+
+
+      /*
+       * Validate password confirmation (client-side only — the Firebase flow
+       * itself is unchanged; this just catches typos before the request).
+       */
+      const confirmPassword = confirmPasswordInput.value;
+
+      if (!confirmPassword) {
+
+        showError("Please confirm your password.");
+
+        confirmPasswordInput.focus();
+
+        return;
+      }
+
+      if (confirmPassword !== password) {
+
+        showError("Passwords do not match. Please re-enter them.");
+
+        confirmPasswordInput.focus();
+
+        return;
+      }
+
+
+      /*
+       * Start loading
+       */
+      setLoading(true);
+
+
+      /*
+       * STEP 1 — Create the Firebase Auth user (password stays in the browser;
+       * Firebase enforces the 6-char minimum + email uniqueness).
+       */
+      let idToken = null;
+      let firebaseUnavailable = false;
+
+      try {
+
+        const fb = await loadFirebase();
+
+        const credential = await fb.createUserWithEmailAndPassword(
+          fb.auth,
+          email,
+          password
+        );
+
+        /*
+         * ID token = cryptographic proof for the backend (never a raw uid).
+         */
+        idToken = await credential.user.getIdToken();
+
+      } catch (fbError) {
+
+        /*
+         * Real Firebase rejection (email in use, weak password, ...) — show it.
+         */
+        if (fbError && String(fbError.code || "").startsWith("auth/")) {
+          setLoading(false);
+          showError(firebaseErrorMessage(fbError));
+          return;
+        }
+
+        /*
+         * SDK/module failed to LOAD (offline, CDN blocked) — fall back to the
+         * legacy backend registration so the app still works.
+         */
+        console.warn(
+          "Firebase SDK unavailable, using legacy registration:",
+          fbError
+        );
+        firebaseUnavailable = true;
+
+      }
+
+
+      try {
+
+        /*
+         * STEP 2 — Send the ID token to the existing Express backend.
+         * The server verifies it, creates the application user, and opens the
+         * Express session (req.session.userId).
+         */
+        const response = await fetch(
+          "/api/register",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type": "application/json"
+            },
+
+            credentials: "same-origin",
+
+            body: JSON.stringify(
+              firebaseUnavailable
+                ? { email: email, password: password, firebaseUnavailable: true }
+                : { email: email, idToken: idToken }
+            )
+          }
+        );
+
+
+        /*
+         * Try to parse JSON response
+         */
+        let data = {};
+
+        try {
+
+          data = await response.json();
+
+        } catch (jsonError) {
+
+          data = {};
+
+        }
+
+
+        /*
+         * Backend returned error
+         */
+        if (!response.ok) {
+
+          let message =
+            data.error ||
+            data.message ||
+            "Registration failed. Please try again.";
+
+
+          /*
+           * Common backend messages
+           */
+          const lowerMessage =
+            String(message).toLowerCase();
+
+
+          if (
+            lowerMessage.includes("already") ||
+            lowerMessage.includes("exists") ||
+            lowerMessage.includes("duplicate")
+          ) {
+
+            message =
+              "This email is already registered. Please login instead.";
+
+          }
+
+
+          showError(message);
+
+          return;
+        }
+
+
+        /*
+         * Registration successful
+         */
+        registerButton.textContent =
+          "Account Created ✓";
+
+
+        /*
+         * Redirect returned by backend
+         */
+        const redirect =
+          data.redirect || "/qums-setup";
+
+
+        /*
+         * Small delay so user can see success state
+         */
+        setTimeout(() => {
+
+          window.location.href = redirect;
+
+        }, 300);
+
+
+      } catch (error) {
+
+        console.error(
+          "Registration error:",
+          error
+        );
+
+
+        showError(
+          "Unable to connect to the server. Please check your internet connection and try again."
+        );
+
+      } finally {
+
+        /*
+         * Only reset button if we are
+         * not redirecting.
+         */
+        if (!window.location.href.includes("/qums-setup")) {
+
+          setLoading(false);
+
+        }
+
+      }
+
+    }
+
+
+    /*
+     * Register button
+     */
+    registerButton.addEventListener(
+      "click",
+      submitRegistration
     );
+
+
+    /*
+     * Enter key
+     */
+    emailInput.addEventListener(
+      "keydown",
+      (event) => {
+
+        if (event.key === "Enter") {
+
+          event.preventDefault();
+
+          submitRegistration();
+
+        }
+
+      }
+    );
+
+
+    passwordInput.addEventListener(
+      "keydown",
+      (event) => {
+
+        if (event.key === "Enter") {
+
+          event.preventDefault();
+
+          submitRegistration();
+
+        }
+
+      }
+    );
+
+
+    /*
+     * Password show/hide (SVG icons, no weird emoji)
+     */
+    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+    passwordToggle.addEventListener("click", () => {
+      const isPassword = passwordInput.type === "password";
+      if (isPassword) {
+        passwordInput.type = "text";
+        passwordToggle.innerHTML = EYE_OFF_SVG;
+        passwordToggle.setAttribute("aria-label", "Hide password");
+      } else {
+        passwordInput.type = "password";
+        passwordToggle.innerHTML = EYE_SVG;
+        passwordToggle.setAttribute("aria-label", "Show password");
+      }
+    });
+
+    /*
+     * Confirm password show/hide
+     */
+    confirmPasswordToggle.addEventListener("click", () => {
+      const isPassword = confirmPasswordInput.type === "password";
+      if (isPassword) {
+        confirmPasswordInput.type = "text";
+        confirmPasswordToggle.innerHTML = EYE_OFF_SVG;
+        confirmPasswordToggle.setAttribute("aria-label", "Hide password");
+      } else {
+        confirmPasswordInput.type = "password";
+        confirmPasswordToggle.innerHTML = EYE_SVG;
+        confirmPasswordToggle.setAttribute("aria-label", "Show password");
+      }
+    });
+
+
+    /*
+     * Enter key in the confirm field also submits
+     */
+    confirmPasswordInput.addEventListener(
+      "keydown",
+      (event) => {
+
+        if (event.key === "Enter") {
+
+          event.preventDefault();
+
+          submitRegistration();
+
+        }
+
+      }
+    );
+
+
+    /*
+     * Remove error when user starts typing
+     */
+    emailInput.addEventListener(
+      "input",
+      () => {
+
+        if (!errorBox.classList.contains("hidden")) {
+          hideError();
+        }
+
+      }
+    );
+
+
+    passwordInput.addEventListener(
+      "input",
+      () => {
+
+        if (!errorBox.classList.contains("hidden")) {
+          hideError();
+        }
+
+      }
+    );
+
+
+    confirmPasswordInput.addEventListener(
+      "input",
+      () => {
+
+        if (!errorBox.classList.contains("hidden")) {
+          hideError();
+        }
+
+      }
+    );
+
   </script>
+
 </body>
+
 </html>

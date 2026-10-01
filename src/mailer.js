@@ -1,50 +1,17 @@
 /**
- * mailer — forgot-password email delivery.
+ * mailer — legacy email delivery module (retained for backward compatibility).
  *
- * Provider priority (pehla jo configured ho wahi use hota hai):
- *   1. RESEND_API_KEY           -> Resend API (RECOMMENDED — koi SMTP server nahi chahiye)
- *   2. SMTP_HOST/USER/PASS      -> nodemailer (Gmail App Password etc.) — fallback
- *   3. warna 'console'          -> bina provider ke (local dev me server route khud
- *                                  link print karta hai; PRODUCTION me link kabhi
- *                                  logs me expose NAHI hota)
- *
- * RESEND setup (ek baar):
- *   1. resend.com -> API Keys -> "Create API Key" (re_...) -> .env: RESEND_API_KEY
- *   2. FREE-TIER NOTE: default from (`onboarding@resend.dev`) se email sirf APNE
- *      khud ke Resend-account wale email pe jaayega.
- *   3. PRODUCTION: Resend dashboard -> Domains -> apna domain verify karo ->
- *      .env: RESEND_FROM=QUMS Attendance Bot <noreply@yourdomain.com>
- *
- * NOTE: API-key MANAGEMENT (create/list/update/delete keys) resend.com dashboard
- * ka kaam hai — server code me sirf EXISTING key use hoti hai (doosri key se
- * keys banana server me security anti-pattern hai).
- *
- * SAFE LOGS: RESEND_API_KEY / SMTP_PASS / full email content KABHI log nahi hota.
+ * NOTE: Production password-reset emails are handled 100% by Firebase Authentication.
+ * SMTP/Nodemailer has been decommissioned.
  */
 require('dotenv').config();
 
 const RESEND_FROM_DEFAULT = 'QUMS Attendance Bot <onboarding@resend.dev>';
 
-/** Pure: kaunsa provider active hai? -> 'resend' | 'smtp' | 'console' */
+/** Pure: kaunsa provider active hai? -> 'resend' | 'console' */
 function mailerProvider(env = process.env) {
   if (String(env.RESEND_API_KEY || '').trim()) return 'resend';
-  if (env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS) return 'smtp';
   return 'console';
-}
-
-/** Pure: nodemailer transport config (null agar SMTP configured nahi). */
-function smtpConfig(env = process.env) {
-  if (!(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS)) return null;
-  return {
-    host: env.SMTP_HOST,
-    port: Number(env.SMTP_PORT) || 587,
-    secure: Number(env.SMTP_PORT) === 465, // 465 = implicit TLS, 587 = STARTTLS
-    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
-    // SMTP down/unreachable ho to request hang na ho:
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  };
 }
 
 function escapeHtml(s) {
@@ -85,20 +52,9 @@ async function sendViaResend(payload, deps = {}) {
   return { ok: true, via: 'resend', id: result && result.data ? result.data.id : null };
 }
 
-/** SMTP (nodemailer) se send — purana fallback path. */
-async function sendViaSmtp(payload, deps = {}) {
-  const nodemailer = require('nodemailer');
-  const cfg = smtpConfig();
-  if (!cfg) throw new Error('SMTP configured nahi hai (SMTP_HOST/SMTP_USER/SMTP_PASS missing)');
-  const transport = deps.transportFactory ? deps.transportFactory(cfg) : nodemailer.createTransport(cfg);
-  await transport.sendMail({ ...payload, from: process.env.SMTP_FROM || process.env.SMTP_USER });
-  return { ok: true, via: 'smtp' };
-}
-
 /**
  * Unified send — kabhi THROW nahi karta, hamesha { ok, via, error? } return karta
- * hai (caller [server /api/forgot] decide kare kya karna hai). deps: tests ke
- * liye { ResendImpl, transportFactory, from, log }.
+ * hai. deps: tests ke liye { ResendImpl, from, log }.
  */
 async function sendMail({ to, subject, text, html }, deps = {}) {
   const log = deps.log || console;
@@ -110,12 +66,7 @@ async function sendMail({ to, subject, text, html }, deps = {}) {
       log.log(`[mailer] reset email sent via Resend -> ${to}`);
       return r;
     }
-    if (provider === 'smtp') {
-      const r = await sendViaSmtp(payload, deps);
-      log.log(`[mailer] reset email sent via SMTP -> ${to}`);
-      return r;
-    }
-    log.log('[mailer] koi email provider configured nahi (RESEND_API_KEY / SMTP_*) — caller ko bataya.');
+    log.log('[mailer] koi email provider configured nahi (RESEND_API_KEY) — caller ko bataya.');
     return { ok: false, via: 'console', error: 'no-provider-configured' };
   } catch (err) {
     log.error(`[mailer] send FAILED via ${provider} for ${to}: ${err.message}`);
@@ -126,9 +77,8 @@ async function sendMail({ to, subject, text, html }, deps = {}) {
 module.exports = {
   sendMail,
   sendViaResend,
-  sendViaSmtp,
   mailerProvider,
-  smtpConfig,
   buildResetEmail,
   RESEND_FROM_DEFAULT,
 };
+

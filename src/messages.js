@@ -37,15 +37,17 @@ function formatAttendanceUpdate(row, dateLabel = dateLabelIST()) {
 }
 
 /**
- * Morning schedule (roz 8:30 AM IST): aaj ki saari classes + time + room + teacher.
+ * Morning schedule (daily 8:30 AM IST): all of today's classes + time + room + teacher.
  */
-function formatMorningSchedule(rows, dateLabel = dateLabelIST()) {
+function formatMorningSchedule(rows, dateLabel = dateLabelIST(), studentName = '') {
   const list = (rows || []).filter((r) => r.period || r.subject);
-  const lines = [`🌅 *Aaj ki Classes* — ${dateLabel}`, ''];
+  const hi = studentName ? `Hi ${studentName}! ` : '';
+  const lines = [`🌅 *Today's Classes* — ${dateLabel}`, ''];
   if (!list.length) {
-    lines.push('🎉 Aaj koi class schedule nahi hai. Enjoy!');
+    lines.push(`🎉 ${hi}No classes are scheduled today. Enjoy your day!`);
   } else if (list.some((r) => 'room' in r)) {
     // Timetable mode — period time + ROOM + teacher available hai
+    if (studentName) lines.push(`${hi}Here is your schedule for today:`, '');
     list.forEach((r, i) => {
       lines.push(`${i + 1}. 🕐 *${r.duration || r.period}* — ${r.subject}${r.subjectCode ? ` (${r.subjectCode})` : ''}`);
       const extras = [];
@@ -54,15 +56,16 @@ function formatMorningSchedule(rows, dateLabel = dateLabelIST()) {
       if (extras.length) lines.push(`    ${extras.join(' • ')}`);
     });
     lines.push('');
-    lines.push('_Marks lagte hi turant attendance update milega 📲_');
+    lines.push('_You will get an attendance update as soon as marks are entered 📲_');
   } else {
     // Attendance-rows mode (fallback — isme room nahi hota)
+    if (studentName) lines.push(`${hi}Here is your schedule for today:`, '');
     list.forEach((r, i) => {
       lines.push(`${i + 1}. *${r.period}* (${r.duration})`);
       lines.push(`    ${r.subject} (${r.subjectCode}) — ${r.employee || 'TBA'}`);
     });
     lines.push('');
-    lines.push('_Marks lagte hi turant attendance update milega 📲_');
+    lines.push('_You will get an attendance update as soon as marks are entered 📲_');
   }
   return lines.join('\n');
 }
@@ -77,29 +80,71 @@ function dateLabelFromYMD(ymd) {
 }
 
 /**
- * Backdated month-register alert — spec format:
+ * Backdated month-register alert — English only, real class date, per-lecture
+ * detail when the portal cell holds 2+ lectures.
+ *
+ * NEW record (nothing stored before):
  *   📌 Attendance Update
- *   {Teacher} ne {Date} ko {Subject} ({Code}) ka attendance mark kiya
- *   Status: ✅ Present / ❌ Absent
+ *
+ *   Subject: Java
+ *   Code: CS35303
+ *   Class Date: 22 September 2026
+ *   Status: ✅ Present
+ *
+ * EXISTING record whose status changed:
+ *   📌 Attendance Updated
+ *
+ *   Subject: Java
+ *   Code: CS35303
+ *   Class Date: 22 September 2026
+ *   Previous Status: ❌ Absent
+ *   Current Status: ✅ Present
+ *
+ * `Teacher:` is added ONLY when a real teacher value was cross-matched from the
+ * user's own timetable — never invented.
  */
-function formatBackdatedUpdate(rec) {
-  const lines = [
-    '📌 *Attendance Update*',
-    `${rec.teacher || 'Teacher'} ne ${dateLabelFromYMD(rec.date)} ko ${rec.subject || rec.subjectCode} (${rec.subjectCode}) ka attendance mark kiya`,
-  ];
-  if (rec.room) lines.push(`Room: ${rec.room}`);
-  if ((rec.lectures || []).length > 1) {
-    // Ek hi din me 2+ lectures (portal "P,A" jaisa cell) — per-lecture status
+function formatBackdatedUpdate(rec, prev = null) {
+  const changed = Boolean(prev);
+  const code = rec.subjectCode || '';
+  const lines = [changed ? '📌 *Attendance Updated*' : '📌 *Attendance Update*', ''];
+  lines.push(`Subject: ${rec.subject || code}`);
+  if (code) lines.push(`Code: ${code}`);
+  lines.push(`Class Date: ${fullDateLabelFromYMD(rec.date)}`);
+
+  const multi = (rec.lectures || []).length > 1;
+  if (changed) {
+    if (multi) {
+      const prevLectures = prev.lectures || [];
+      const label = (l, i) => `L${i + 1} ${statusEmoji(l.status, l.statusRaw)}`;
+      lines.push(`Previous Status: ${prevLectures.length ? prevLectures.map(label).join(' | ') : statusEmoji(prev.status, prev.statusRaw)}`);
+      lines.push(`Current Status: ${rec.lectures.map(label).join(' | ')}`);
+    } else {
+      lines.push(`Previous Status: ${statusEmoji(prev.status, prev.statusRaw)}`);
+      lines.push(`Current Status: ${statusEmoji(rec.status, rec.statusRaw)}`);
+    }
+  } else if (multi) {
     lines.push(`Status: ${rec.lectures.map((l, i) => `L${i + 1} ${statusEmoji(l.status, l.statusRaw)}`).join(' | ')}`);
   } else {
     lines.push(`Status: ${statusEmoji(rec.status, rec.statusRaw)}`);
   }
+
+  if (rec.teacher) lines.push(`Teacher: ${rec.teacher}`);
+  lines.push('');
+  lines.push('QUMS attendance was updated for a previous class.');
   return lines.join('\n');
 }
 
+/** 'YYYY-MM-DD' -> '22 September 2026' (full month name — spec format). */
+function fullDateLabelFromYMD(ymd) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(ymd || '');
+  const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${Number(m[3])} ${MONTHS_FULL[Number(m[2]) - 1] || '?'} ${m[1]}`;
+}
+
 /**
- * 9 PM-style attendance summary message (pehle whatsapp.js me tha — ab shared
- * builder, Telegram se bheja jata hai).
+ * Attendance summary message (on-demand; the daily 9 PM cron was removed —
+ * this builder stays for the manual summary trigger).
  */
 function formatAttendanceMessage(analysis) {
   const lines = [];
@@ -127,4 +172,58 @@ function formatAttendanceMessage(analysis) {
   return lines.join('\n');
 }
 
-module.exports = { dateLabelIST, dateLabelFromYMD, statusEmoji, formatAttendanceUpdate, formatBackdatedUpdate, formatMorningSchedule, formatAttendanceMessage, norm };
+// ---- Assignment notifications (Parts 5/6/7) ----
+
+const QUMS_ASSIGNMENT_URL =
+  'https://qums.quantumuniversity.edu.in/Web_StudentAcademic/Cyborg_StudentAssignment?id=Assignment';
+
+/**
+ * 📚 New Assignment
+ *
+ * Subject: Java
+ * Assignment: OOP Assignment
+ * Last Date: 25 September 2026
+ *
+ * 🔗 Open QUMS: <url>
+ */
+function formatNewAssignment(a) {
+  const lines = [
+    '📚 *New Assignment*',
+    '',
+    `Subject: ${a.subject || '—'}`,
+    `Assignment: ${a.title || '—'}`,
+  ];
+  if (a.deadlineYMD) lines.push(`Last Date: ${fullDateLabelFromYMD(a.deadlineYMD)}`);
+  if (a.teacher) lines.push(`Faculty: ${a.teacher}`);
+  lines.push('');
+  lines.push(`🔗 Open QUMS: ${QUMS_ASSIGNMENT_URL}`);
+  return lines.join('\n');
+}
+
+/**
+ * ⚠️ Assignment Deadline Reminder
+ *
+ * Subject: Java
+ * Assignment: OOP Assignment
+ *
+ * Today is the last date to submit this assignment.
+ * Please submit it before the deadline.
+ *
+ * 🔗 Open QUMS
+ */
+function formatAssignmentDeadlineReminder(a) {
+  return [
+    '⚠️ *Assignment Deadline Reminder*',
+    '',
+    `Subject: ${a.subject || '—'}`,
+    `Assignment: ${a.title || '—'}`,
+    '',
+    'Today is the last date to submit this assignment.',
+    'Please submit it before the deadline.',
+    '',
+    `🔗 Open QUMS: ${QUMS_ASSIGNMENT_URL}`,
+  ].join('\n');
+}
+
+module.exports = { dateLabelIST, dateLabelFromYMD, fullDateLabelFromYMD, statusEmoji, formatAttendanceUpdate, formatBackdatedUpdate, formatMorningSchedule, formatAttendanceMessage, formatNewAssignment, formatAssignmentDeadlineReminder, QUMS_ASSIGNMENT_URL, norm };
+

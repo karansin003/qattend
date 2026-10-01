@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contact — QAttend</title>
+  <meta name="description" content="How to reach the QAttend project: GitHub issues and profile, plus the support email placeholder used until a support address is configured." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta property="og:site_name" content="QAttend" />
+  <meta property="og:title" content="Contact — QAttend" />
+  <meta property="og:description" content="Report a problem or ask a question about QAttend." />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/site.js" defer></script>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand brand-link" href="/">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/">Home</a>
+      <a href="/features">Features</a>
+      <a href="/how-it-works">How It Works</a>
+      <a href="/about">About</a>
+      <a href="/faq">FAQ</a>
+      <a href="/contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-cta" data-auth-swap>
+        <a class="btn btn-ghost" href="/login">Login</a>
+        <a class="btn" href="/register">Register</a>
+      </span>
+      <button id="navToggle" class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="drawer">☰</button>
+    </div>
+  </header>
+
+  <div id="drawerOverlay" class="drawer-overlay"></div>
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Mobile menu">
+    <div class="drawer-head">QAttend</div>
+    <nav class="drawer-nav">
+      <a href="/">🏠 Home</a>
+      <a href="/features">✨ Features</a>
+      <a href="/how-it-works">🔄 How It Works</a>
+      <a href="/about">ℹ️ About</a>
+      <a href="/faq">❓ FAQ</a>
+      <a href="/contact">✉️ Contact</a>
+      <a href="/login">🔑 Login</a>
+      <a href="/register">📝 Register</a>
+    </nav>
+  </aside>
+
+  <main>
+    <section class="page-head">
+      <h1>Contact QAttend</h1>
+      <p>Found a bug, hit a setup problem, or want to suggest something? These are the real channels.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="grid grid-3">
+          <div class="contact-card">
+            <div class="contact-icon" aria-hidden="true">🐞</div>
+            <h3>Report a bug or request a feature</h3>
+            <p>Open an issue on the public repository — it is the fastest channel and keeps the discussion trackable.</p>
+            <p style="margin-top:12px;">
+              <a class="btn" href="https://github.com/karansin003/Attendence_tracker/issues" target="_blank" rel="noopener">Open a GitHub issue</a>
+            </p>
+          </div>
+          <div class="contact-card">
+            <div class="contact-icon" aria-hidden="true">💻</div>
+            <h3>Project profile</h3>
+            <p>General questions, or you just want to see the rest of the work behind QAttend.</p>
+            <p style="margin-top:12px;">
+              <a class="btn btn-outline" href="https://github.com/karansin003" target="_blank" rel="noopener">View GitHub profile</a>
+            </p>
+          </div>
+          <div class="contact-card">
+            <div class="contact-icon" aria-hidden="true">✉️</div>
+            <h3>Support email</h3>
+            <p>
+              <span class="placeholder-tag">placeholder</span>
+              <strong id="contactEmailValue">__CONTACT_EMAIL__</strong>
+            </p>
+            <p id="contactEmailNote" class="form-hint">__CONTACT_EMAIL_NOTE__</p>
+          </div>
+        </div>
+
+        <div class="callout" style="margin-top:26px;">
+          <strong>About the contact form:</strong> QAttend does not currently run an email-sending
+          backend for website messages, so no form is shown here — a form that silently discards
+          your message would be worse than none. Please use the GitHub channel above, which is live
+          today.
+        </div>
+      </div>
+    </section>
+    <section class="section section-alt">
+      <div class="section-inner">
+        <div class="section-head">
+          <h2 class="section-title-lg">What to include</h2>
+          <p class="section-lead">A little context makes a problem much faster to solve.</p>
+        </div>
+        <ul class="check-list">
+          <li>Which page you were on (for example: QUMS Setup or Telegram).</li>
+          <li>What you expected to happen, and what actually happened.</li>
+          <li>The exact message you saw, if any error was displayed.</li>
+          <li>Whether QUMS and Telegram show as connected on your dashboard.</li>
+        </ul>
+        <div class="callout warn" style="margin-top:18px;">
+          <strong>Please never send your QUMS password, QID, session files, session secret,
+          encryption key or bot token.</strong> Nobody from QAttend needs them to help you, and
+          sharing them puts your account at risk.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Advertisement — small reserved slot near the footer.
+       NO ad-network script, NO publisher id, NO fake creative. When an
+       approved provider is available, put its code inside [data-ad-slot]. -->
+  <aside class="ad-slot" aria-label="Advertisement">
+    <span class="ad-slot-label">Advertisement</span>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer">
+      Ad space — reserved for a future approved ad unit
+    </div>
+  </aside>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+          <p class="footer-tagline">Track. Alert. Stay Updated.</p>
+          <p class="footer-about">
+            QAttend helps students monitor their QUMS attendance and receive attendance and
+            academic notifications through Telegram.
+          </p>
+        </div>
+        <div class="footer-col">
+          <h3>Product</h3>
+          <ul>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/how-it-works">How It Works</a></li>
+            <li><a href="/faq">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Company</h3>
+          <ul>
+            <li><a href="/about">About</a></li>
+            <li><a href="/contact">Contact</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Legal</h3>
+          <ul>
+            <li><a href="/privacy">Privacy Policy</a></li>
+            <li><a href="/terms">Terms &amp; Conditions</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© <span data-year>2026</span> QAttend. All rights reserved.</span>
+        <span>Not affiliated with the QUMS portal itself. Data belongs to the student's own QUMS account.</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

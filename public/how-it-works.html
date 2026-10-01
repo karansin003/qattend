@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How It Works — QAttend</title>
+  <meta name="description" content="How QAttend works: create an account, connect QUMS, connect Telegram, then receive personalized attendance, assignment and deadline notifications." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta property="og:site_name" content="QAttend" />
+  <meta property="og:title" content="How It Works — QAttend" />
+  <meta property="og:description" content="Five clear steps: account, QUMS, Telegram, monitoring, personalized notifications." />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/site.js" defer></script>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand brand-link" href="/">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/">Home</a>
+      <a href="/features">Features</a>
+      <a href="/how-it-works">How It Works</a>
+      <a href="/about">About</a>
+      <a href="/faq">FAQ</a>
+      <a href="/contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-cta" data-auth-swap>
+        <a class="btn btn-ghost" href="/login">Login</a>
+        <a class="btn" href="/register">Register</a>
+      </span>
+      <button id="navToggle" class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="drawer">☰</button>
+    </div>
+  </header>
+
+  <div id="drawerOverlay" class="drawer-overlay"></div>
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Mobile menu">
+    <div class="drawer-head">QAttend</div>
+    <nav class="drawer-nav">
+      <a href="/">🏠 Home</a>
+      <a href="/features">✨ Features</a>
+      <a href="/how-it-works">🔄 How It Works</a>
+      <a href="/about">ℹ️ About</a>
+      <a href="/faq">❓ FAQ</a>
+      <a href="/contact">✉️ Contact</a>
+      <a href="/login">🔑 Login</a>
+      <a href="/register">📝 Register</a>
+    </nav>
+  </aside>
+
+  <main>
+    <section class="page-head">
+      <h1>How QAttend works</h1>
+      <p class="hero-tagline">Track. Alert. Stay Updated.</p>
+      <p style="margin-top:10px;">
+        Setup takes a few minutes. After that, QAttend keeps checking and notifying on its own.
+      </p>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="steps-grid">
+          <div class="step-card">
+            <div class="step-num" aria-hidden="true">1</div>
+            <h3>Create your QAttend account</h3>
+            <p>
+              Register with your email and a password. Sign-in is handled through Firebase
+              Authentication, and the password-reset flow also runs through it.
+            </p>
+          </div>
+          <div class="step-card">
+            <div class="step-num" aria-hidden="true">2</div>
+            <h3>Connect QUMS</h3>
+            <p>
+              In QUMS Setup you enter your QID and QUMS password and solve the portal captcha.
+              QAttend saves the credentials encrypted and keeps a separate session per account.
+            </p>
+          </div>
+          <div class="step-card">
+            <div class="step-num" aria-hidden="true">3</div>
+            <h3>Connect Telegram</h3>
+            <p>
+              Open the Telegram page, press Connect Telegram, then press Start in the bot chat.
+              That chat is now linked to your account — and to no one else's.
+            </p>
+          </div>
+          <div class="step-card">
+            <div class="step-num" aria-hidden="true">4</div>
+            <h3>QAttend monitors your updates</h3>
+            <p>
+              QAttend periodically reads your attendance, timetable and assignments from QUMS and
+              compares them with what it already knows, so it only alerts you about real changes.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid grid-2" style="margin-top:26px;">
+          <div class="step-card">
+            <div class="step-num" aria-hidden="true">5</div>
+            <h3>Receive personalized notifications</h3>
+            <p>
+              Notifications are generated from your own data and sent to your own Telegram chat:
+              today's classes each morning, attendance updates when marks are entered, assignment
+              notices, deadline reminders, and a summary whenever you request one from the
+              dashboard.
+            </p>
+          </div>
+          <div class="feature-card">
+            <h3>What runs in the background</h3>
+            <ul class="check-list" style="margin-top:10px;">
+              <li>Today's classes are sent each morning, before the first period.</li>
+              <li>Attendance is checked through college hours for newly marked periods.</li>
+              <li>The month register is scanned so later entries for earlier dates are caught.</li>
+              <li>New assignments are checked periodically.</li>
+              <li>A reminder goes out on the last date of an assignment.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="callout" style="margin-top:26px;">
+          <strong>Your data stays yours.</strong> Every account has its own QUMS session,
+          attendance data, assignment state, watcher state and Telegram link. QAttend never sends
+          one student's information to another student's chat.
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-band">
+      <h2>Ready to stay updated?</h2>
+      <p>Create your account, connect QUMS and Telegram, and let the updates come to you.</p>
+      <div class="cta-actions">
+        <a class="btn btn-lg" href="/register">Create Account</a>
+        <a class="btn btn-lg btn-ghost" href="/login">Login</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- Advertisement — small reserved slot near the footer.
+       NO ad-network script, NO publisher id, NO fake creative. When an
+       approved provider is available, put its code inside [data-ad-slot]. -->
+  <aside class="ad-slot" aria-label="Advertisement">
+    <span class="ad-slot-label">Advertisement</span>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer">
+      Ad space — reserved for a future approved ad unit
+    </div>
+  </aside>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+          <p class="footer-tagline">Track. Alert. Stay Updated.</p>
+          <p class="footer-about">
+            QAttend helps students monitor their QUMS attendance and receive attendance and
+            academic notifications through Telegram.
+          </p>
+        </div>
+        <div class="footer-col">
+          <h3>Product</h3>
+          <ul>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/how-it-works">How It Works</a></li>
+            <li><a href="/faq">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Company</h3>
+          <ul>
+            <li><a href="/about">About</a></li>
+            <li><a href="/contact">Contact</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Legal</h3>
+          <ul>
+            <li><a href="/privacy">Privacy Policy</a></li>
+            <li><a href="/terms">Terms &amp; Conditions</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© <span data-year>2026</span> QAttend. All rights reserved.</span>
+        <span>Not affiliated with the QUMS portal itself. Data belongs to the student's own QUMS account.</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

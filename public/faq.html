@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FAQ — QAttend</title>
+  <meta name="description" content="Frequently asked questions about QAttend: QUMS connection, Telegram linking, backdated attendance, assignment notifications and privacy." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta property="og:site_name" content="QAttend" />
+  <meta property="og:title" content="FAQ — QAttend" />
+  <meta property="og:description" content="Answers about QUMS setup, Telegram connection, notifications and account data." />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/site.js" defer></script>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand brand-link" href="/">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/">Home</a>
+      <a href="/features">Features</a>
+      <a href="/how-it-works">How It Works</a>
+      <a href="/about">About</a>
+      <a href="/faq">FAQ</a>
+      <a href="/contact">Contact</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-cta" data-auth-swap>
+        <a class="btn btn-ghost" href="/login">Login</a>
+        <a class="btn" href="/register">Register</a>
+      </span>
+      <button id="navToggle" class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="drawer">☰</button>
+    </div>
+  </header>
+
+  <div id="drawerOverlay" class="drawer-overlay"></div>
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Mobile menu">
+    <div class="drawer-head">QAttend</div>
+    <nav class="drawer-nav">
+      <a href="/">🏠 Home</a>
+      <a href="/features">✨ Features</a>
+      <a href="/how-it-works">🔄 How It Works</a>
+      <a href="/about">ℹ️ About</a>
+      <a href="/faq">❓ FAQ</a>
+      <a href="/contact">✉️ Contact</a>
+      <a href="/login">🔑 Login</a>
+      <a href="/register">📝 Register</a>
+    </nav>
+  </aside>
+
+  <main>
+    <section class="page-head">
+      <h1>Frequently asked questions</h1>
+      <p>Short, accurate answers about how QAttend behaves. No feature is described here unless it exists.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-inner">
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>What is QAttend?</summary>
+            <p>
+              QAttend is a student attendance tracking and notification platform integrated with
+              QUMS and Telegram. It connects to your QUMS account, tracks your attendance and
+              academic updates, and sends personalized notifications to your own Telegram chat.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>How does QAttend work?</summary>
+            <p>
+              You create an account, connect QUMS once (QID, password and portal captcha), and
+              connect Telegram. After that, QAttend periodically reads your attendance, timetable
+              and assignments, notices changes, and sends you a message when there is something
+              worth telling you about.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>What is QUMS?</summary>
+            <p>
+              QUMS is the university management portal where your academic records live — including
+              your attendance, timetable and assignments. QAttend acts as a companion to that
+              portal: it reads your data from it and does not replace it.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>How do I connect QUMS?</summary>
+            <p>
+              Open <strong>QUMS Setup</strong> from the dashboard. Enter your QID and QUMS password,
+              press Get Captcha, then type the captcha text shown in the image and submit. On
+              success your connection is saved. If the session later expires, use
+              <strong>Reconnect QUMS</strong> — it usually only needs the captcha again.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>How do I connect Telegram?</summary>
+            <p>
+              Open the <strong>Telegram</strong> page and press <strong>Connect Telegram</strong>.
+              The bot chat opens; press <strong>Start</strong> there. QAttend then links that chat
+              to your account and confirms it. If you were already connected, it will tell you that
+              you are already connected.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Will my attendance updates be sent to someone else?</summary>
+            <p>
+              No. Notifications are sent only to the Telegram chat linked to your own account, and
+              they are built from your own data. Each account keeps a separate QUMS session,
+              attendance data, assignment state and Telegram link.
+            </p>
+          </details>
+        </div>
+
+        <div class="faq-list" style="margin-top:10px;">
+          <details class="faq-item">
+            <summary>How does backdated attendance detection work?</summary>
+            <p>
+              Besides checking today's periods, QAttend also scans the month register for your
+              classes. If attendance is entered later for an earlier class date, you receive an
+              alert that shows the actual class date and whether you were marked present or absent
+              (including multiple lectures on the same day).
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>How are assignment notifications handled?</summary>
+            <p>
+              QAttend reads your assignment list from QUMS periodically and compares it with what it
+              has already seen. When a new assignment appears, you get a Telegram notification. The
+              same assignment is not announced twice.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>When are assignment deadline reminders sent?</summary>
+            <p>
+              A reminder is sent on the last date of an assignment, so you still have time to submit
+              before the deadline passes.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Can I disconnect Telegram?</summary>
+            <p>
+              Yes. On the dashboard (and on the Telegram page) use <strong>Disconnect</strong>. Your
+              chat is then unlinked and no further messages are sent there until you connect again.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Can I logout?</summary>
+            <p>
+              Yes. <strong>Logout</strong> in the menu ends your QAttend session on that browser. You
+              can also log out of QUMS itself from the dashboard, which deletes the stored QUMS
+              session; reconnecting after that normally only requires the captcha again.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Is my QUMS password displayed publicly?</summary>
+            <p>
+              No. Your QUMS password is stored encrypted and is never displayed back to you, never
+              shown on any QAttend page, and never included in a Telegram message. Your QAttend
+              account password is handled by Firebase Authentication and is not stored in plain text.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Does QAttend send an automatic attendance summary every night?</summary>
+            <p>
+              No. The attendance summary is <strong>manual</strong>: you press
+              <strong>Send Attendance Summary</strong> on the dashboard and the current report is
+              generated and sent to your Telegram immediately. Scheduled notifications cover today's
+              classes, attendance changes, new assignments and deadline reminders.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>What happens if my QUMS session expires?</summary>
+            <p>
+              QAttend tells you that the session needs attention. Open QUMS Setup and reconnect:
+              because your credentials are already saved encrypted, you normally only need to solve
+              the captcha again.
+            </p>
+          </details>
+          <details class="faq-item">
+            <summary>Do I need to keep the QAttend website open?</summary>
+            <p>
+              No. Once QUMS and Telegram are connected, the background checks and notifications run
+              on the server. You can close the browser and still receive messages.
+            </p>
+          </details>
+        </div>
+
+        <div class="callout" style="margin-top:24px;">
+          Still unsure about something? Ask on the <a href="/contact">Contact</a> page, or read the
+          <a href="/privacy">Privacy Policy</a> and <a href="/terms">Terms &amp; Conditions</a>.
+        </div>
+      </div>
+    </section>
+    <section class="cta-band">
+      <h2>Ready to stay updated?</h2>
+      <p>Create your QAttend account, connect QUMS and Telegram, and let the updates come to you.</p>
+      <div class="cta-actions">
+        <a class="btn btn-lg" href="/register">Create Account</a>
+        <a class="btn btn-lg btn-ghost" href="/login">Login</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- Advertisement — small reserved slot near the footer.
+       NO ad-network script, NO publisher id, NO fake creative. When an
+       approved provider is available, put its code inside [data-ad-slot]. -->
+  <aside class="ad-slot" aria-label="Advertisement">
+    <span class="ad-slot-label">Advertisement</span>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer">
+      Ad space — reserved for a future approved ad unit
+    </div>
+  </aside>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+          <p class="footer-tagline">Track. Alert. Stay Updated.</p>
+          <p class="footer-about">
+            QAttend helps students monitor their QUMS attendance and receive attendance and
+            academic notifications through Telegram.
+          </p>
+        </div>
+        <div class="footer-col">
+          <h3>Product</h3>
+          <ul>
+            <li><a href="/features">Features</a></li>
+            <li><a href="/how-it-works">How It Works</a></li>
+            <li><a href="/faq">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Company</h3>
+          <ul>
+            <li><a href="/about">About</a></li>
+            <li><a href="/contact">Contact</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h3>Legal</h3>
+          <ul>
+            <li><a href="/privacy">Privacy Policy</a></li>
+            <li><a href="/terms">Terms &amp; Conditions</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© <span data-year>2026</span> QAttend. All rights reserved.</span>
+        <span>Not affiliated with the QUMS portal itself. Data belongs to the student's own QUMS account.</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

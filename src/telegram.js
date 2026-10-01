@@ -1,19 +1,67 @@
+/**
+ * Telegram module — node-telegram-bot-api, POLLING mode (koi public webhook URL
+ * nahi chahiye). Purane WhatsApp (whatsapp-web.js) channel ko replace karta hai.
+ *
+ * SINGLE /start HANDLER  -> is file me sirf EK `/start` handler register hota hai
+ *   (initTelegram ke andar). Register karne se pehle purane text-listeners clear
+ *   kiye jaate hain, isliye ek update ka jawab exactly ek baar jaata hai.
+ *   Saari user-facing copy `MSG` me hai (English only, single source).
+ *   Plain `/start` -> sirf MSG.WELCOME.
+ *
+ * SINGLE POLLING INSTANCE -> polling sirf EK baar arm hoti hai per process
+ *   (globalThis state: import karne ka koi side effect nahi, sirf initTelegram()
+ *   se chalti hai). Machine-level pid lock (`data/telegram-polling.lock`) dusre
+ *   process ko polling se rokta hai (wo send-only bot bana leta hai). Send-only
+ *   instance chahiye to TELEGRAM_POLLING=off. Alag host ka duplicate poller
+ *   Telegram se 409 Conflict layega — hum use loud log karte hain.
+ *
+ * EXACTLY-ONCE -> har message ka (chatId + message_id) dedupe window me jaata
+ *   hai; dobara deliver hua update silently ignore hota hai.
+ *
+ * Standalone check (token valid? kaun linked hai? — koi polling NAHI):
+ *   npm run telegram-test
+ */
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
 
 const BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || 'qums_attendance_bot').replace(/^@/, '');
 const DEEP_LINK_BASE = `https://t.me/${BOT_USERNAME}`;
 
-let bot = null;
-let initAttempted = false; // token add karne ke baad server RESTART chahiye
+// ---- exact user-facing copy (English only — single source of truth) ----
+const MSG = {
+  WELCOME:
+    '👋 Welcome to the QUMS Attendance Bot!\nOpen the web dashboard and press "Connect Telegram" to connect your account.',
+  LINK_INVALID:
+    '❌ This connection link is invalid or expired.\nPlease open the dashboard and press "Connect Telegram" again.',
+  LINK_USAGE: 'Usage: /link <code> — the code is in the "Connect Telegram" section of the dashboard.',
+  STATUS_NONE: '❌ No account is linked to this chat. Press "Connect Telegram" on the dashboard.',
+  // Greeting me student ka QUMS/ERP naam dynamic — email KABHI Telegram pe nahi jaata.
+  connected: (name) => `✅ Connected!\nHello ${name} 👋\nYou will now receive attendance updates here.`,
+  alreadyConnected: (name) =>
+    `✅ Already Connected!\nHello ${name} 👋\nYou will continue to receive attendance updates here.`,
+};
+
+// Process-wide state (globalThis) — module dobara load hone par bhi polling,
+// handlers aur dedupe window duplicate nahi hote.
+const STATE_KEY = '__qumsTelegramState__';
+const state = globalThis[STATE_KEY] || (globalThis[STATE_KEY] = {
+  bot: null, // TelegramBot instance (polling ya send-only)
+  sendOnly: false, // true = is process me getUpdates NAHI chal raha
+  initAttempted: false, // initTelegram() ek hi baar kaam karta hai
+  pollingArmed: false,
+  lockPid: null, // polling lock jis pid ne liya (sirf usi ko release karna hai)
+  seenMessages: new Map(), // `${chatId}:${messageId}` -> ts (dedupe window)
+});
 
 function isConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN);
 }
 
 function isReady() {
-  return Boolean(bot);
+  return Boolean(state.bot);
 }
 
 function getBotUsername() {
@@ -45,32 +93,35 @@ function toTelegramHtml(text) {
  * 15I — safe logs: sirf booleans + userId. TELEGRAM_BOT_TOKEN / chatId /
  * connection token KABHI log nahi hota.
  */
-async function sendMessage(userId, text, log = console) {
+async function sendMessage(userId, text, log = console, opts = {}) {
   if (!userId) return false;
+  // Optional inline keyboard (e.g. the "🔐 Reconnect QUMS" button on a
+  // session-expiry alert). URLs only — never credentials, never tokens.
+  const replyMarkup = (opts && opts.replyMarkup) || null;
   const user = await db.getUserById(userId);
   log.log(`[Telegram] Chat ID available: ${Boolean(user && user.telegramChatId)}`); // boolean only — chatId log NAHI
   if (!user || !user.telegramChatId) return false; // Telegram linked nahi hai
-  // Standalone processes (scheduler --now, watcher --send) me polling init
-  // nahi hota — send-only bot bana lo (koi getUpdates nahi, 409 conflict nahi).
-  if (!bot) {
-    if (!isConfigured()) {
-      log.log('[Telegram] Telegram connected: false (TELEGRAM_BOT_TOKEN missing) — send skip.');
-      return false;
-    }
-    bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
+  // Polling instance ka bot reuse hota hai; standalone/duplicate process me
+  // send-only bot banta hai — koi getUpdates nahi -> koi 409 conflict nahi,
+  // koi duplicate /start reply nahi.
+  if (!isConfigured()) {
+    log.log('[Telegram] Telegram connected: false (TELEGRAM_BOT_TOKEN missing) — send skip.');
+    return false;
   }
+  if (!state.bot) ensureSendOnlyBot(log);
   log.log('[Telegram] Telegram connected: true');
   try {
     log.log(`[Telegram] Sending notification for user: ${userId}`);
-    await bot.sendMessage(user.telegramChatId, toTelegramHtml(text), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    });
+    const payload = { parse_mode: 'HTML', disable_web_page_preview: true };
+    if (replyMarkup) payload.reply_markup = replyMarkup;
+    await state.bot.sendMessage(user.telegramChatId, toTelegramHtml(text), payload);
     log.log(`[Telegram] Notification sent successfully for user: ${userId}`);
     return true;
   } catch (err) {
     try {
-      await bot.sendMessage(user.telegramChatId, text); // plain-text fallback
+      // plain-text fallback (markup HTML parse fail hone par bhi button intact)
+      const fallback = replyMarkup ? { reply_markup: replyMarkup } : {};
+      await state.bot.sendMessage(user.telegramChatId, text, fallback);
       log.log(`[Telegram] Notification sent successfully for user: ${userId} (plain-text fallback)`);
       return true;
     } catch (err2) {
@@ -80,34 +131,166 @@ async function sendMessage(userId, text, log = console) {
   }
 }
 
+/** Send-only bot (no polling) — standalone workers / second instances ke liye. */
+function ensureSendOnlyBot(log = console) {
+  if (!state.bot) {
+    state.bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
+    state.sendOnly = true;
+    log.log('[telegram] send-only bot created (is process me polling NAHI chalti).');
+  }
+  return state.bot;
+}
+
+/** Chat reply — bot na hone par crash nahi, sirf log + skip. */
+function reply(chatId, text, log = console) {
+  if (!state.bot) {
+    log.error('[telegram] reply skipped — bot is not initialised in this process.');
+    return Promise.resolve(false);
+  }
+  return state.bot.sendMessage(chatId, text);
+}
+
+// ---- exactly-once: dobara deliver hua update ignore karo ----
+const DEDUPE_WINDOW_MS = 10 * 60 * 1000; // restart-redelivery window
+const DEDUPE_MAX_KEYS = 1000;
+
+/**
+ * Same Telegram update dobara aaya? (chatId + message_id unique hota hai)
+ * Pehli baar -> false (aage process karo). Dobara -> true (silently ignore).
+ */
+function isDuplicateUpdate(msg) {
+  const chatId = msg && msg.chat ? msg.chat.id : undefined;
+  const messageId = msg ? msg.message_id : undefined;
+  if (chatId === undefined || chatId === null || messageId === undefined || messageId === null) return false;
+  const key = `${chatId}:${messageId}`;
+  const now = Date.now();
+  if (state.seenMessages.has(key)) return true;
+  state.seenMessages.set(key, now);
+  if (state.seenMessages.size > DEDUPE_MAX_KEYS) {
+    for (const [k, ts] of state.seenMessages) {
+      if (now - ts > DEDUPE_WINDOW_MS) state.seenMessages.delete(k);
+    }
+    while (state.seenMessages.size > DEDUPE_MAX_KEYS) {
+      state.seenMessages.delete(state.seenMessages.keys().next().value);
+    }
+  }
+  return false;
+}
+
+// ---- machine-level single-poller lock (pid based) ----
+const LOCK_FILE = process.env.TELEGRAM_POLLING_LOCK
+  ? path.resolve(process.env.TELEGRAM_POLLING_LOCK)
+  : path.join(__dirname, '..', 'data', 'telegram-polling.lock');
+
+function readLockFile() {
+  try {
+    return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0 || n === process.pid) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM'; // zinda hai par humein signal ka haq nahi
+  }
+}
+
+/** true = polling arm karo; false = koi aur zinda poller hai (send-only rakho). */
+function acquirePollingLock(log) {
+  const existing = readLockFile();
+  if (existing && pidAlive(existing.pid)) {
+    log.error(`[telegram] ⚠️ polling SKIPPED — pid ${existing.pid} (since ${existing.startedAt}) already polls @${BOT_USERNAME} on this machine. Do pollers = duplicate /start replies. Us process ko kill karo ya wahan TELEGRAM_POLLING=off set karo.`);
+    return false;
+  }
+  try {
+    fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
+    fs.writeFileSync(LOCK_FILE, `${JSON.stringify({ pid: process.pid, bot: BOT_USERNAME, startedAt: new Date().toISOString() }, null, 2)}\n`);
+    state.lockPid = process.pid;
+    return true;
+  } catch (err) {
+    // Lock likha na gaya (read-only fs) -> polling continue, par is host pe
+    // exactly ek process chalna chahiye. Stale lock (killed process) auto-steal
+    // hota hai kyunki pidAlive() false dega.
+    log.error(`[telegram] polling lock write failed (${err.message}) — ensure only ONE polling process on this host.`);
+    return true;
+  }
+}
+
+function releasePollingLock() {
+  if (state.lockPid !== process.pid) return;
+  try {
+    const cur = readLockFile();
+    if (!cur || Number(cur.pid) === process.pid) fs.unlinkSync(LOCK_FILE);
+  } catch {}
+  state.lockPid = null;
+}
+
+/** TELEGRAM_POLLING=off/false/0 -> is process me koi getUpdates nahi (send-only). */
+function pollingEnabled() {
+  const v = String(process.env.TELEGRAM_POLLING || '').trim().toLowerCase();
+  return !['off', 'false', '0', 'no', 'disable', 'disabled'].includes(v);
+}
+
 // ---- linking handlers (deep-link primary, /link backup, /status info) ----
 
-/** "/start <linkCode>" — deep-link flow ka core. Returns linked user ya null. */
+/**
+ * "/start <linkCode>" — deep-link flow ka core. Returns linked user ya null.
+ * Multi-user isolation: code se EXACT wahi user milta hai (latest/global nahi).
+ */
 async function handleDeepLink(chatId, payload, log = console) {
   const code = String(payload || '').trim();
   const user = code ? await db.getUserByTelegramLinkCode(code) : null;
   if (!user) {
-    bot.sendMessage(chatId, '❌ Ye link invalid ya expire ho gaya hai. Dashboard kholke dobara "Connect Telegram" dabao.');
+    // Sirf genuinely unknown/expired code par. Duplicate valid update yahan
+    // kabhi nahi aata (wo dedupe ya "Already Connected" path me hai).
+    await reply(chatId, MSG.LINK_INVALID, log);
     return null;
   }
+  // Same chat pehle se ISI account se linked hai? -> "Already Connected!"
+  const existingOwner = await db.getUserByTelegramChatId(chatId);
+  const alreadyLinkedToThisUser = Boolean(existingOwner && existingOwner.id === user.id);
   // PRIVACY: ek chat sirf EK account ke updates ke liye — agar ye chat pehle
-  // kisi aur account se linked thi to wo binding ab clear (us user ke updates
-  // is chat pe aana band).
+  // kisi aur account se linked thi to wo binding clear (us user ke updates is
+  // chat pe aana band).
   const previousOwnerCleared = await db.clearTelegramChatForChat(chatId, user.id);
   await db.setTelegramChatId(user.id, chatId);
-  const rebindNote = previousOwnerCleared ? '\n(Note: ye chat pehle kisi aur account se linked thi — ab sirf is account ke updates aayenge.)' : '';
-  // bot.sendMessage(chatId, `✅ Connected! Ab aapko attendance updates yahin milenge (${user.email}).${rebindNote}`);
-  bot.sendMessage(
-    chatId,
-    `✅ Connected! Ab aapko attendance updates yahin milenge (${user?.email || 'your account'}).${rebindNote}`
-  );
-  log.log(`[telegram] 🔗 linked: ${user.email} -> chat ${chatId}${previousOwnerCleared ? ` (rebind: ${previousOwnerCleared} purana binding clear)` : ''}`);
+  // Greeting uses the student's QUMS/ERP name (users.studentName, fetched from
+  // GetStudentDetailOnRegID) — NEVER the email or any QUMS credential.
+  let helloName = user.studentName;
+  if (!helloName && user.qumsSessionPath) {
+    try {
+      const fetched = await Promise.race([
+        require('./scraper').ensureStudentName(user.id, log),
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+      if (fetched) helloName = fetched;
+    } catch {
+      /* scraper unavailable — greeting falls back to a neutral placeholder */
+    }
+  }
+  helloName = helloName || user.studentName || 'Student';
+  if (alreadyLinkedToThisUser) {
+    await reply(chatId, MSG.alreadyConnected(helloName), log);
+  } else {
+    const rebindNote = previousOwnerCleared
+      ? '\n(Note: this chat was previously linked to another account — it will now only receive updates for this account.)'
+      : '';
+    await reply(chatId, `${MSG.connected(helloName)}${rebindNote}`, log);
+  }
+  log.log(`[telegram] 🔗 linked: ${user.email} -> chat ${chatId}${previousOwnerCleared ? ` (rebind: ${previousOwnerCleared} purana binding clear)` : ''}${alreadyLinkedToThisUser ? ' (already-linked)' : ''}`);
   return user;
 }
 
+/** Plain "/start" -> sirf welcome. Deep-link "/start <code>" -> handleDeepLink. */
 async function handleStart(chatId, payload, log = console) {
   if (!payload) {
-    bot.sendMessage(chatId, "👋 Welcome! QUMS Attendance Bot. Dashboard kholo aur 'Connect Telegram' button dabao — bas itna hi.");
+    await reply(chatId, MSG.WELCOME, log);
     return;
   }
   await handleDeepLink(chatId, payload, log);
@@ -116,7 +299,7 @@ async function handleStart(chatId, payload, log = console) {
 /** Backup command: "/link <linkCode>" */
 async function handleLinkCommand(chatId, code, log = console) {
   if (!code) {
-    bot.sendMessage(chatId, 'Usage: /link <code>  — code dashboard ke "Connect Telegram" section me hai.');
+    await reply(chatId, MSG.LINK_USAGE, log);
     return;
   }
   await handleDeepLink(chatId, code, log);
@@ -125,33 +308,89 @@ async function handleLinkCommand(chatId, code, log = console) {
 async function handleStatus(chatId, log = console) {
   const user = await db.getUserByTelegramChatId(chatId);
   if (user) {
-    bot.sendMessage(chatId, `🔗 Linked: ${user.email}\nQUMS: ${user.qumsSessionPath ? 'configured ✅' : 'setup pending ⚠️'}`);
+    // Show the QUMS/ERP student name — the email is never shown in Telegram.
+    await reply(chatId, `🔗 Linked: ${user.studentName || 'your account'}\nQUMS: ${user.qumsSessionPath ? 'configured ✅' : 'setup pending ⚠️'}`, log);
   } else {
-    bot.sendMessage(chatId, '❌ Koi account linked nahi hai. Dashboard se "Connect Telegram" dabao.');
+    await reply(chatId, MSG.STATUS_NONE, log);
   }
   log.log(`[telegram] /status from chat ${chatId}`);
 }
 
-/** Polling start — token na ho to server crash na ho, sirf warning. */
+/**
+ * Polling start — SINGLE authoritative entry point.
+ *  - ek process me sirf EK baar chalti hai (state.initAttempted)
+ *  - ek machine pe sirf EK poller (pid lock) — warna Telegram har update
+ *    dono instances ko deta hai aur /start ka jawab DO baar jaata hai
+ *  - token na ho to server crash na ho, sirf warning
+ *  - iske andar hi `/start`, `/link`, `/status` register hote hain (aur kahin
+ *    nahi) -> koi duplicate/legacy handler nahi.
+ */
 function initTelegram(log = console) {
-  if (initAttempted) return bot;
-  initAttempted = true;
+  if (state.initAttempted) {
+    // Duplicate init (koi module dobara call kare) -> kuch naya register nahi,
+    // isliye "polling armed" sirf EK baar log hota hai.
+    log.log('[telegram] initTelegram() ignored — polling/handlers already set up in this process.');
+    return state.bot;
+  }
+  state.initAttempted = true;
+
   if (!isConfigured()) {
     log.log('[telegram] TELEGRAM_BOT_TOKEN .env me set nahi hai — Telegram DISABLED (server chalega, sends skip honge).');
     return null;
   }
-  bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-  bot.on('polling_error', (err) => log.error(`[telegram] polling error: ${err.message}`));
-  bot.onText(/^\/start(?:\s+(\S+))?/, (msg, match) => {
+
+  if (!pollingEnabled()) {
+    log.log('[telegram] TELEGRAM_POLLING=off — polling SKIPPED (send-only instance; ise /start messages nahi milenge).');
+    return ensureSendOnlyBot(log);
+  }
+
+  // Ek machine pe sirf EK poller — dusra process send-only rehta hai.
+  if (!acquirePollingLock(log)) return ensureSendOnlyBot(log);
+
+  // Agar is process me pehle se send-only bot bana hai to USI par polling
+  // start karo — naya bot object banane se ek hi process me do getUpdates
+  // consumers ban jaate (duplicate /start replies).
+  if (!state.bot) {
+    state.bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+  } else {
+    state.sendOnly = false;
+    if (typeof state.bot.startPolling === 'function') state.bot.startPolling();
+    log.log('[telegram] existing bot instance reuse — polling usi par start hui (koi second bot nahi).');
+  }
+  const bot = state.bot;
+
+  // Legacy text-listeners (agar kabhi register hue hon) hata do -> `/start` ka
+  // SIRF EK authoritative handler rehta hai.
+  if (typeof bot.clearTextListeners === 'function') bot.clearTextListeners();
+
+  bot.on('polling_error', (err) => {
+    const msg = String((err && err.message) || '');
+    if (/409|conflict/i.test(msg)) {
+      log.error(`[telegram] polling CONFLICT — koi dusra instance (@${BOT_USERNAME}) usi bot token se getUpdates kar raha hai, isliye ek /start ka jawab DO baar jaa sakta hai. Sirf EK poller chalao (dusre pe TELEGRAM_POLLING=off set karo ya usse kill karo). (${msg})`);
+      return;
+    }
+    log.error(`[telegram] polling error: ${msg}`);
+  });
+
+  // ---- THE ONE AND ONLY /start handler ----
+  bot.onText(/^\/start(?:@\w+)?(?:\s+(\S+))?/i, (msg, match) => {
+    if (isDuplicateUpdate(msg)) {
+      log.log('[telegram] duplicate /start update ignored (already processed).');
+      return;
+    }
     handleStart(msg.chat.id, match && match[1], log).catch((e) => log.error(`[telegram] /start failed: ${e.message}`));
   });
-  bot.onText(/^\/link(?:\s+(\S+))?/, (msg, match) => {
+  bot.onText(/^\/link(?:@\w+)?(?:\s+(\S+))?/i, (msg, match) => {
+    if (isDuplicateUpdate(msg)) return;
     handleLinkCommand(msg.chat.id, match && match[1], log).catch((e) => log.error(`[telegram] /link failed: ${e.message}`));
   });
-  bot.onText(/^\/status/, (msg) => {
+  bot.onText(/^\/status(?:@\w+)?/i, (msg) => {
+    if (isDuplicateUpdate(msg)) return;
     handleStatus(msg.chat.id, log).catch((e) => log.error(`[telegram] /status failed: ${e.message}`));
   });
-  log.log(`[telegram] polling armed (@${BOT_USERNAME}) — deep-link + /link + /status handlers active.`);
+
+  state.pollingArmed = true;
+  log.log(`[telegram] polling armed (@${BOT_USERNAME}) — ONE /start handler + /link + /status (pid ${process.pid}).`);
   return bot;
 }
 
@@ -164,11 +403,15 @@ function initTelegram(log = console) {
  */
 async function sendBlockerReason(userId) {
   if (!isConfigured()) return 'not-configured';
-  if (!bot) return 'bot-not-initialized';
+  if (!state.bot) return 'bot-not-initialized';
   const user = userId ? await db.getUserById(userId) : null;
   if (!user || !user.telegramChatId) return 'not-linked';
   return null;
 }
+
+// Normal exit pe polling lock hata do (kill -9 hone par stale lock agle boot pe
+// pid-check se auto-steal ho jaata hai).
+process.on('exit', releasePollingLock);
 
 module.exports = {
   initTelegram,
@@ -183,6 +426,7 @@ module.exports = {
   handleLinkCommand,
   handleStatus,
   toTelegramHtml,
+  MSG,
   BOT_USERNAME,
 };
 

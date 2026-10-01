@@ -53,6 +53,7 @@ const db = require('./db');
 const {
   scrapeTodaysAttendance,
   scrapeMonthRegister,
+  scrapeMonthRegisterRange,
   scrapeTimetable,
   getTimetableForDate,
   teacherForRecord,
@@ -173,7 +174,22 @@ function pendingNotifications(rows, notifiedKeys) {
   return out;
 }
 
-/** Per-class Telegram message (teacher + subject + period + date + marked-as). */
+/**
+ * Evidence-based failure classification for watcher cycles.
+ * Only a real login-page response (SessionExpiredError) may trigger the
+ * user-facing reconnect alert; a temporary QUMS outage must stay silent
+ * (no Telegram spam) — requirement: never treat a timeout as expiry.
+ */
+async function handleCycleError(log, userId, err) {
+  if (err && (err.name === 'SessionExpiredError' || err.name === 'NoSessionError')) {
+    await maybeNotifySessionExpired(log, userId, { evidence: true });
+    return;
+  }
+  const net = require('./scraper').isNetworkError(err) || err.name === 'QumsUnreachableError';
+  await maybeNotifySessionExpired(log, userId, { evidence: false });
+  log.log(`[watcher] user=${userId} ${net ? 'QUMS unreachable (temporary)' : 'scrape error'}: ${err.name || 'Error'}: ${err.message} — retrying next cycle, no expiry alert.`);
+}
+
 function buildUpdateMessage(row, dateLabel = dateLabelIST()) {
   return formatAttendanceUpdate(row, dateLabel);
 }
@@ -194,13 +210,20 @@ async function runWatcherCycle(opts = {}) {
     return { skipped: true, reason: 'outside-college-hours', at: now.hhmm };
   }
 
+  const user = opts.userId ? await db.getUserById(opts.userId) : null;
+  const monitoringStartedDate = user
+    ? (user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : ''))
+    : '';
+
+  if (monitoringStartedDate && now.date < monitoringStartedDate) {
+    return { skipped: true, reason: 'before-monitoring-start-date', at: now.hhmm };
+  }
+
   let rows;
   try {
     rows = await fetchFn();
   } catch (err) {
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
-      await maybeNotifySessionExpired(log, opts.userId);
-    }
+    await handleCycleError(log, opts.userId, err);
     throw err;
   }
 
@@ -224,6 +247,24 @@ async function runWatcherCycle(opts = {}) {
   for (const row of pending) {
     const text = buildUpdateMessage(row);
     const eventKey = eventKeyFor(row);
+    const qid = (user && user.qumsQid) || '';
+    const dedupeKey = `attendance_fast:${qid}:${now.date}:${row.subjectCode}:${row.period}:${row.status}`;
+    const isNew = await db.tryRecordNotificationLog(opts.userId, 'attendance_class', dedupeKey, {
+      qid,
+      classDate: now.date,
+      subjectCode: row.subjectCode,
+      period: row.period,
+      status: row.status,
+    });
+    if (!isNew) {
+      if (!notified.includes(eventKey)) {
+        notified.push(eventKey);
+        state[now.date] = notified;
+        saveState(state, stateFile);
+      }
+      continue;
+    }
+
     // Mark as notified BEFORE sending — guarantees no duplicates even if the
     // process dies mid-send. On failure we roll back so the next cycle retries.
     notified.push(eventKey);
@@ -233,12 +274,15 @@ async function runWatcherCycle(opts = {}) {
       if (opts.dryRun) {
         log.log(`[watcher] (dry-run) would send to ${opts.userEmail || 'user'}:\n${text}\n`);
       } else {
-        log.log(`[Telegram] Sending attendance notification for user: ${opts.userId || '?'}`);
         await sendFn(text);
+        log.log(`[telegram] user=${opts.userId || '?'} notification sent kind=attendance_class`);
         log.log(`[watcher] 📲 sent: ${row.key} (${row.status}) — ${row.subject}`);
+        // Persistent audit/analytics row (never blocks delivery).
+        await db.recordNotification(opts.userId, 'attendance_class', { subject: row.subject }, log);
       }
       sent.push({ key: row.key, status: row.status, subject: row.subject });
     } catch (err) {
+      await db.deleteNotificationLog(opts.userId, dedupeKey);
       state[now.date] = (state[now.date] || []).filter((k) => k !== eventKey);
       saveState(state, stateFile);
       log.error(`[watcher] send FAILED for ${row.key}: ${err.message} — next cycle me retry hoga`);
@@ -255,7 +299,9 @@ async function runWatcherPass(log = console) {
     log.log('[watcher] koi user ka QUMS session linked nahi — pass skip.');
     return { users: 0 };
   }
-  log.log(`[watcher] pass started for ${users.length} user(s)...`);
+  log.log(`[watcher] pass started for ${users.length} user(s) (concurrency=${WATCH_CONCURRENCY})...`);
+  watcherStatus.fastLastRunAt = new Date().toISOString();
+  watcherStatus.fastLastUsers = users.length;
   const results = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
@@ -273,9 +319,12 @@ async function runWatcherPass(log = console) {
         roomByCode,
         userEmail: user.email,
       });
+      await db.touchUserSync(user.id, { attendance: true, error: '' });
+      log.log(`[attendance] user=${user.id} checked today's attendance`);
       results.push({ email: user.email, ...r });
     } catch (err) {
-      log.error(`[watcher] pass failed for ${user.email}: ${err.message}`);
+      log.error(`[attendance] user=${user.id} pass failed: ${err.message}`);
+      watcherStatus.fastLastError = err.message;
       results.push({ email: user.email, error: err.message });
     }
     // eslint-disable-next-line no-await-in-loop
@@ -291,38 +340,159 @@ async function runWatcherPass(log = console) {
 const MONTH_REGISTER_INTERVAL_MINUTES = Number(process.env.MONTH_REGISTER_INTERVAL_MINUTES) || 10;
 
 /**
- * Pure: kaunse month-register records naye hain?
- * (marked + known me na ho + in-batch dedupe + purane multi-lecture keys
- *  `date-CODE#1` ko group key `date-CODE` me migrate karta hai)
+ * TIERED Month Register monitoring (efficient, but nothing is silently missed).
+ *
+ *   Tier 1 — CURRENT month   : every cycle (MONTH_REGISTER_INTERVAL_MINUTES)
+ *   Tier 2 — PREVIOUS month  : every MONTH_REGISTER_RECENT_EVERY_CYCLES cycles
+ *   Tier 3 — OLDER months    : months 2..MONTH_REGISTER_MONTHS_BACK, every
+ *                              MONTH_REGISTER_OLDER_EVERY_HOURS hours
+ *
+ * MONTH_REGISTER_MONTHS_BACK is the TOTAL number of previous months that stay
+ * under monitoring (default 5 => the whole running semester is covered).
+ * 0 = current month only (minimal portal load).
+ *
+ * Rationale: a teacher editing a recent class is the common case, so the newest
+ * months are checked often; older months are still covered on a slow cadence,
+ * which is what prevents a delayed update from being missed entirely. All
+ * requests stay sequential (see scrapeMonthRegisterRange) and the tier clock is
+ * a single scheduler-level state file — per-user attendance state lives in the
+ * database and stays untouched by this cadence.
  */
-function pendingMonthNotifications(records, knownRecords) {
-  const known = new Set();
-  for (const r of knownRecords || []) {
-    if (!r || !r.key) continue;
-    known.add(r.key);
-    const hash = r.key.indexOf('#');
-    if (hash !== -1) known.add(r.key.slice(0, hash)); // migration: purana per-lecture key -> group key
-  }
-  const seen = new Set();
-  const out = [];
-  for (const rec of records || []) {
-    if (!rec || rec.status === 'unmarked') continue; // N / empty = not marked
-    if (!rec.key || known.has(rec.key) || seen.has(rec.key)) continue;
-    seen.add(rec.key);
-    out.push(rec);
-  }
-  return out;
-}
+const MONTH_REGISTER_MONTHS_BACK = Math.min(11, Math.max(0, Number(process.env.MONTH_REGISTER_MONTHS_BACK ?? 5) || 0));
+const MONTH_REGISTER_RECENT_EVERY_CYCLES = Math.max(1, Number(process.env.MONTH_REGISTER_RECENT_EVERY_CYCLES) || 2);
+const MONTH_REGISTER_OLDER_EVERY_HOURS = Math.max(1, Number(process.env.MONTH_REGISTER_OLDER_EVERY_HOURS) || 6);
+const MONTH_REGISTER_TIER_STATE_FILE = process.env.MONTH_REGISTER_TIER_STATE_FILE
+  ? path.resolve(process.env.MONTH_REGISTER_TIER_STATE_FILE)
+  : path.join(DATA_DIR, 'month_register_tier_state.json');
 
-/** Backdated alert message (spec format) — messages.formatBackdatedUpdate. */
-function buildBackdatedMessage(rec) {
-  return formatBackdatedUpdate(rec);
+/** Shift a civil month by delta months (handles the year boundary). */
+function shiftMonth(year, month, delta) {
+  let m = Number(month) + Number(delta);
+  let y = Number(year);
+  while (m < 1) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  return { year: y, month: m };
 }
 
 /**
- * One month-register cycle for ONE user: fetch current month (that user's
- * session), diff against their db known_attendance, send alerts to THEIR
- * number. First run (known empty) -> bootstrap seed, NO alerts.
+ * Pure: which months should this cycle scan? Returns { months, state } where
+ * `state` is the next tier-clock value to persist. No I/O — unit testable.
+ */
+function monthsToScanNow(now, state = {}, opts = {}) {
+  const back = opts.monthsBack != null ? opts.monthsBack : MONTH_REGISTER_MONTHS_BACK;
+  const recentEvery = opts.recentEveryCycles != null ? opts.recentEveryCycles : MONTH_REGISTER_RECENT_EVERY_CYCLES;
+  const olderEveryMs = (opts.olderEveryHours != null ? opts.olderEveryHours : MONTH_REGISTER_OLDER_EVERY_HOURS) * 60 * 60 * 1000;
+  const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
+  const [y, m] = String(now.date || '').split('-').map(Number);
+  const year = y || new Date(nowMs).getUTCFullYear();
+  const month = m || 1;
+
+  const cycle = Number(state.cycle || 0);
+  const months = [shiftMonth(year, month, 0)]; // Tier 1 — always
+  const next = { cycle: cycle + 1, olderAt: Number(state.olderAt || 0) };
+
+  if (back >= 1 && cycle % recentEvery === 0) months.push(shiftMonth(year, month, -1)); // Tier 2
+  if (back >= 2 && nowMs - next.olderAt >= olderEveryMs) {
+    // Tier 3 fires -> do a FULL historical sweep (current + every monitored month),
+    // so the pass that walks older months never skips the previous one.
+    if (back >= 1 && !months.some((m) => m.month === shiftMonth(year, month, -1).month)) months.push(shiftMonth(year, month, -1));
+    for (let i = 2; i <= back; i++) months.push(shiftMonth(year, month, -i));
+    next.olderAt = nowMs;
+  }
+  return { months, state: next };
+}
+
+function loadTierState() {
+  return loadState(MONTH_REGISTER_TIER_STATE_FILE);
+}
+function saveTierState(state) {
+  saveState(state, MONTH_REGISTER_TIER_STATE_FILE);
+}
+
+/**
+ * Status signature of a month-register record — the ACTUAL portal value.
+ *
+ * `statusRaw` is the literal cell text (e.g. `P`, `A`, `L`, `P,A` for two
+ * lectures in one day); `status` is the normalized label of the first lecture.
+ * Comparing this string is what makes Absent -> Present / Present -> Absent
+ * detectable. Nothing is guessed: only values the portal returned are used.
+ */
+function statusSignature(rec) {
+  if (!rec) return '';
+  const raw = rec.statusRaw != null && String(rec.statusRaw).trim() !== '' ? String(rec.statusRaw) : String(rec.status || '');
+  return raw.toUpperCase().replace(/\s+/g, '');
+}
+
+/**
+ * Pure: diff the month-register records against the user's stored state.
+ *
+ * Returns { pending, reseed }:
+ *   pending -> records that deserve a Telegram alert:
+ *                (a) NEW record (key never seen)  -> new Present OR new Absent
+ *                (b) CHANGED record (same key, different status signature)
+ *                    e.g. Absent -> Present, Present -> Absent
+ *              Unchanged record (same key + same status) -> NOT pending.
+ *   reseed  -> records already stored but with NO status signature (legacy
+ *              entries written before status-aware dedupe existed). These are
+ *              silently refreshed so that the NEXT real change alerts once —
+ *              an upgrade never produces a backlog alert storm.
+ *
+ * Legacy per-lecture keys (`date-CODE#1`) are migrated to the group key so
+ * an already-notified record can never re-alert after an upgrade.
+ */
+function monthRegisterDiff(records, knownRecords) {
+  const byKey = new Map();
+  for (const r of knownRecords || []) {
+    if (!r || !r.key) continue;
+    byKey.set(r.key, r);
+    const hash = r.key.indexOf('#');
+    if (hash !== -1 && !byKey.has(r.key.slice(0, hash))) byKey.set(r.key.slice(0, hash), r); // migration
+  }
+  const seen = new Set();
+  const pending = [];
+  const reseed = [];
+  for (const rec of records || []) {
+    if (!rec || rec.status === 'unmarked') continue; // N / empty = not marked
+    if (!rec.key || seen.has(rec.key)) continue; // in-batch dedupe
+    seen.add(rec.key);
+    const prev = byKey.get(rec.key);
+    if (!prev) {
+      pending.push(rec); // (a) brand-new (backdated) marking
+      continue;
+    }
+    const prevSig = statusSignature(prev);
+    if (!prevSig) {
+      reseed.push(rec); // legacy entry without a status -> silent refresh
+      continue;
+    }
+    if (prevSig !== statusSignature(rec)) pending.push(rec); // (b) status change
+  }
+  return { pending, reseed };
+}
+
+/**
+ * Backwards-compatible wrapper: only the alert-worthy records.
+ *  `date-CODE#1` ko group key `date-CODE` me migrate karta hai)
+ */
+function pendingMonthNotifications(records, knownRecords) {
+  return monthRegisterDiff(records, knownRecords).pending;
+}
+
+/** Backdated alert message (spec format) — messages.formatBackdatedUpdate. */
+function buildBackdatedMessage(rec, prev = null) {
+  return formatBackdatedUpdate(rec, prev);
+}
+
+/**
+ * One month-register cycle for ONE user: fetch the configured months (that
+ * user's session), diff against their db known_attendance, send alerts to
+ * THEIR own Telegram chat. First run (known empty) -> bootstrap seed, NO alerts.
+ *
+ * Multi-month (Phase 4): opts.fetchFn may return
+ *   - a single { year, month, records, summary } (kept for backwards compat), or
+ *   - an array of those — the watcher then checks every requested month
+ *     sequentially (see scrapeMonthRegisterRange / MONTH_REGISTER_MONTHS_BACK).
+ * Records carry a civil date in `key`, so months can never collide.
  */
 async function runMonthRegisterCycle(opts = {}) {
   const log = opts.log || console;
@@ -330,27 +500,59 @@ async function runMonthRegisterCycle(opts = {}) {
   const userId = opts.userId;
   if (!userId) throw new Error('runMonthRegisterCycle: userId required');
 
-  let result;
+  const user = await db.getUserById(userId);
+  const monitoringStartedDate = user
+    ? (user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : ''))
+    : '';
+  const qid = (user && user.qumsQid) || '';
+
+  let fetched;
   try {
-    result = await opts.fetchFn();
+    fetched = await opts.fetchFn();
   } catch (err) {
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
-      await maybeNotifySessionExpired(log, userId);
-    }
+    await handleCycleError(log, userId, err);
     throw err;
   }
 
-  const records = (result.records || []).filter((r) => r.status !== 'unmarked');
+  const months = (Array.isArray(fetched) ? fetched : [fetched]).filter(Boolean);
+  const records = months.flatMap((m) => (m.records || []).filter((r) => r.status !== 'unmarked'));
   const known = await db.listKnownAttendance(userId);
-  let pending = pendingMonthNotifications(records, known);
+  const diff = monthRegisterDiff(records, known);
+  let pending = diff.pending;
+
+  // ABSOLUTE RULE FOR OLD ATTENDANCE:
+  // If class_date < monitoring_started_date -> NEVER send an attendance notification.
+  // Setup date itself and later dates (class_date >= monitoring_started_date) are monitored.
+  const eligiblePending = [];
+  const olderToSilentlyStore = [];
+  for (const rec of pending) {
+    if (monitoringStartedDate && rec.date < monitoringStartedDate) {
+      olderToSilentlyStore.push(rec);
+    } else {
+      eligiblePending.push(rec);
+    }
+  }
+
+  // Any older or newly discovered historical records must be saved silently
+  // into known attendance & attendance_records so they don't trigger diffs in future cycles
+  if (olderToSilentlyStore.length) {
+    await db.upsertKnownAttendance(userId, olderToSilentlyStore);
+    for (const r of olderToSilentlyStore) {
+      if (r.date && r.subjectCode) {
+        await db.saveAttendanceRecord(userId, qid, r);
+      }
+    }
+  }
+
+  pending = eligiblePending;
 
   // Dup-alert guard: college hours ke ANDAR aaj ke marks FAST loop (5 min)
   // handle karta hai — month loop unhe skip karta hai (double alert na ho).
   // Bahar hours (evening/raat) fast loop soya hota hai, to month loop hi aaj
   // ke naye marks alert karta hai — par sirf wo jo fast loop ne din me pehle
   // alert na kar chuka ho (notified_periods se cross-check).
-  const todayIst = istNow();
-  const inHours = isWithinCollegeHours(todayIst.hourDecimal);
+  const todayIst = opts.now ? opts.now : istNow();
+  const inHours = opts.inHours !== undefined ? opts.inHours : isWithinCollegeHours(todayIst.hourDecimal);
   const fastNotifiedCodes = new Set(
     (loadState(stateFileFor(userId))[todayIst.date] || []).map(
       // fast-loop event key ab `P2-CODE:status` format me hai — cross-check ke
@@ -359,6 +561,7 @@ async function runMonthRegisterCycle(opts = {}) {
     )
   );
   pending = pending.filter((rec) => {
+    if (opts.includeToday || opts.force) return true;
     if (rec.date !== todayIst.date) return true; // backdated — hamesha eligible
     if (inHours) return false; // fast loop ki zimmedari
     return !fastNotifiedCodes.has(rec.subjectCode);
@@ -366,15 +569,26 @@ async function runMonthRegisterCycle(opts = {}) {
 
   // First run bootstrap: poore month ko silently seed karo — varna pehli
   // cycle me mahine bhar ke purane marks ki alert-storm chali jayegi.
+  // NOTE: baseline scan par purane records alert NAHI karte; uske baad har
+  // naya / badla (status-transition) record alert karta hai.
   const bootstrap = !known.length && records.length > 0;
-  if (bootstrap) pending = [];
+  if (bootstrap) {
+    pending = [];
+    await db.upsertKnownAttendance(userId, records);
+    for (const r of records) {
+      if (r.date && r.subjectCode) {
+        await db.saveAttendanceRecord(userId, qid, r);
+      }
+    }
+  }
 
   if (pending.length) {
     log.log(`[Watcher] Attendance change detected for user: ${userId}`);
   }
 
+  const monthLabel = months.map((m) => `${m.year}-${String(m.month).padStart(2, '0')}`).join(', ') || '—';
   log.log(
-    `[watcher] month-register ${result.year}-${String(result.month).padStart(2, '0')}${opts.userEmail ? ` (${opts.userEmail})` : ''} — ${records.length} marked records, ${pending.length} naye${bootstrap ? ' (BOOTSTRAP seed, koi alert nahi)' : ''}.`
+    `[watcher] month-register [${monthLabel}]${opts.userEmail ? ` (${opts.userEmail})` : ''} — ${records.length} marked records, ${pending.length} naye/badle${bootstrap ? ' (BOOTSTRAP seed, koi alert nahi)' : ''}.`
   );
 
   // Teacher + Room cross-match sirf tab (browser launch mehengi hai)
@@ -391,28 +605,83 @@ async function runMonthRegisterCycle(opts = {}) {
     }
   }
 
+  // Legacy entries without a stored status: refresh silently (no alert), so the
+  // very next real change is detected exactly once.
+  if (diff.reseed.length) await db.upsertKnownAttendance(userId, diff.reseed);
+
+  const knownByKey = new Map((await db.listKnownAttendance(userId)).filter((r) => r && r.key).map((r) => [r.key, r]));
+
   const sent = [];
   for (const rec of pending) {
-    const text = buildBackdatedMessage(rec);
-    // Mark-before-send: duplicates IMPOSSIBLE even if the process dies mid-send.
-    await db.addKnownAttendance(userId, [rec]);
+    const prevEntry = knownByKey.get(rec.key) || null;
+    const prevStatus = prevEntry ? (prevEntry.statusRaw || prevEntry.status || 'N') : 'N';
+    const nextStatus = rec.statusRaw || rec.status || 'present';
+
+    // PostgreSQL persistent deduplication scoped per user
+    const dedupeKey = `attendance_month:${qid}:${rec.date}:${rec.subjectCode}:${prevStatus}->${nextStatus}`;
+    const isNew = await db.tryRecordNotificationLog(userId, prevEntry ? 'attendance_changed' : 'attendance_backdated', dedupeKey, {
+      qid,
+      classDate: rec.date,
+      subjectCode: rec.subjectCode,
+      subject: rec.subject,
+      prevStatus,
+      newStatus: nextStatus,
+    });
+
+    if (!isNew) {
+      await db.upsertKnownAttendance(userId, [rec]);
+      if (rec.date && rec.subjectCode) {
+        await db.saveAttendanceRecord(userId, qid, rec);
+      }
+      continue;
+    }
+
+    const text = buildBackdatedMessage(rec, prevEntry);
+    await db.upsertKnownAttendance(userId, [rec]);
+    if (rec.date && rec.subjectCode) {
+      await db.saveAttendanceRecord(userId, qid, rec);
+    }
+
     try {
       if (opts.dryRun) {
         log.log(`[watcher] (dry-run) would send to ${opts.userEmail || 'user'}:\n${text}\n`);
       } else {
         await sendFn(text);
-        log.log(`[watcher] 📲 sent backdated: ${rec.key} (${rec.status}) — ${rec.subjectCode}${rec.teacher ? ` / ${rec.teacher}` : ''}`);
+        log.log(`[telegram] user=${userId} notification sent kind=${prevEntry ? 'attendance_changed' : 'attendance_backdated'}`);
+        log.log(`[watcher] 📲 sent backdated (${prevEntry ? 'changed' : 'new'}): ${rec.key} (${rec.status}) — ${rec.subjectCode}${rec.teacher ? ` / ${rec.teacher}` : ''}`);
+        await db.recordNotification(userId, prevEntry ? 'attendance_changed' : 'attendance_backdated', { subject: rec.subject, classDate: rec.date }, log);
       }
-      sent.push({ key: rec.key, status: rec.status, date: rec.date, subjectCode: rec.subjectCode });
+      sent.push({
+        key: rec.key,
+        kind: prevEntry ? 'changed' : 'new',
+        previousStatus: prevEntry ? statusSignature(prevEntry) : null,
+        status: rec.status,
+        statusRaw: rec.statusRaw,
+        date: rec.date,
+        subjectCode: rec.subjectCode,
+      });
     } catch (err) {
-      await db.removeKnownAttendance(userId, rec.key); // rollback — next cycle retry
+      await db.deleteNotificationLog(userId, dedupeKey);
+      // Rollback restores the PREVIOUS state (or removes a brand-new entry) so
+      // the next cycle retries the same alert exactly once.
+      if (prevEntry) await db.upsertKnownAttendance(userId, [prevEntry]);
+      else await db.removeKnownAttendance(userId, rec.key);
       log.error(`[watcher] send FAILED for ${rec.key}: ${err.message} — next cycle me retry hoga`);
     }
   }
 
-  if (bootstrap) await db.addKnownAttendance(userId, records);
+  if (bootstrap) await db.upsertKnownAttendance(userId, records);
 
-  return { skipped: false, bootstrap, year: result.year, month: result.month, totalMarked: records.length, notified: sent };
+  const first = months[0] || {};
+  return {
+    skipped: false,
+    bootstrap,
+    year: first.year,
+    month: first.month,
+    months: months.map((m) => `${m.year}-${String(m.month).padStart(2, '0')}`),
+    totalMarked: records.length,
+    notified: sent,
+  };
 }
 
 /**
@@ -463,7 +732,30 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     log.log('[watcher] month-register: koi user ka QUMS session linked nahi — pass skip.');
     return { users: 0 };
   }
-  log.log(`[watcher] month-register pass started for ${users.length} user(s)...`);
+
+  // TIERED schedule — decided ONCE per pass (same months for every user, so the
+  // portal sees a predictable, small number of requests).
+  let months;
+  if (Array.isArray(opts.months) && opts.months.length) {
+    months = opts.months; // explicit override (tests / manual scan)
+  } else {
+    const prev = loadTierState();
+    const plan = monthsToScanNow(istNow(), prev, {
+      monthsBack: opts.monthsBack != null ? opts.monthsBack : undefined,
+      recentEveryCycles: opts.recentEveryCycles,
+      olderEveryHours: opts.olderEveryHours,
+    });
+    months = plan.months;
+    if (!opts.dryRun) saveTierState(plan.state); // tier clock only advances on real passes
+  }
+  const monthKeys = months.map((m) => `${m.year}-${String(m.month).padStart(2, '0')}`);
+  watcherStatus.monthLastRunAt = new Date().toISOString();
+  watcherStatus.monthLastMonths = monthKeys;
+  log.log(
+    `[watcher] month-register pass started for ${users.length} user(s) — tiered scan: [${monthKeys.join(', ')}]` +
+      (opts.dryRun ? ' (dry-run: tier clock unchanged)' : '')
+  );
+
   const results = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
@@ -474,25 +766,31 @@ async function runMonthRegisterPass(log = console, opts = {}) {
         userId: user.id,
         userEmail: user.email,
         dryRun: !!opts.dryRun,
-        fetchFn: () => scrapeMonthRegister({ sessionPath: user.qumsSessionPath }),
+        fetchFn: () => scrapeMonthRegisterRange({ sessionPath: user.qumsSessionPath, months }),
         timetableFn: () => getTimetableCached(user.id, user.qumsSessionPath, log),
         sendFn: (text) => sendMessage(user.id, text),
       });
+      await db.touchUserSync(user.id, { attendance: true, error: '' });
+      log.log(`[attendance] user=${user.id} checked month register [${monthKeys.join(',')}]`);
       results.push({ email: user.email, ...r });
     } catch (err) {
-      log.error(`[watcher] month-register pass failed for ${user.email}: ${err.message}`);
+      log.error(`[attendance] user=${user.id} month-register failed: ${err.message}`);
+      watcherStatus.monthLastError = err.message;
       results.push({ email: user.email, error: err.message });
     }
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
   }
-  return { users: users.length, results };
+  return { users: users.length, months: monthKeys, results };
 }
 
 /** Arm the month-register (backdated) loop — startWatcher ke saath chalta hai. */
 function startMonthRegisterWatcher(log = console) {
   const minutes = MONTH_REGISTER_INTERVAL_MINUTES;
-  log.log(`[watcher] month-register loop armed — har ${minutes} min, current month, saare users`);
+  log.log(
+    `[watcher] month-register loop armed — every ${minutes} min | tiers: current month every cycle, previous month every ${MONTH_REGISTER_RECENT_EVERY_CYCLES} cycles, ` +
+      `months 2..${MONTH_REGISTER_MONTHS_BACK} every ${MONTH_REGISTER_OLDER_EVERY_HOURS}h (all users, sequential requests)`
+  );
   let busy = false;
   const timer = setInterval(async () => {
     if (busy) return;
@@ -509,9 +807,44 @@ function startMonthRegisterWatcher(log = console) {
 }
 
 /** Arm the continuous multi-user watcher (called from server.js). */
+/** Real worker status for the admin System Health panel (no fakes). */
+const watcherStatus = {
+  armed: false,
+  fastLastRunAt: null,
+  fastLastUsers: 0,
+  fastLastError: '',
+  monthLastRunAt: null,
+  monthLastMonths: [],
+  monthLastError: '',
+};
+function getWatcherStatus() { return { ...watcherStatus, concurrency: WATCH_CONCURRENCY }; }
+
+/**
+ * Bounded concurrency helper: at most `limit` users are scraped at a time, so a
+ * large user base can never open unlimited Playwright sessions at once.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const list = items || [];
+  const size = Math.max(1, Math.min(Number(limit) || 1, list.length || 1));
+  let cursor = 0;
+  const workers = Array.from({ length: size }, async () => {
+    while (cursor < list.length) {
+      const idx = cursor;
+      cursor += 1;
+      // eslint-disable-next-line no-await-in-loop
+      await fn(list[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/** How many users may be scraped in parallel (default 2, never unlimited). */
+const WATCH_CONCURRENCY = Math.max(1, Number(process.env.WATCHER_CONCURRENCY || 2));
+
 function startWatcher(log = console) {
   const minutes = Number(process.env.WATCH_INTERVAL_MINUTES) || 5;
-  log.log(`[watcher] armed — har ${minutes} min, college hours 08:30\u201317:00 IST, saare registered users`);
+  watcherStatus.armed = true;
+  log.log(`[watcher] armed — every ${minutes} min, college hours 08:30-17:00 IST, all registered users (concurrency=${WATCH_CONCURRENCY})`);
   let busy = false;
   const timer = setInterval(async () => {
     if (busy) return; // previous pass still running — skip this tick
@@ -521,7 +854,7 @@ function startWatcher(log = console) {
       if (isWithinCollegeHours(now.hourDecimal)) {
         await runWatcherPass(log);
       } else {
-        log.log(`[watcher] ${now.hhmm} IST — college hours ke bahar, pass skip.`);
+        log.log(`[watcher] ${now.hhmm} IST — outside college hours, pass skip.`);
       }
     } catch (err) {
       log.error(`[watcher] pass failed: ${err.name || 'Error'}: ${err.message}`);
@@ -529,7 +862,18 @@ function startWatcher(log = console) {
       busy = false;
     }
   }, minutes * 60 * 1000);
-  return timer;
+
+  // Part 5/6 — new-assignment notifications: separate loop (30 min default),
+  // armed together with the watcher so the scheduler stays untouched.
+  const assignments = require('./assignments');
+  const assignmentTimers = assignments.startAssignmentWatcher(log);
+
+  // BACKDATED (Month Register) loop — tiered historical scanning. This MUST be
+  // armed here: without it the backdated-attendance feature silently never runs
+  // in the deployed server (previously it was only reachable via the manual CLI).
+  const monthTimer = startMonthRegisterWatcher(log);
+
+  return [timer, monthTimer, ...assignmentTimers];
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +1033,8 @@ if (require.main === module) {
 
 module.exports = {
   startWatcher,
+  getWatcherStatus,
+  mapWithConcurrency,
   startMonthRegisterWatcher,
   runWatcherCycle,
   runWatcherPass,
@@ -697,10 +1043,20 @@ module.exports = {
   runBaselineForUser,
   pendingNotifications,
   pendingMonthNotifications,
+  monthRegisterDiff,
+  statusSignature,
   eventKeyFor,
   buildUpdateMessage,
   buildBackdatedMessage,
   MONTH_REGISTER_INTERVAL_MINUTES,
+  MONTH_REGISTER_MONTHS_BACK,
+  MONTH_REGISTER_RECENT_EVERY_CYCLES,
+  MONTH_REGISTER_OLDER_EVERY_HOURS,
+  MONTH_REGISTER_TIER_STATE_FILE,
+  monthsToScanNow,
+  shiftMonth,
+  loadTierState,
+  saveTierState,
   istNow,
   isWithinCollegeHours,
   stateFileFor,

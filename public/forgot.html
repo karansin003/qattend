@@ -14,26 +14,89 @@
       <input class="form-input" id="email" type="email" placeholder="tum@example.com" />
       <div id="msg" class="form-ok hidden"></div>
       <div id="error" class="form-error hidden"></div>
-      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Generate Reset Link</button></div>
-      <div class="auth-foot"><a href="/login">← back to login</a></div>
+      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Send Reset Email</button></div>
+      <div class="auth-foot"><a href="/login">← back to login</a> · <a href="/register">create a new account</a></div>
     </div>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+
+    /*
+     * FIREBASE — password-reset email is sent by Firebase Authentication
+     * (public web config only). The backend first confirms the email belongs
+     * to a registered application user; unregistered emails get no email.
+     */
+    const firebaseConfig = {
+      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
+      authDomain: "qums-forgot-password-test.firebaseapp.com",
+      projectId: "qums-forgot-password-test",
+      storageBucket: "qums-forgot-password-test.firebasestorage.app",
+      messagingSenderId: "823963861077",
+      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
+      measurementId: "G-17L8V2XLE7"
+    };
+
+    async function sendFirebaseResetEmail(email) {
+      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
+      const app = appMod.initializeApp(firebaseConfig);
+      const auth = authMod.getAuth(app);
+      await authMod.sendPasswordResetEmail(auth, email, {
+        url: `${location.origin}/reset`,
+        handleCodeInApp: false,
+      });
+    }
+
     $('btn').addEventListener('click', async () => {
       const btn = $('btn'); btn.disabled = true;
       $('error').classList.add('hidden'); $('msg').classList.add('hidden');
+      const email = $('email').value.trim().toLowerCase();
+      let backendRegistered = false;
       try {
-        const res = await fetch('/api/forgot', {
+        /*
+         * STEP 1 — backend: is this email a registered application user?
+         * Unregistered -> explicit error, NO reset email is sent.
+         */
+        const check = await fetch('/api/forgot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: $('email').value.trim() }),
+          credentials: 'same-origin',
+          body: JSON.stringify({ email }),
         });
-        const data = await res.json();
-        $('msg').textContent = data.message || (data.ok ? 'Reset link ban gaya.' : '');
+        const checkData = await check.json().catch(() => ({}));
+        backendRegistered = Boolean(checkData.registered);
+        if (!check.ok || !checkData.registered) {
+          $('error').textContent =
+            checkData.error ||
+            '❌ This email is not registered.\nPlease check your email address or create a new account.';
+          $('error').classList.remove('hidden');
+          return;
+        }
+
+        /*
+         * STEP 2 — registered: Firebase sends the reset email to the USER'S
+         * OWN address (continueUrl brings them back to our /reset page).
+         */
+        await sendFirebaseResetEmail(email);
+        $('msg').textContent = 'Password reset email sent. Please check your inbox.';
         $('msg').classList.remove('hidden');
       } catch (err) {
-        $('error').textContent = err.message; $('error').classList.remove('hidden');
+        const code = (err && err.code) || '';
+        if (code === 'auth/user-not-found' && backendRegistered) {
+          // Registered in the app but not yet linked to Firebase (legacy user).
+          $('error').textContent =
+            'This email is registered, but not yet linked to Firebase sign-in.\nPlease login once with your current password — the account links automatically — then you can reset your password.';
+        } else if (code === 'auth/user-not-found') {
+          $('error').textContent =
+            '❌ This email is not registered.\nPlease check your email address or create a new account.';
+        } else if (code === 'auth/too-many-requests') {
+          $('error').textContent = 'Too many requests. Please wait a while and try again.';
+        } else {
+          $('error').textContent =
+            'Could not send the reset email right now. Please try again shortly.';
+        }
+        $('error').classList.remove('hidden');
+        console.error('forgot-password error:', code || err.message);
       } finally { btn.disabled = false; }
     });
   </script>

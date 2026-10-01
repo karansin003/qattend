@@ -27,6 +27,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+
+// ---- hermetic test isolation (MUST run before any ../src require) ----
+// src/watcher.js pulls in dotenv + db, so without this the suite could hit the
+// developer's real PostgreSQL (local .env) instead of a throwaway JSON store.
+process.env.DB_FILE = process.env.DB_FILE || path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qattend-multiuser-')), 'db.json');
+process.env.DATABASE_URL = '';
+
 const watcher = require('../src/watcher');
 
 let failures = 0;

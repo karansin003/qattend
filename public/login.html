@@ -1,40 +1,132 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Login — QUMS Attendance Bot</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login — QAttend</title>
+  <meta name="description" content="Login to QAttend to view your QUMS attendance and manage your Telegram notifications." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="robots" content="noindex" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <div class="auth-bg auth-white">
     <div class="auth-card">
-      <h1>🎓 QUMS Attendance Bot</h1>
-      <div class="sub">login your account</div>
+      <div class="auth-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+      <p class="auth-tagline">Track. Alert. Stay Updated.</p>
+      <h1>Welcome back</h1>
+      <div class="sub">Login to your QAttend account.</div>
       <label class="form-label" for="email">Email</label>
-      <input class="form-input" id="email" type="email" placeholder="tum@example.com" autocomplete="username" />
+      <input class="form-input" id="email" type="email" placeholder="you@example.com" autocomplete="username" required />
       <label class="form-label" for="password">Password</label>
       <div class="pw-wrap">
-        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="current-password" />
-        <button type="button" class="pw-toggle" data-target="password">👁</button>
+        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+        <button type="button" class="pw-toggle" data-target="password" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
-      <div id="error" class="form-error hidden"></div>
-      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Login</button></div>
+      <div id="error" class="form-error hidden" role="alert" aria-live="polite"></div>
+      <div style="margin-top: 18px;"><button id="btn" type="button" style="width: 100%;">Login</button></div>
       <div class="auth-foot">
-        Account not found <a href="/register">Register Now</a> ·
-        <a href="/forgot">Password Forgot?</a>
+        Account not found? <a href="/register">Register Now</a> ·
+        <a href="/forgot">Forgot Password?</a>
+      </div>
+      <div class="auth-foot" style="margin-top: 8px;">
+        <a href="/">← Back to home</a>
       </div>
     </div>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+
+    /*
+     * FIREBASE AUTHENTICATION (Web SDK) — see register.html for the same loader.
+     * Firebase authenticates the user in the browser; the backend verifies the
+     * resulting ID token before opening the Express session.
+     */
+    const firebaseConfig = {
+      apiKey: "AIzaSyBdSmUAtwvEkeHOPRF-mSFpYJOPruVVPtU",
+      authDomain: "qums-forgot-password-test.firebaseapp.com",
+      projectId: "qums-forgot-password-test",
+      storageBucket: "qums-forgot-password-test.firebasestorage.app",
+      messagingSenderId: "823963861077",
+      appId: "1:823963861077:web:2e9d124cb105b7dda114dc",
+      measurementId: "G-17L8V2XLE7"
+    };
+
+    let firebaseSdk = null;
+
+    async function loadFirebase() {
+      if (firebaseSdk) return firebaseSdk;
+      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
+      const app = appMod.initializeApp(firebaseConfig);
+      firebaseSdk = { auth: authMod.getAuth(app), signInWithEmailAndPassword: authMod.signInWithEmailAndPassword };
+      return firebaseSdk;
+    }
+
+    function firebaseLoginErrorMessage(error) {
+      switch ((error && error.code) || '') {
+        case 'auth/invalid-credential':
+        case 'auth/wrong-password':
+        case 'auth/user-not-found':
+          return 'wrong email or password.';
+        case 'auth/invalid-email':
+          return 'Please enter a valid email address.';
+        case 'auth/user-disabled':
+          return 'This account has been disabled. Please contact the administrator.';
+        case 'auth/too-many-requests':
+          return 'Too many attempts. Please wait a while and try again.';
+        case 'auth/network-request-failed':
+          return 'Network problem. Please check your internet connection.';
+        default:
+          return 'Login failed. Please try again.';
+      }
+    }
+
     async function submit() {
       const btn = $('btn'); btn.disabled = true;
       $('error').classList.add('hidden');
+
+      const email = $('email').value.trim().toLowerCase();
+      const password = $('password').value;
+
+      /*
+       * STEP 1 — Authenticate with Firebase (password stays in the browser).
+       * Legacy users created before Firebase integration are still supported:
+       * if Firebase does not know the account, the backend bcrypt fallback runs.
+       */
+      let idToken = null;
+      try {
+        const fb = await loadFirebase();
+        const credential = await fb.signInWithEmailAndPassword(fb.auth, email, password);
+        idToken = await credential.user.getIdToken();
+      } catch (fbError) {
+        const code = (fbError && fbError.code) || '';
+        if (code.startsWith('auth/')) {
+          // Could be a pre-Firebase legacy account not yet in Firebase — let
+          // the backend's bcrypt fallback decide instead of erroring out now.
+          if (!['auth/user-not-found', 'auth/invalid-credential', 'auth/wrong-password'].includes(code)) {
+            $('error').textContent = firebaseLoginErrorMessage(fbError);
+            $('error').classList.remove('hidden');
+            btn.disabled = false;
+            return;
+          }
+        } else {
+          console.warn('Firebase SDK unavailable, using legacy login:', fbError);
+        }
+      }
+
+      /*
+       * STEP 2 — Backend verifies the ID token (or runs the bcrypt fallback)
+       * and creates the existing Express session.
+       */
       try {
         const res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: $('email').value.trim(), password: $('password').value }),
+          credentials: 'same-origin',
+          // password accompanies the token ONLY as ownership proof for linking
+          // a pre-Firebase account — the backend never stores it.
+          body: JSON.stringify(idToken ? { email, idToken, password } : { email, password }),
         });
         const data = await res.json();
         if (!res.ok) { $('error').textContent = data.error || 'Login fail'; $('error').classList.remove('hidden'); return; }
@@ -45,12 +137,17 @@
     }
     $('btn').addEventListener('click', submit);
     $('password').addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-    // password show/hide toggle
+    // password show/hide toggle with clean SVG icons (no weird emoji)
+    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
     document.querySelectorAll('.pw-toggle').forEach((b) =>
       b.addEventListener('click', () => {
         const el = document.getElementById(b.dataset.target);
-        el.type = el.type === 'password' ? 'text' : 'password';
-        b.textContent = el.type === 'password' ? '👁' : '🙈';
+        if (!el) return;
+        const isPw = el.type === 'password';
+        el.type = isPw ? 'text' : 'password';
+        b.innerHTML = isPw ? EYE_OFF_SVG : EYE_SVG;
+        b.setAttribute('aria-label', isPw ? 'Hide password' : 'Show password');
       })
     );
   </script>

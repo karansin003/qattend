@@ -18,7 +18,7 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 const db = require('./db');
-const { encryptSecret } = require('./crypto');
+const { encryptSecret, decryptSecret } = require('./crypto');
 const {
   isLoginLikeUrl,
   findLoginForm,
@@ -40,19 +40,77 @@ async function disposePending(userId) {
   if (!p) return;
   pending.delete(userId);
   if (p.timer) clearTimeout(p.timer);
+  // Wipe the in-memory credential copy immediately (never persisted anywhere).
+  p.password = '';
   try {
     await p.browser.close();
   } catch {}
+}
+
+// Navigation strategy for the QUMS portal:
+//   - The portal keeps long-running network requests open after the document
+//     arrives, and from some networks the response can be slow to start —
+//     'domcontentloaded' held page.goto for the FULL 60s timeout in that case.
+//   - 'commit' resolves as soon as the response starts arriving; we then wait
+//     explicitly for the login-form inputs the captcha flow actually needs.
+const LOGIN_NAV_TIMEOUT_MS = 45000; // bounded, not "huge"
+const LOGIN_FORM_WAIT_MS = 20000; // form may render late / inside an iframe
+
+/**
+ * Navigate to the QUMS login page and wait until the login form is REALLY
+ * usable (a frame with both a text input and a password input — the same
+ * condition findLoginForm requires). Returns the login frame, or throws a
+ * user-friendly error (no 60s hangs, no confusing downstream failures).
+ */
+async function gotoLoginPage(page) {
+  try {
+    await page.goto(LOGIN_URL, {
+      waitUntil: 'commit', // resolve at response start — don't wait for full DOM
+      timeout: LOGIN_NAV_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const e = new Error(
+      `QUMS portal tak navigation fail hua (${String(err.message || '').split('\n')[0]}).`
+    );
+    e.name = 'ScrapeError'; // server maps this to HTTP 502 + shows the hint
+    e.hint = 'Portal down hai ya network se reachable nahi — thodi der baad retry karo.';
+    throw e;
+  }
+
+  // Bounded poll: findLoginForm needs text+password inputs in SOME frame
+  // (the portal may render the form inside an iframe that loads a bit later).
+  const deadline = Date.now() + LOGIN_FORM_WAIT_MS;
+  while (Date.now() < deadline) {
+    const frame = await findLoginForm(page);
+    try {
+      const [textCount, passCount] = await Promise.all([
+        frame.locator('input[type="text"]').count(),
+        frame.locator('input[type="password"]').count(),
+      ]);
+      if (textCount > 0 && passCount > 0) return frame;
+    } catch {
+      /* frame detached mid-check — retry */
+    }
+    await page.waitForTimeout(500);
+  }
+
+  const e = new Error('QUMS login form load nahi hua (page khula par form nahi mila).');
+  e.name = 'ScrapeError';
+  e.hint = 'Portal slow hai ya markup badal gaya hai — thodi der baad retry karo.';
+  throw e;
 }
 
 async function openLoginFormPage() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
   const page = await context.newPage();
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(1500); // JS-rendered form settle
-  const frame = await findLoginForm(page);
-  return { browser, context, page, frame };
+  try {
+    const frame = await gotoLoginPage(page); // commit + explicit form wait
+    return { browser, context, page, frame };
+  } catch (err) {
+    await browser.close().catch(() => {});
+    throw err;
+  }
 }
 
 async function captureCaptchaFor(pendingLogin) {
@@ -69,44 +127,51 @@ async function captureCaptchaFor(pendingLogin) {
  * inputs se aata hai. RECONNECT me credsOverride NAHI do: DB se decrypt karke
  * auto-fill hota hai, user ko QID/password dobara nahi poochhe jaate.
  */
-async function startQumsLogin(userId, credsOverride, log = console) {
-  let qid;
-  let password;
+async function startQumsLogin(userId, credsInput, log = console) {
   const user = await db.getUserById(userId);
-  if (credsOverride && credsOverride.qid && credsOverride.password) {
-    qid = String(credsOverride.qid).trim();
-    password = String(credsOverride.password);
-  } else {
-    if (!user || !user.qumsQid || !user.qumsPasswordEncrypted) {
-      const e = new Error('QID/Password DB me saved nahi hain — pehli baar setup me QID + password daalo.');
-      e.name = 'QumsCredsMissing';
-      e.hint = 'Pehli baar setup: QID + password fields dikhao. Reconnect: pehle ek baar setup complete hona chahiye.';
-      throw e;
+  let qid = String((credsInput && credsInput.qid) || (user && user.qumsQid) || '').trim();
+  let password = credsInput && credsInput.password ? String(credsInput.password) : '';
+
+  // If password was not passed, use saved encrypted password from DB
+  if (!password && user) {
+    const savedEncrypted = user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(userId));
+    if (savedEncrypted) {
+      password = decryptSecret(savedEncrypted) || '';
     }
-    qid = user.qumsQid;
-    password = decryptStored(user); // DB se decrypt — frontend se kabhi nahi
-    if (!password) {
-      const e = new Error('QUMS password decrypt nahi hua (ENCRYPTION_KEY galat/change ho gaya?).');
-      e.name = 'DecryptError';
-      e.hint = 'ENCRYPTION_KEY check karo — ya QID + password dobara daal ke setup complete karo.';
-      throw e;
-    }
+  }
+
+  const confirmSwitch = Boolean(credsInput && credsInput.confirmSwitch);
+  if (!qid || !password) {
+    const e = new Error('Please enter your QUMS QID and password.');
+    e.name = 'QumsCredsRequired';
+    e.hint = 'Enter your QID and password once. They will remain securely saved until you reset or delete your connection.';
+    throw e;
+  }
+
+  // Detect identity change: if current active QID is different, require confirmation
+  if (user && user.qumsQid && user.qumsQid !== qid && !confirmSwitch) {
+    const err = new Error(`A different QUMS student ID was detected (old: ${user.qumsQid}, new: ${qid}). Explicit confirmation required before switching active QUMS identity.`);
+    err.name = 'IdentityConflictError';
+    err.code = 'IdentityConflict';
+    err.oldQid = user.qumsQid;
+    err.newQid = qid;
+    throw err;
   }
 
   await disposePending(userId); // koi purana pending ho to clean
   const { browser, context, page, frame } = await openLoginFormPage();
   try {
     await autofillCredentials(frame, qid, password);
-    // qid/password sirf IN-MEMORY pending object me rakhte hain (captcha-retry
-    // ke liye) — kabhi disk pe plain store nahi karte.
+    // qid/password sirf IN-MEMORY pending object me (captcha-retry ke liye).
     const pendingLogin = {
       browser,
       context,
       page,
       frame,
       startedAt: Date.now(),
-      qid: String(qid || '').trim(),
-      password: String(password || ''),
+      qid,
+      password,
+      confirmSwitch,
     };
     const captchaImage = await captureCaptchaFor(pendingLogin);
     pendingLogin.timer = setTimeout(() => {
@@ -150,6 +215,7 @@ async function submitQumsCaptcha(userId, captchaText, log = console) {
       startedAt: Date.now(),
       qid: p.qid,
       password: p.password,
+      confirmSwitch: p.confirmSwitch,
     };
     const captchaImage = await captureCaptchaFor(newPending);
     newPending.timer = setTimeout(() => {
@@ -167,27 +233,86 @@ async function submitQumsCaptcha(userId, captchaText, log = console) {
   await p.page.waitForTimeout(2000); // post-login JS settle
   const sessionPath = db.sessionPathFor(userId);
   await p.context.storageState({ path: sessionPath });
-  await disposePending(userId);
+  const pendingPassword = p.password;
+  await disposePending(userId); // also wipes the in-memory password
 
-  // Persist QID + encrypted password + session path — setup COMPLETE.
-  await completeQumsSetup(userId, p.qid, p.password);
-  log.log(`[qums-login] QUMS session saved for user ${userId} -> ${sessionPath}`);
-  return { ok: true, sessionPath };
-}
+  const user = await db.getUserById(userId);
+  const isDifferentQid = Boolean(user && user.qumsQid && user.qumsQid !== p.qid);
+  const isFirstTime = !user || (!user.monitoringStartedDate && !user.monitoringStartedAt) || isDifferentQid;
 
-/** helper: decrypt stored password (only needed for legacy re-use) */
-function decryptStored(user) {
-  const { decryptSecret } = require('./crypto');
-  return decryptSecret(user.qumsPasswordEncrypted) || '';
-}
-
-/** Persist qid + encrypted password + session path for the user. */
-function completeQumsSetup(userId, qid, plainPassword) {
-  return db.updateUser(userId, {
-    qumsQid: String(qid || '').trim(),
-    qumsPasswordEncrypted: encryptSecret(plainPassword),
-    qumsSessionPath: db.sessionPathFor(userId),
+  // Persist QID + session path + encrypted password
+  await completeQumsSetup(userId, p.qid, {
+    password: pendingPassword,
+    confirmSwitch: p.confirmSwitch,
   });
+  log.log(`[qums-login] QUMS session saved for user ${userId} -> ${sessionPath}`);
+
+  // QUMS is the source of truth for identity: fetch the displayed name and the
+  // current Year/Sem right after a successful login/reconnect (cache refresh).
+  let profile = { studentName: '', yearSem: '' };
+  try {
+    profile = await require('./scraper').fetchQumsProfile(sessionPath, log);
+    const patch = {};
+    if (profile.studentName) patch.studentName = profile.studentName;
+    if (profile.yearSem) patch.qumsYearSem = profile.yearSem;
+    if (Object.keys(patch).length) await db.updateUser(userId, patch);
+    await db.touchUserSync(userId, { profile: true, error: '' });
+    await db.clearSessionExpiry(userId);
+    log.log(`[qums-login] profile synced from QUMS (user ${userId}, yearSem=${profile.yearSem || 'unknown'}).`);
+  } catch (err) {
+    // Name/YearSem are a cache: a lookup failure must never fail the login.
+    log.log(`[qums-login] profile fetch skipped: ${err.name || 'Error'}: ${err.message}`);
+  }
+
+  // Baseline vs Reconnect catch-up:
+  try {
+    const catchup = require('./catchup');
+    if (isFirstTime) {
+      log.log(`[qums-login] initializing silent baseline for user ${userId} (QID ${p.qid})...`);
+      await catchup.initializeSilentBaseline(userId, sessionPath, log);
+    } else {
+      log.log(`[qums-login] running reconnect catch-up for user ${userId} (QID ${p.qid})...`);
+      await catchup.runReconnectCatchup(userId, sessionPath, log);
+    }
+  } catch (err) {
+    log.log(`[qums-login] baseline/catch-up deferred: ${err.message}`);
+  }
+
+  return { ok: true, sessionPath, studentName: profile.studentName || '', yearSem: profile.yearSem || '' };
+}
+
+/**
+ * Persist the QID + session path + encrypted password for the user.
+ */
+async function completeQumsSetup(userId, qid, { password, confirmSwitch = false } = {}) {
+  const user = await db.getUserById(userId);
+  const isDifferentQid = Boolean(user && user.qumsQid && user.qumsQid !== qid);
+  const isFirstTime = !user || (!user.monitoringStartedDate && !user.monitoringStartedAt) || isDifferentQid;
+
+  const patch = {
+    qumsQid: String(qid || '').trim(),
+    qumsSessionPath: db.sessionPathFor(userId),
+    qumsSessionStatus: 'active',
+  };
+
+  if (password) {
+    try {
+      patch.qumsPasswordEncrypted = encryptSecret(password);
+    } catch (err) {
+      console.error('[qums-login] password encryption failed:', err.message);
+    }
+  }
+
+  if (isFirstTime) {
+    patch.monitoringStartedDate = db.getIstDateString();
+    patch.monitoringStartedAt = new Date().toISOString();
+  }
+
+  await db.updateUser(userId, patch);
+  await db.switchQumsIdentity(userId, qid, {
+    monitoringStartedDate: patch.monitoringStartedDate || (user && user.monitoringStartedDate) || db.getIstDateString(),
+  });
+  return db.getUserById(userId);
 }
 
 function hasPendingLogin(userId) {

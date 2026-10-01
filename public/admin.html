@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Dashboard — QAttend</title>
+  <meta name="description" content="QAttend administration and system health monitoring." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="robots" content="noindex" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    .admin-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+    .admin-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: var(--card-bg, #ffffff);
+      border: 1px solid var(--border, #e2e8f0);
+      border-radius: 12px;
+      padding: 16px 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .metric-num {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--primary, #1e3a8a);
+      margin-top: 4px;
+    }
+    .metric-label {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted, #64748b);
+    }
+    .health-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .health-card {
+      background: var(--card-bg, #ffffff);
+      border: 1px solid var(--border, #e2e8f0);
+      border-radius: 12px;
+      padding: 16px 20px;
+    }
+    .health-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .health-title {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .health-detail {
+      font-size: 12px;
+      color: var(--muted, #64748b);
+      line-height: 1.5;
+    }
+    .filter-bar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+    .filter-bar input[type="search"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 8px 12px;
+      border: 1px solid var(--border, #cbd5e1);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .filter-bar select {
+      padding: 8px 12px;
+      border: 1px solid var(--border, #cbd5e1);
+      border-radius: 8px;
+      font-size: 14px;
+      background: #fff;
+    }
+    .pagination-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border, #e2e8f0);
+    }
+    .badge-ok {
+      background: #dcfce7;
+      color: #166534;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+    .badge-warn {
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+    .badge-off {
+      background: #f1f5f9;
+      color: #64748b;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+    .badge-err {
+      background: #fee2e2;
+      color: #991b1b;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 8px;
+      border: 1px solid var(--border, #e2e8f0);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+    th, td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border, #e2e8f0);
+      vertical-align: middle;
+    }
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: var(--muted, #475569);
+      white-space: nowrap;
+    }
+    tbody tr:hover {
+      background: #f8fafc;
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand brand-link" href="/dashboard">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend Admin</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/admin" class="active">Admin</a>
+      <a href="/qums-setup">QUMS Setup</a>
+      <a href="/telegram-setup">Telegram</a>
+    </nav>
+    <div class="nav-actions">
+      <a href="/logout" class="nav-logout">Logout</a>
+    </div>
+  </header>
+
+  <main class="admin-container">
+    <div class="admin-header">
+      <div>
+        <h1 style="margin: 0; font-size: 24px;">Admin Portal &amp; System Health</h1>
+        <div style="font-size: 13px; color: var(--muted, #64748b); margin-top: 4px;">
+          Live system status, background watchers, and user synchronization metrics
+        </div>
+      </div>
+      <div>
+        <button id="refreshAllBtn" type="button" class="btn" style="padding: 8px 14px; font-size: 13px;">↻ Refresh Data</button>
+      </div>
+    </div>
+
+    <!-- Summary Metrics -->
+    <div class="metric-grid">
+      <div class="metric-card">
+        <div class="metric-label">Total Users</div>
+        <div class="metric-num" id="statTotalUsers">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">QUMS Connected</div>
+        <div class="metric-num" id="statQumsConnected" style="color: #059669;">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Session Expired</div>
+        <div class="metric-num" id="statSessionExpired" style="color: #d97706;">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Telegram Linked</div>
+        <div class="metric-num" id="statTelegramConnected" style="color: #2563eb;">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Notifications Sent</div>
+        <div class="metric-num" id="statNotificationsSent">—</div>
+      </div>
+    </div>
+
+    <!-- System Health Cards -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="section-title">System Health &amp; Background Services</div>
+      <div class="health-grid" style="margin-top: 14px;">
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">Database</span>
+            <span id="healthDbBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthDbDetail">Connecting to database…</div>
+        </div>
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">Telegram Bot</span>
+            <span id="healthTgBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthTgDetail">Checking bot status…</div>
+        </div>
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">Attendance Watcher</span>
+            <span id="healthWatcherBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthWatcherDetail">Checking watcher cycles…</div>
+        </div>
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">Assignment Watcher</span>
+            <span id="healthAssignmentBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthAssignmentDetail">Checking assignment loop…</div>
+        </div>
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">8:30 AM Scheduler</span>
+            <span id="healthSchedulerBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthSchedulerDetail">Asia/Kolkata morning job</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Users Management Table -->
+    <div class="card">
+      <div class="section-title">User Accounts</div>
+      <div class="filter-bar" style="margin-top: 14px;">
+        <input type="search" id="searchInput" placeholder="Search by name, email, or QID…" autocomplete="off" />
+        <select id="filterSelect">
+          <option value="all">All Users</option>
+          <option value="qums_connected">QUMS Connected</option>
+          <option value="session_expired">Session Expired</option>
+          <option value="telegram_connected">Telegram Connected</option>
+        </select>
+        <span id="userCountBadge" style="font-size: 13px; color: var(--muted); margin-left: auto;">Showing 0 users</span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Student Name</th>
+              <th>Email</th>
+              <th>QID</th>
+              <th>QUMS Session</th>
+              <th>Telegram</th>
+              <th>Attendance Last Checked</th>
+              <th>Assignment Last Checked</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody id="userTableBody">
+            <tr><td colspan="8" style="text-align:center; padding: 24px; color: var(--muted);">Loading users…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination-bar">
+        <button id="prevPageBtn" type="button" class="btn" style="padding: 6px 12px; font-size: 13px;" disabled>&larr; Previous</button>
+        <span id="pageIndicator" style="font-size: 13px; color: var(--muted);">Page 1 of 1</span>
+        <button id="nextPageBtn" type="button" class="btn" style="padding: 6px 12px; font-size: 13px;" disabled>Next &rarr;</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let currentPage = 1;
+    let totalPages = 1;
+    let searchDebounce = null;
+
+    function formatTime(iso) {
+      if (!iso) return 'Not synced yet';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return 'Not synced yet';
+        return d.toLocaleString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          day: 'numeric',
+          month: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+        }) + ' IST';
+      } catch {
+        return 'Not synced yet';
+      }
+    }
+
+    async function loadHealth() {
+      try {
+        const res = await fetch('/api/admin/health');
+        if (res.status === 401 || res.status === 403) {
+          location.href = '/login?next=/admin';
+          return;
+        }
+        const data = await res.json();
+        if (!data.ok) return;
+
+        // Stats
+        const s = data.stats || {};
+        document.getElementById('statTotalUsers').textContent = s.totalUsers != null ? s.totalUsers : '0';
+        document.getElementById('statQumsConnected').textContent = s.qumsConnected != null ? s.qumsConnected : '0';
+        document.getElementById('statSessionExpired').textContent = s.sessionExpired != null ? s.sessionExpired : '0';
+        document.getElementById('statTelegramConnected').textContent = s.telegramConnected != null ? s.telegramConnected : '0';
+        const notifCount = (s.notificationsSent && s.notificationsSent.total != null) ? s.notificationsSent.total : '0';
+        document.getElementById('statNotificationsSent').textContent = notifCount;
+
+        // Database health
+        const db = data.database || {};
+        const dbBadge = document.getElementById('healthDbBadge');
+        if (db.ping && db.ping.ok) {
+          dbBadge.className = 'badge-ok';
+          dbBadge.textContent = 'ONLINE';
+          document.getElementById('healthDbDetail').textContent = `Mode: ${db.mode || 'postgres'} (${db.ping.latencyMs}ms latency)`;
+        } else {
+          dbBadge.className = 'badge-err';
+          dbBadge.textContent = 'ERROR';
+          document.getElementById('healthDbDetail').textContent = db.ping ? (db.ping.error || 'Connection failed') : 'Unavailable';
+        }
+
+        // Telegram health
+        const tg = data.telegram || {};
+        const tgBadge = document.getElementById('healthTgBadge');
+        if (tg.configured && tg.ready) {
+          tgBadge.className = 'badge-ok';
+          tgBadge.textContent = 'POLLING';
+          document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (ready)`;
+        } else if (tg.configured) {
+          tgBadge.className = 'badge-warn';
+          tgBadge.textContent = 'SEND-ONLY';
+          document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (configured)`;
+        } else {
+          tgBadge.className = 'badge-off';
+          tgBadge.textContent = 'DISABLED';
+          document.getElementById('healthTgDetail').textContent = 'TELEGRAM_BOT_TOKEN missing';
+        }
+
+        // Attendance Watcher health
+        const w = data.watcher || {};
+        const wBadge = document.getElementById('healthWatcherBadge');
+        if (w.armed) {
+          wBadge.className = 'badge-ok';
+          wBadge.textContent = 'ACTIVE';
+          const fastRun = w.fastLastRunAt ? formatTime(w.fastLastRunAt) : 'Waiting for college hours';
+          document.getElementById('healthWatcherDetail').textContent = `Fast loop: ${fastRun}`;
+        } else {
+          wBadge.className = 'badge-off';
+          wBadge.textContent = 'STANDBY';
+          document.getElementById('healthWatcherDetail').textContent = 'Watcher idle';
+        }
+
+        // Assignment Watcher health
+        const as = data.assignments || {};
+        const asBadge = document.getElementById('healthAssignmentBadge');
+        if (as.armed) {
+          asBadge.className = 'badge-ok';
+          asBadge.textContent = 'ACTIVE';
+          const lastCheck = as.lastNewAt ? formatTime(as.lastNewAt) : 'Periodic 30m check';
+          document.getElementById('healthAssignmentDetail').textContent = `Last check: ${lastCheck}`;
+        } else {
+          asBadge.className = 'badge-off';
+          asBadge.textContent = 'STANDBY';
+          document.getElementById('healthAssignmentDetail').textContent = 'Assignment loop idle';
+        }
+
+        // Scheduler health
+        const sc = data.scheduler || {};
+        const scBadge = document.getElementById('healthSchedulerBadge');
+        scBadge.className = 'badge-ok';
+        scBadge.textContent = 'SCHEDULED';
+        document.getElementById('healthSchedulerDetail').textContent = '08:30 IST morning classes (Asia/Kolkata)';
+      } catch (err) {
+        console.error('Failed to load health:', err);
+      }
+    }
+
+    async function loadUsers() {
+      const search = document.getElementById('searchInput').value.trim();
+      const filter = document.getElementById('filterSelect').value;
+      const tbody = document.getElementById('userTableBody');
+
+      try {
+        const query = new URLSearchParams({
+          search,
+          filter,
+          page: String(currentPage),
+          limit: '25'
+        });
+        const res = await fetch(`/api/admin/users?${query.toString()}`);
+        if (res.status === 401 || res.status === 403) {
+          location.href = '/login?next=/admin';
+          return;
+        }
+        const data = await res.json();
+        const users = data.users || [];
+        totalPages = data.pages || 1;
+        currentPage = data.page || 1;
+
+        document.getElementById('userCountBadge').textContent = `Showing ${users.length} of ${data.total || 0} user(s)`;
+        document.getElementById('pageIndicator').textContent = `Page ${currentPage} of ${totalPages}`;
+        document.getElementById('prevPageBtn').disabled = currentPage <= 1;
+        document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
+
+        tbody.innerHTML = '';
+        if (users.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 24px; color: var(--muted);">No users found matching current filters.</td></tr>';
+          return;
+        }
+
+        for (const u of users) {
+          const tr = document.createElement('tr');
+
+          // Student Name + YearSem
+          const tdName = document.createElement('td');
+          const nameSpan = document.createElement('div');
+          nameSpan.style.fontWeight = '600';
+          nameSpan.textContent = u.studentName || '—';
+          tdName.appendChild(nameSpan);
+          if (u.qumsYearSem) {
+            const semBadge = document.createElement('span');
+            semBadge.className = 'badge-off';
+            semBadge.style.fontSize = '10px';
+            semBadge.style.marginTop = '2px';
+            semBadge.textContent = u.qumsYearSem;
+            tdName.appendChild(semBadge);
+          }
+          tr.appendChild(tdName);
+
+          // Email
+          const tdEmail = document.createElement('td');
+          tdEmail.textContent = u.email || '—';
+          if (u.isAdmin) {
+            const adminTag = document.createElement('span');
+            adminTag.className = 'badge-warn';
+            adminTag.style.marginLeft = '6px';
+            adminTag.style.fontSize = '10px';
+            adminTag.textContent = 'ADMIN';
+            tdEmail.appendChild(adminTag);
+          }
+          tr.appendChild(tdEmail);
+
+          // QID
+          const tdQid = document.createElement('td');
+          tdQid.textContent = u.qumsQid || '—';
+          tr.appendChild(tdQid);
+
+          // QUMS Session
+          const tdQums = document.createElement('td');
+          const qumsBadge = document.createElement('span');
+          if (u.sessionExpired) {
+            qumsBadge.className = 'badge-warn';
+            qumsBadge.textContent = '⚠️ EXPIRED';
+          } else if (u.qumsConnected) {
+            qumsBadge.className = 'badge-ok';
+            qumsBadge.textContent = 'CONNECTED';
+          } else {
+            qumsBadge.className = 'badge-off';
+            qumsBadge.textContent = 'NOT SETUP';
+          }
+          tdQums.appendChild(qumsBadge);
+          tr.appendChild(tdQums);
+
+          // Telegram
+          const tdTg = document.createElement('td');
+          const tgBadge = document.createElement('span');
+          if (u.telegramConnected) {
+            tgBadge.className = 'badge-ok';
+            tgBadge.textContent = 'LINKED';
+          } else {
+            tgBadge.className = 'badge-off';
+            tgBadge.textContent = 'NOT LINKED';
+          }
+          tdTg.appendChild(tgBadge);
+          tr.appendChild(tdTg);
+
+          // Attendance Last Checked
+          const tdAtt = document.createElement('td');
+          tdAtt.textContent = formatTime(u.attendanceLastCheckedAt);
+          tr.appendChild(tdAtt);
+
+          // Assignment Last Checked
+          const tdAsn = document.createElement('td');
+          tdAsn.textContent = formatTime(u.assignmentLastCheckedAt);
+          tr.appendChild(tdAsn);
+
+          // Created At
+          const tdCreated = document.createElement('td');
+          tdCreated.textContent = formatTime(u.createdAt);
+          tr.appendChild(tdCreated);
+
+          tbody.appendChild(tr);
+        }
+      } catch (err) {
+        console.error('Failed to load users:', err);
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color: #dc2626; padding: 24px;">Failed to load users: ${err.message}</td></tr>`;
+      }
+    }
+
+    document.getElementById('searchInput').addEventListener('input', () => {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        currentPage = 1;
+        loadUsers();
+      }, 300);
+    });
+
+    document.getElementById('filterSelect').addEventListener('change', () => {
+      currentPage = 1;
+      loadUsers();
+    });
+
+    document.getElementById('prevPageBtn').addEventListener('click', () => {
+      if (currentPage > 1) {
+        currentPage--;
+        loadUsers();
+      }
+    });
+
+    document.getElementById('nextPageBtn').addEventListener('click', () => {
+      if (currentPage < totalPages) {
+        currentPage++;
+        loadUsers();
+      }
+    });
+
+    document.getElementById('refreshAllBtn').addEventListener('click', () => {
+      loadHealth();
+      loadUsers();
+    });
+
+    loadHealth();
+    loadUsers();
+  </script>
+</body>
+</html>

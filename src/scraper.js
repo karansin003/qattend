@@ -13,6 +13,20 @@ const TIMETABLE_URL =
   process.env.QUMS_TIMETABLE_URL ||
   'https://qums.quantumuniversity.edu.in/Web_StudentAcademic/Cyborg_StudentTimeTable?id=Time%20Table';
 const ATTENDANCE_API = '/Web_StudentAcademic/GetYearSemWiseAttendance';
+// QUMS student-detail API (live-probed): POST { RegID } ->
+// { state: "[{ RegID, StudentID, EnrollmentNo, StudentName, ... }]" }
+const STUDENT_DETAIL_API = '/Web_StudentAcademic/GetStudentDetailOnRegID';
+// QUMS assignment page + its AJAX API (from Cyborg_StudentAssignment?id=Assignment):
+//   POST /Web_StudentAcademic/GetStudentAssignment { RegID }
+//     -> { state:  "[...assignment rows: AssignID, AssignmentDetailID, ASSIGNMENT
+//                   (title), ASSIGNMENTSUBJECT, CLASSSUBJECT, EMPLOYEENAME,
+//                   Assignmenttype, DATEFROM, DATETO (submit/deadline), UploadFlag...]",
+//          state2: "[...study-material/assignment-detail rows: AssignmentDetailID,
+//                   Subject (title), ASSIGNMENTSUBJECT, CLASSSUBJECT, EMPLOYEENAME...]" }
+const ASSIGNMENT_PAGE_URL =
+  process.env.QUMS_ASSIGNMENT_URL ||
+  'https://qums.quantumuniversity.edu.in/Web_StudentAcademic/Cyborg_StudentAssignment?id=Assignment';
+const ASSIGNMENT_API = '/Web_StudentAcademic/GetStudentAssignment';
 
 class ScrapeError extends Error {
   constructor(message, hint) {
@@ -25,22 +39,50 @@ class SessionExpiredError extends Error {
   constructor() {
     super('QUMS session expired — the portal returned the login page.');
     this.name = 'SessionExpiredError';
-    this.hint = 'Dashboard → QUMS Setup → "Reconnect QUMS" — sirf captcha solve karna hai';
+    this.hint = 'Dashboard → QUMS Setup → "Reconnect QUMS" — you only need to solve the captcha.';
+  }
+}
+/**
+ * QUMS could not be reached (DNS/socket/timeout/5xx/portal maintenance).
+ * IMPORTANT: this is NOT a session expiry. Watchers must not mark the session
+ * expired or spam the user with a reconnect alert for a temporary outage —
+ * they retry on the next cycle instead.
+ */
+class QumsUnreachableError extends Error {
+  constructor(message, cause) {
+    super(message || 'QUMS portal is unreachable right now.');
+    this.name = 'QumsUnreachableError';
+    this.cause = cause || null;
+    this.hint = 'Portal down ya network issue — thodi der baad agla cycle retry karega.';
   }
 }
 class NoSessionError extends Error {
   constructor() {
     super('No saved QUMS session found (session_state.json missing).');
     this.name = 'NoSessionError';
-    this.hint = 'Dashboard → QUMS Setup → pehli baar QID/password + captcha se setup karo';
+    this.hint = 'Dashboard → QUMS Setup → run the one-time QID/password + captcha login.';
   }
 }
 
+/** Network-level failures (never an authentication signal). */
+function isNetworkError(err) {
+  const m = String((err && err.message) || '').toLowerCase();
+  return (
+    err instanceof QumsUnreachableError ||
+    /econnrefused|econnreset|etimedout|eai_again|enotfound|socket hang up|network|timeout|timed out|fetch failed|aborted|502|503|504/.test(m)
+  );
+}
+
+
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
-function assertSessionFile(sessionPath = SESSION_FILE) {
+function assertSessionFile(sessionPath) {
+  if (!sessionPath || typeof sessionPath !== 'string') {
+    const e = new NoSessionError('No QUMS session path provided.');
+    throw e;
+  }
   if (!fs.existsSync(sessionPath)) {
-    const e = new NoSessionError();
+    const e = new NoSessionError(`QUMS session file does not exist: ${sessionPath}`);
     e.sessionPath = sessionPath;
     throw e;
   }
@@ -73,7 +115,7 @@ async function throwIfLoginPage(page) {
 
 /** Fetch the dashboard page and pull out the embedded RegID + selected Year/Sem. */
 async function getStudentContext(apiContext) {
-  const resp = await apiContext.get(DASHBOARD_URL, { timeout: 60000 });
+  const resp = await apiGet(apiContext, DASHBOARD_URL, { timeout: 60000 });
 
   if (!resp.ok()) {
     throw new ScrapeError(
@@ -109,7 +151,7 @@ async function getStudentContext(apiContext) {
 
   for (let sem = 1; sem <= 8; sem++) {
     try {
-      const attendanceResp = await apiContext.post(ATTENDANCE_API, {
+      const attendanceResp = await apiPost(apiContext, ATTENDANCE_API, {
         form: { RegID: regId, YearSem: String(sem) },
         timeout: 60000,
       });
@@ -169,10 +211,39 @@ async function getStudentContext(apiContext) {
       : '')
   );
 
+  // Part 1 — student's real name from QUMS (GetStudentDetailOnRegID).
+  // Best-effort: a name lookup failure must NEVER break attendance scraping.
+  let studentName = '';
+  try {
+    let detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+      data: { RegID: String(regId) },
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
+      timeout: 30000,
+    }).catch(() => null);
+    if (!detailResp || !detailResp.ok()) {
+      detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+        form: { RegID: String(regId) },
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        timeout: 30000,
+      }).catch(() => null);
+    }
+    if (detailResp && detailResp.ok()) {
+      const detailRaw = await detailResp.text();
+      if (detailRaw && !detailRaw.trim().startsWith('<')) {
+        const parsed = JSON.parse(detailRaw);
+        const extracted = extractProfileFromPayload(parsed);
+        if (extracted.studentName) studentName = extracted.studentName;
+      }
+    }
+  } catch (err) {
+    console.log(`[QUMS] student-name lookup skipped: ${err.name || 'Error'}: ${err.message}`);
+  }
+
   return {
     regId,
     yearSem,
     availableYearSems: detectedYearSems,
+    studentName,
   };
 }
 
@@ -203,11 +274,38 @@ function mapAttendanceRow(raw) {
 
 /** Shared API context: session cookies + AJAX-ish headers, no browser needed. */
 async function newApiContext(sessionPath = SESSION_FILE) {
-  return playwrightRequest.newContext({
-    storageState: sessionPath,
-    baseURL: new URL(DASHBOARD_URL).origin,
-    extraHTTPHeaders: { 'X-Requested-With': 'XMLHttpRequest', Referer: DASHBOARD_URL },
-  });
+  try {
+    return await playwrightRequest.newContext({
+      storageState: sessionPath,
+      baseURL: new URL(DASHBOARD_URL).origin,
+      extraHTTPHeaders: { 'X-Requested-With': 'XMLHttpRequest', Referer: DASHBOARD_URL },
+    });
+  } catch (err) {
+    // Corrupt/unreadable session file or a network-level context failure is NOT
+    // proof that the authenticated session expired.
+    throw new QumsUnreachableError(`QUMS request context failed: ${err.message}`, err);
+  }
+}
+
+/** GET/POST helpers: classify transport failures so watchers never mistake a
+ *  temporary outage for session expiry (requirement: no Telegram spam on outages). */
+async function apiGet(ctx, url, opts = {}) {
+  try {
+    return await ctx.get(url, opts);
+  } catch (err) {
+    throw new QumsUnreachableError(`QUMS GET ${url} failed: ${err.message}`, err);
+  }
+}
+async function apiPost(ctx, url, { form, data, headers, timeout } = {}) {
+  try {
+    const opts = { timeout };
+    if (form) opts.form = form;
+    if (data) opts.data = data;
+    if (headers) opts.headers = headers;
+    return await ctx.post(url, opts);
+  } catch (err) {
+    throw new QumsUnreachableError(`QUMS POST ${url} failed: ${err.message}`, err);
+  }
 }
 
 /**
@@ -228,7 +326,7 @@ async function scrapeAttendance(opts = {}) {
     let usedYearSem = yearSem;
 
     for (const candidate of candidates) {
-      const resp = await apiContext.post(ATTENDANCE_API, {
+      const resp = await apiPost(apiContext, ATTENDANCE_API, {
         form: { RegID: regId, YearSem: candidate },
         timeout: 60000,
       });
@@ -333,7 +431,7 @@ async function scrapeTodaysAttendance(opts = {}) {
     const { regId } = await getStudentContext(apiContext);
     const date = dateStr || istDateString();
 
-    const resp = await apiContext.post(TODAY_ATTENDANCE_API, {
+    const resp = await apiPost(apiContext, TODAY_ATTENDANCE_API, {
       form: { RegID: regId, date },
       timeout: 60000,
     });
@@ -612,7 +710,7 @@ async function createSessionContext(sessionPath = SESSION_FILE) {
 
 /** FillStudentTimeTable API se timetable (bina browser) — VPS-friendly. */
 async function fetchTimetableViaApi(apiContext, regId) {
-  const resp = await apiContext.post(TIMETABLE_API, { form: { RegID: regId }, timeout: 60000 });
+  const resp = await apiPost(apiContext, TIMETABLE_API, { form: { RegID: regId }, timeout: 60000 });
   if (!resp.ok()) {
     throw new ScrapeError(
       `TimeTable API failed (HTTP ${resp.status()}).`,
@@ -701,6 +799,125 @@ async function scrapeTimetable(opts = {}) {
 
 
 // ---------------------------------------------------------------------------
+// Assignments (Part 5/6/7) — same API-first pattern as the Month Register:
+//   POST /Web_StudentAcademic/GetStudentAssignment { RegID }  (discovered from
+//   the Cyborg_StudentAssignment page's own AJAX; verified live 200).
+// Response is { state: "<json rows>", state2: "<json rows>" }:
+//   state  rows = the "Assignment Details" grid (Assignmenttype Assignment/Quiz/
+//                 Class Test/Internal/...) with Submit Date (DATETO) +
+//                 Assignment Given Date (DATEFROM) when the teacher set them.
+//   state2 rows = study-material/assignment-detail rows (no date columns).
+// Row fields verified from the page's jqGrid colModel + live 200 responses:
+//   AssignmentDetailID (unique id), ASSIGNMENT / ASSIGNMENTSUBJECT / Subject
+//   (title), CLASSSUBJECT (subject), EMPLOYEENAME (teacher), Assignmenttype,
+//   DATEFROM, DATETO, UploadFlag, AssignmentExt.
+// ---------------------------------------------------------------------------
+
+/**
+ * QUMS date string -> 'YYYY-MM-DD' (IST civil date) or null.
+ * Accepted live shapes: 'YYYY-MM-DD...', 'DD/MM/YYYY', 'DD-MM-YYYY',
+ * 'DD MMM YYYY' (day-first — Indian portal). Anything unparseable -> null
+ * (we NEVER guess a deadline).
+ */
+function qumsDateToYMD(v) {
+  const s = norm(v);
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[\s-]([A-Za-z]{3,})[\s-](\d{4})/);
+  if (m) {
+    const mi = monthFromName(m[2]);
+    if (mi) return `${m[3]}-${String(mi).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  return null;
+}
+
+/**
+ * One raw QUMS assignment row (state OR state2) -> normalized shape:
+ * { id, title, subject, teacher, type, assignedYMD, deadlineYMD, ext, uploadFlag, source }.
+ * id = AssignmentDetailID (QUMS's own unique id) when present, else '' (callers
+ * fingerprint from the real fields via assignments.assignmentFingerprint).
+ */
+function normalizeAssignmentRow(raw, source = 'state') {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.AssignmentDetailID ?? raw.AssignID ?? '').trim();
+  const title = norm(raw.ASSIGNMENT) || norm(raw.ASSIGNMENTSUBJECT) || norm(raw.Subject);
+  const subject = norm(raw.CLASSSUBJECT) || norm(raw.SubjectName);
+  const teacher = norm(raw.EMPLOYEENAME);
+  const type = norm(raw.Assignmenttype) || (source === 'state2' ? 'Study Material' : 'Assignment');
+  const assignedYMD = qumsDateToYMD(raw.DATEFROM);
+  const deadlineYMD = qumsDateToYMD(raw.DATETO);
+  const ext = norm(raw.AssignmentExt || raw.Extension);
+  const uploadFlag = Number(raw.UploadFlag);
+  if (!id && !title) return null;
+  return {
+    id,
+    title,
+    subject,
+    teacher,
+    type,
+    assignedYMD,
+    deadlineYMD,
+    ext,
+    uploadFlag: Number.isFinite(uploadFlag) ? uploadFlag : null,
+    source,
+  };
+}
+
+/**
+ * POST GetStudentAssignment for one session and return the normalized rows
+ * (state + state2 merged, each tagged with its source). Throws
+ * SessionExpiredError on login-page HTML — same contract as the other scrapers.
+ */
+async function scrapeAssignments(opts = {}) {
+  const sessionPath = (typeof opts === 'object' && opts.sessionPath) || SESSION_FILE;
+  assertSessionFile(sessionPath);
+  const apiContext = await newApiContext(sessionPath);
+  try {
+    const { regId } = await getStudentContext(apiContext);
+    const resp = await apiPost(apiContext, ASSIGNMENT_API, {
+      form: { RegID: regId },
+      timeout: 60000,
+    });
+    if (!resp.ok()) {
+      throw new ScrapeError(
+        `Assignment API failed (HTTP ${resp.status()}).`,
+        'Portal down ya session issue — thodi der baad retry, ya Dashboard → QUMS Setup → Reconnect QUMS.'
+      );
+    }
+    const body = await resp.text();
+    if (body.trim().startsWith('<')) throw new SessionExpiredError(); // HTML = login page
+    let payload = {};
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      return []; // unparseable = treat as "nothing yet"
+    }
+    const rowsOf = (v) => {
+      try {
+        if (typeof v === 'string') return JSON.parse(v || '[]');
+        if (Array.isArray(v)) return v;
+      } catch { /* empty */ }
+      return [];
+    };
+    const out = [];
+    for (const r of rowsOf(payload.state)) {
+      const n = normalizeAssignmentRow(r, 'state');
+      if (n) out.push(n);
+    }
+    for (const r of rowsOf(payload.state2)) {
+      const n = normalizeAssignmentRow(r, 'state2');
+      if (n) out.push(n);
+    }
+    return out;
+  } finally {
+    await apiContext.dispose();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Month Register (backdated attendance) — API-first, live-UI se reverse-
 // engineered (debug-inspect-month-register.js + debug-month-api-probe.js):
 //
@@ -779,7 +996,7 @@ async function scrapeMonthRegister(opts = {}) {
   const apiContext = await newApiContext(sessionPath);
   try {
     const { regId } = await getStudentContext(apiContext);
-    const resp = await apiContext.post(MONTH_REGISTER_API, {
+    const resp = await apiPost(apiContext, MONTH_REGISTER_API, {
       form: { RegID: regId, Month: month },
       timeout: 60000,
     });
@@ -820,6 +1037,74 @@ async function scrapeMonthRegister(opts = {}) {
   } finally {
     await apiContext.dispose();
   }
+}
+
+/**
+ * Month-by-month Month Register scan (Phase 4) — SEQUENTIAL, bounded.
+ *
+ * The same verified endpoint is used for every month
+ * (POST /Web_StudentAcademic/GetMonthRegister { RegID, Month }); nothing new is
+ * invented. Current IST month first, then `monthsBack` previous months
+ * (default 2 months total). Requests are serialized with a small delay so the
+ * portal (and the student's own quota) is never hammered.
+ *
+ * opts: { sessionPath, monthsBack (default 1), startMonth (1..12), year?, delayMs }
+ * Returns an ARRAY of { year, month, records, summary } — one entry per month
+ * that answered. A SessionExpiredError aborts immediately (monitoring must
+ * stop and the user must be asked to reconnect); any other month failure is
+ * skipped so one bad month cannot stop the whole scan.
+ */
+async function scrapeMonthRegisterRange(opts = {}) {
+  const sessionPath = opts.sessionPath || SESSION_FILE;
+  const monthsBack = Math.max(0, Number(opts.monthsBack ?? 1) || 0);
+  const delayMs = Number(opts.delayMs ?? 400);
+  const [, nowMonth, nowYear] = istDateString().split('/').map(Number);
+  const startMonth = Number(opts.startMonth) || nowMonth;
+  const sessionWasPresent = fs.existsSync(sessionPath);
+  if (!sessionWasPresent) assertSessionFile(sessionPath); // NoSessionError (same contract)
+
+  const wanted = [];
+  if (Array.isArray(opts.months) && opts.months.length) {
+    // Explicit plan (tiered schedule / tests): [ { year, month }, ... ]
+    for (const m of opts.months) {
+      const month = Number(m && m.month);
+      const year = Number(m && m.year);
+      if (Number.isInteger(month) && month >= 1 && month <= 12) {
+        wanted.push({ month, year: Number.isInteger(year) && year > 2000 ? year : nowYear });
+      }
+    }
+  } else {
+    for (let i = 0; i <= monthsBack; i++) {
+      // Walk backwards across the year boundary (Jan -> Dec of previous year).
+      let month = startMonth - i;
+      let year = Number(opts.year) || nowYear;
+      while (month < 1) {
+        month += 12;
+        year -= 1;
+      }
+      wanted.push({ month, year });
+    }
+  }
+
+  const out = [];
+  let firstError = null;
+  for (let i = 0; i < wanted.length; i++) {
+    const { month, year } = wanted[i];
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await scrapeMonthRegister({ sessionPath, month, year });
+      out.push(result);
+    } catch (err) {
+      if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') throw err;
+      if (!firstError) firstError = err;
+      // otherwise: skip this month, keep scanning the rest
+    }
+    // eslint-disable-next-line no-await-in-loop
+    if (i < wanted.length - 1 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  }
+
+  if (!out.length && firstError) throw firstError;
+  return out;
 }
 
 /** Ek month-register record ke liye timetable se teacher cross-match karo. */
@@ -940,11 +1225,284 @@ async function getMonthRegister(userId, monthName) {
   return reg.records.map((rec) => ({ ...rec, teacher: teacherForRecord(timetable, rec) }));
 }
 
+/**
+ * Part 1 — one-shot student profile fetch for a saved session:
+ * { regId, yearSem, studentName, ... }. Reuses getStudentContext (which already
+ * calls GetStudentDetailOnRegID for the name). Used by server.js after QUMS
+ * setup to map the name onto the application user.
+ */
+async function getStudentProfile(opts = {}) {
+  const sessionPath = (typeof opts === 'object' && opts.sessionPath) || SESSION_FILE;
+  assertSessionFile(sessionPath);
+  const apiContext = await newApiContext(sessionPath);
+  try {
+    return await getStudentContext(apiContext);
+  } finally {
+    await apiContext.dispose();
+  }
+}
+
+/** RegID from the dashboard page ONLY (no semester probing — light path). */
+async function getRegIdLight(apiContext, opts = {}) {
+  const resp = await apiContext.get(DASHBOARD_URL, { timeout: 60000 });
+  if (!resp.ok()) {
+    throw new ScrapeError(
+      `Dashboard load failed (HTTP ${resp.status()}).`,
+      'Portal down ho sakta hai — thodi der baad retry karo.'
+    );
+  }
+  const html = await resp.text();
+  if (looksLikeLoginHtml(html)) throw new SessionExpiredError();
+  const regIdMatch =
+    html.match(/var\s+RegID\s*=\s*['"]?(\d+)['"]?/i) ||
+    html.match(/\bRegID\s*[:=]\s*['"]?(\d+)['"]?/i) ||
+    html.match(/name=['"]RegID['"][^>]*value=['"](\d+)['"]/i) ||
+    html.match(/id=['"]RegID['"][^>]*value=['"](\d+)['"]/i) ||
+    html.match(/value=['"](\d+)['"][^>]*id=['"]RegID['"]/i) ||
+    html.match(/data-regid=['"](\d+)['"]/i);
+  if (!regIdMatch) {
+    throw new ScrapeError(
+      'Dashboard HTML me RegID nahi mila.',
+      'Dashboard → QUMS Setup → Reconnect QUMS try karo.'
+    );
+  }
+  if (opts && opts.returnHtml) {
+    return { regId: regIdMatch[1], html };
+  }
+  return regIdMatch[1];
+}
+
+/**
+ * Extract student name and Year/Sem from multiple potential QUMS JSON formats:
+ *   - ASP.NET serialized JSON string in `.state` or `.data` or `.d`
+ *   - Plain array in `.state` or `.data` or `.d` or root array
+ *   - Direct object properties (`StudentName`, `studentName`, `STUDENTNAME`, `Name`, etc.)
+ *   - Nested objects/tables
+ */
+function extractProfileFromPayload(parsed) {
+  let studentName = '';
+  let yearSem = '';
+  const candidates = [];
+
+  if (Array.isArray(parsed)) {
+    candidates.push(...parsed);
+  } else if (parsed && typeof parsed === 'object') {
+    candidates.push(parsed);
+    for (const val of Object.values(parsed)) {
+      if (typeof val === 'string') {
+        try {
+          const inner = JSON.parse(val);
+          if (Array.isArray(inner)) candidates.push(...inner);
+          else if (inner && typeof inner === 'object') candidates.push(inner);
+        } catch {}
+      } else if (Array.isArray(val)) {
+        candidates.push(...val);
+      } else if (val && typeof val === 'object') {
+        candidates.push(val);
+      }
+    }
+  }
+
+  for (const item of candidates) {
+    if (!item || typeof item !== 'object') continue;
+    for (const [k, v] of Object.entries(item)) {
+      if (!studentName && /^(student_?name|studentname|name|student)$/i.test(k) && typeof v === 'string') {
+        const val = norm(v);
+        if (val && !/^(student|null|undefined|unknown)$/i.test(val)) studentName = val;
+      }
+      if (!yearSem && /^(year_?sem|sem|semester|current_?sem)$/i.test(k) && (typeof v === 'string' || typeof v === 'number')) {
+        const val = norm(String(v));
+        if (val) yearSem = val;
+      }
+    }
+    if (studentName && yearSem) break;
+  }
+  return { studentName, yearSem };
+}
+
+/**
+ * Fetch the QUMS profile: student's displayed name + current Year/Sem.
+ * Primary: `POST /Web_StudentAcademic/GetStudentDetailOnRegID` with `{ "RegID": "<actual RegID>" }`.
+ * Fallbacks: `GetStudentTileData`, dashboard HTML parsing, and semester probe.
+ * Returns { studentName, yearSem } ('' when the portal does not provide them).
+ */
+async function fetchQumsProfile(sessionPath, log = console) {
+  assertSessionFile(sessionPath);
+  const apiContext = await newApiContext(sessionPath);
+  try {
+    const { regId, html: dashHtml } = await getRegIdLight(apiContext, { returnHtml: true });
+    log.log(`[QUMS-Profile] Profile request started | RegID=${regId ? 'found' : 'missing'}`);
+    let studentName = '';
+    let yearSem = '';
+
+    // Primary: Call GetStudentDetailOnRegID with JSON body { "RegID": "<actual RegID>" }
+    let resp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+      data: { RegID: String(regId) },
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
+      timeout: 30000,
+    }).catch(() => null);
+
+    // If JSON body returned non-OK or non-JSON, fallback to form-encoded request
+    if (!resp || !resp.ok()) {
+      resp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+        form: { RegID: String(regId) },
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        timeout: 30000,
+      }).catch(() => null);
+    }
+
+    log.log(`[QUMS-Profile] STUDENT_DETAIL_API HTTP=${resp ? resp.status() : 'failed'}`);
+    if (resp && resp.ok()) {
+      const raw = await resp.text();
+      if (raw && !raw.trim().startsWith('<')) {
+        try {
+          const parsed = JSON.parse(raw);
+          const keys = parsed && typeof parsed === 'object' ? Object.keys(parsed) : [];
+          log.log(`[QUMS-Profile] Response keys=${keys.join(',') || typeof parsed}`);
+          const extracted = extractProfileFromPayload(parsed);
+          studentName = extracted.studentName;
+          yearSem = extracted.yearSem;
+          log.log(`[QUMS-Profile] Parsed: studentName=${Boolean(studentName)} (len=${studentName.length}), yearSem=${yearSem || 'not detected'}`);
+        } catch (parseErr) {
+          log.log(`[QUMS-Profile] JSON parse error: ${parseErr.message}`);
+        }
+      } else {
+        log.log('[QUMS-Profile] Response is HTML/empty, not JSON');
+      }
+    }
+
+    // Secondary fallback: GetStudentTileData
+    if (!studentName || !yearSem) {
+      try {
+        const tileResp = await apiPost(apiContext, '/Web_StudentAcademic/GetStudentTileData', {
+          data: { RegID: String(regId) },
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
+          timeout: 20000,
+        }).catch(() => null);
+        if (tileResp && tileResp.ok()) {
+          const tileRaw = await tileResp.text();
+          if (tileRaw && !tileRaw.trim().startsWith('<')) {
+            const tileParsed = JSON.parse(tileRaw);
+            const tileExt = extractProfileFromPayload(tileParsed);
+            if (!studentName && tileExt.studentName) studentName = tileExt.studentName;
+            if (!yearSem && tileExt.yearSem) yearSem = tileExt.yearSem;
+            log.log(`[QUMS-Profile] GetStudentTileData parsed: studentName=${Boolean(studentName)}, yearSem=${yearSem || 'not detected'}`);
+          }
+        }
+      } catch {}
+    }
+
+    // Tertiary fallback: dashboard HTML parsing
+    if (!studentName && dashHtml) {
+      const nameMatch =
+        dashHtml.match(/var\s+StudentName\s*=\s*['"]([^'"]+)['"]/i) ||
+        dashHtml.match(/id=['"]lblStudentName['"][^>]*>([^<]+)</i) ||
+        dashHtml.match(/id=['"]lblStudent['"][^>]*>([^<]+)</i) ||
+        dashHtml.match(/class=['"][^'"]*profile-username[^'"]*['"][^>]*>([^<]+)</i) ||
+        dashHtml.match(/Welcome,?\s*<b[^>]*>([^<]+)<\/b>/i);
+      if (nameMatch) {
+        const val = norm(nameMatch[1]);
+        if (val && !/^(student|null|undefined|unknown)$/i.test(val)) {
+          studentName = val;
+          log.log(`[QUMS-Profile] Dashboard HTML studentName=${studentName}`);
+        }
+      }
+    }
+
+    if (!yearSem || !studentName) {
+      // Fallback: the portal's own dashboard & attendance probe provides Year/Sem & StudentName
+      try {
+        log.log('[QUMS-Profile] Probing getStudentContext for missing fields...');
+        const ctxData = await getStudentContext(apiContext);
+        if (!yearSem) yearSem = String(ctxData.yearSem || '');
+        if (!studentName) studentName = ctxData.studentName || '';
+        log.log(`[QUMS-Profile] Context probe: studentName=${Boolean(studentName)}, yearSem=${yearSem || 'not detected'}`);
+      } catch (err) {
+        if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') throw err;
+      }
+    }
+    return { studentName, yearSem };
+  } finally {
+    await apiContext.dispose().catch(() => {});
+  }
+}
+
+/** True when the cached QUMS profile should be refreshed from the portal. */
+function profileNeedsRefresh(user, maxAgeMs = Number(process.env.QUMS_PROFILE_TTL_MS || 6 * 60 * 60 * 1000)) {
+  if (!user) return false;
+  if (!user.qumsSessionPath) return false;
+  if (!user.studentName || !user.qumsYearSem) return true; // cache incomplete
+  if (!user.profileSyncedAt) return true;
+  const age = Date.now() - Date.parse(user.profileSyncedAt);
+  return !Number.isFinite(age) || age > maxAgeMs;
+}
+
+/**
+ * Refresh the QUMS identity cache for ONE user (multi-user safe).
+ *
+ * QUMS IS THE SOURCE OF TRUTH: on every successful setup/reconnect and on every
+ * refresh window the portal value OVERWRITES the cache, so a name changed on
+ * the QUMS side is picked up (requirement: dynamic identity, never static).
+ *
+ * `users.student_name` / `users.qums_year_sem` are CACHES of this value — they
+ * exist so the dashboard/Telegram/admin can render without a live QUMS call.
+ * A session expiry is recorded as real evidence; a network failure is NOT.
+ */
+async function refreshQumsProfile(userId, log = console, { force = false } = {}) {
+  const user = await db.getUserById(userId);
+  if (!user) return { ok: false, reason: 'no-user' };
+  if (!user.qumsSessionPath || !fs.existsSync(user.qumsSessionPath)) return { ok: false, reason: 'no-session' };
+  if (!force && !profileNeedsRefresh(user)) return { ok: true, cached: true, studentName: user.studentName, yearSem: user.qumsYearSem };
+
+  try {
+    const { studentName, yearSem } = await module.exports.fetchQumsProfile(user.qumsSessionPath, log);
+    const patch = {};
+    if (studentName) patch.studentName = studentName; // overwrite cache (QUMS wins)
+    if (yearSem) patch.qumsYearSem = yearSem;
+    if (Object.keys(patch).length) await db.updateUser(userId, patch);
+    await db.clearSessionExpiry(userId);
+    await db.touchUserSync(userId, { profile: true, error: '' });
+    log.log(`[QUMS] profile synced user=${userId} yearSem=${yearSem || 'unknown'} name=${studentName ? 'set' : 'unavailable'}`);
+    return { ok: true, studentName, yearSem, refreshed: true };
+  } catch (err) {
+    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+      await db.markSessionExpired(userId, 'profile-sync');
+      await db.touchUserSync(userId, { error: 'session-expired' });
+      throw err; // caller (setup/watch) decides the user-facing message
+    }
+    // Temporary failure: remember it, but never claim the session expired.
+    await db.touchUserSync(userId, { error: err.name || 'error' });
+    log.log(`[QUMS] profile sync skipped user=${userId} (${err.name || 'Error'}): ${err.message}`);
+    return { ok: false, reason: err.name || 'error', error: err.message };
+  }
+}
+
+/**
+ * Ensure the user's QUMS identity cache is present/fresh (throttled).
+ * Used by the dashboard (/api/me) and the Telegram link path; best-effort:
+ * never throws, never blocks a response, always scoped to ONE user.
+ */
+async function ensureStudentName(userId, log = console) {
+  if (!userId) return '';
+  try {
+    const res = await refreshQumsProfile(userId, log);
+    if (res && res.studentName) return res.studentName;
+    const user = await db.getUserById(userId);
+    return (user && user.studentName) || '';
+  } catch (err) {
+    log.log(`[QUMS] identity refresh skipped: ${err.name || 'Error'}: ${err.message}`);
+    return '';
+  }
+}
+
 module.exports = {
 
   scrapeAttendance,
   scrapeTodaysAttendance,
   scrapeMonthRegister,
+  scrapeAssignments,
+  normalizeAssignmentRow,
+  qumsDateToYMD,
   scrapeTimetable,
   getTodaySubjects,
   getTimetableForDate,
@@ -955,6 +1513,7 @@ module.exports = {
   getMonthRegister,
   monthFromName,
   expandMonthRegisterRows,
+  scrapeMonthRegisterRange,
   parseSubjectLabel,
   parsePeriodCell,
   parseTimetableCell,
@@ -969,7 +1528,17 @@ module.exports = {
   normalizeAttendanceValue,
   istDateString,
   getStudentContext,
+  getStudentProfile,
+  getRegIdLight,
+  fetchQumsProfile,
+  profileNeedsRefresh,
+  refreshQumsProfile,
+  ensureStudentName,
+  extractProfileFromPayload,
+  isNetworkError,
+  QumsUnreachableError,
   looksLikeLoginHtml,
+  ASSIGNMENT_PAGE_URL,
   ScrapeError,
   SessionExpiredError,
   NoSessionError,

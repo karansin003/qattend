@@ -1,55 +1,44 @@
 /**
- * Per-user runtime credential resolver.
- * DB user -> decrypted QUMS creds + session file.
- * Fallback (CLI/legacy): .env creds + root session_state.json.
+ * Per-user runtime resolver: DB user -> session file (+ QID for display only).
+ *
+ * IMPORTANT: the QUMS password is NEVER read from or written to the database.
+ * QAttend only needs the authenticated Playwright session file for monitoring;
+ * the password is supplied by the user during each setup/reconnect.
+ * The `.env` fallback (single-user/CLI mode) still reads QUMS_QID/QUMS_PASSWORD
+ * from the environment so existing local workflows keep working.
  */
 require('dotenv').config();
 const path = require('path');
-const { decryptSecret } = require('./crypto');
 
 const ROOT_SESSION_FILE = path.join(__dirname, '..', 'session_state.json');
 
 /**
- * user (DB row) -> { qid, password, sessionPath }
+ * user (DB row) -> { qid, sessionPath }
  * Throws with a helpful message if the user hasn't completed QUMS setup.
  */
 function resolveUserRuntime(user) {
   if (!user) {
-    // CLI / legacy fallback — pre-Phase-2 behaviour.
+    // CLI / legacy fallback — env-based single-user mode.
     const qid = process.env.QUMS_QID;
     const password = process.env.QUMS_PASSWORD;
     if (!qid || !password) {
       const e = new Error('No user session & no .env QUMS credentials.');
       e.name = 'NoSessionError';
-      e.hint = 'Register + QUMS setup karo (/register), ya .env me QUMS_QID/QUMS_PASSWORD bharo.';
+      e.hint = 'Register + complete QUMS setup (/register), or set QUMS_QID/QUMS_PASSWORD in .env.';
       throw e;
     }
-    return {
-      qid,
-      password,
-      sessionPath: ROOT_SESSION_FILE,
-    };
+    return { qid, sessionPath: ROOT_SESSION_FILE };
   }
 
   const sessionPath = user.qumsSessionPath || '';
-  if (!sessionPath || !user.qumsPasswordEncrypted || !user.qumsQid) {
+  if (!sessionPath || !user.qumsQid) {
     const e = new Error('QUMS setup incomplete for this user.');
     e.name = 'QumsSetupRequired';
-    e.hint = 'Dashboard se QUMS Setup complete karo (QID + password + captcha).';
+    e.hint = 'Open the dashboard → QUMS Setup and complete the QID + captcha login.';
     throw e;
   }
-  const password = decryptSecret(user.qumsPasswordEncrypted);
-  if (!password) {
-    const e = new Error('QUMS password decrypt nahi hua (ENCRYPTION_KEY galat/change ho gaya?).');
-    e.name = 'DecryptError';
-    e.hint = 'ENCRYPTION_KEY check karo, ya QUMS Setup dobara complete karo.';
-    throw e;
-  }
-  return {
-    qid: user.qumsQid,
-    password,
-    sessionPath,
-  };
+  return { qid: user.qumsQid, sessionPath };
 }
 
 module.exports = { resolveUserRuntime, ROOT_SESSION_FILE };
+

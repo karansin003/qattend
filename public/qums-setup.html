@@ -1,42 +1,81 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QUMS Setup — QUMS Attendance Bot</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QUMS Setup — QAttend</title>
+  <meta name="description" content="Connect your QUMS account so QAttend can monitor your academic updates." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="robots" content="noindex" />
   <link rel="stylesheet" href="/style.css" />
+  <script src="/site.js" defer></script>
 </head>
 <body>
-  <div class="auth-bg">
-    <div class="auth-card" id="setupCard" style="max-width: 520px;">
-      <h1>⚙️ QUMS Setup</h1>
+  <header class="nav">
+    <a class="brand brand-link" href="/dashboard">
+      <span class="dot" aria-hidden="true"></span>
+      <span>QAttend</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/qums-setup">QUMS Setup</a>
+      <a href="/telegram-setup">Telegram</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="pill" id="userName">…</span>
+      <a href="/logout" class="nav-logout">Logout</a>
+      <button id="navToggle" class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="drawer">☰</button>
+    </div>
+  </header>
+
+  <div id="drawerOverlay" class="drawer-overlay"></div>
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Mobile menu">
+    <div class="drawer-head">
+      <span>QAttend</span>
+      <button type="button" class="drawer-close" aria-label="Close menu">✕</button>
+    </div>
+    <nav class="drawer-nav">
+      <a href="/dashboard">🏠 Dashboard</a>
+      <a href="/qums-setup">⚙️ QUMS Setup</a>
+      <a href="/telegram-setup">💬 Telegram</a>
+      <a href="/logout" class="drawer-logout">🚪 Logout</a>
+    </nav>
+  </aside>
+
+  <div class="auth-bg" style="min-height: auto; padding-top: 22px;">
+    <div class="auth-card" id="setupCard" style="max-width: 560px;">
+      <h1>QUMS Setup</h1>
+      <p class="sub" style="margin-bottom: 10px;">
+        Connect your QUMS account so QAttend can monitor your academic updates.
+      </p>
+      <p><span id="qumsConnBadge" class="badge-soft off">Checking connection…</span></p>
       <div class="sub" id="modeSub">Loading…</div>
 
-      <!-- FIRST-TIME mode: QID + password (sirf ek baar — DB me encrypted save) -->
+      <!-- QUMS login creds box -->
       <div id="firstTimeBox" class="hidden">
         <ol class="steps">
-          <li>QID + QUMS password daalo → <b>Get Captcha</b></li>
-          <li>Captcha image me jo dikhe wo type karke <b>Submit</b></li>
-          <li>Login hote hi tumhara QUMS session save ho jayega (encrypted)</li>
+          <li>Enter your QID + QUMS password, then press <b id="stepAction">Get Captcha</b></li>
+          <li>Type the characters you see in the captcha image and press <b>Submit</b></li>
+          <li>Once the login succeeds your active QUMS session is established</li>
         </ol>
         <label class="form-label" for="qid">QUMS QID</label>
         <input class="form-input" id="qid" type="text" placeholder="e.g. 240XXXXXX" />
         <label class="form-label" for="qumsPassword">QUMS Password</label>
         <div class="pw-wrap">
           <input class="form-input" id="qumsPassword" type="password" placeholder="••••••••" />
-          <button type="button" class="pw-toggle" data-target="qumsPassword">👁</button>
+          <button type="button" class="pw-toggle" data-target="qumsPassword" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
         </div>
-        <button id="captchaBtn" class="btn" style="margin-top: 12px;">Get Captcha</button>
+        <button id="captchaBtn" class="btn" style="margin-top: 12px; width: 100%;">Get Captcha</button>
       </div>
 
-      <!-- RECONNECT mode: koi input nahi — creds DB se auto-fill (headless) -->
+      <!-- RECONNECT mode info box -->
       <div id="reconnectBox" class="hidden">
-        <div class="form-ok" style="margin-bottom: 10px;">🔐 QID + password DB me saved hain (encrypted)</div>
-        <div class="form-hint">Session expire hone par yahin se reconnect karo — <b>sirf captcha</b> type karna padega, QID/password dobara nahi.</div>
-        <button id="reconnectBtn" class="btn" style="margin-top: 12px; width: 100%;">🔄 Reconnect QUMS (Get Captcha)</button>
+        <div class="form-ok" style="margin-bottom: 10px;">🔐 Reconnect QUMS to restore session monitoring</div>
+        <div class="form-hint" style="margin-bottom: 12px;">Your QID & password are saved securely. Click <b>"Reconnect QUMS"</b> below to load the captcha (no password re-entry needed). To login with a different student, click <b>"Reset / Delete QUMS Connection"</b>.</div>
       </div>
 
       <div id="captchaBox" class="hidden">
-        <label class="form-label">Captcha (image me jo likha hai wo type karo)</label>
+        <label class="form-label">Captcha (type the characters shown in the image)</label>
         <img id="captchaImg" class="captcha-img" alt="captcha" />
         <input class="form-input" id="captcha" type="text" placeholder="captcha text" autocomplete="off" />
         <div style="margin-top: 14px;"><button id="submitBtn" style="width: 100%;">Login to QUMS</button></div>
@@ -44,34 +83,41 @@
 
       <div id="msg" class="form-ok hidden"></div>
       <div id="error" class="form-error hidden"></div>
-      <div class="auth-foot"><a href="/dashboard">← Dashboard pe wapas</a></div>
+      <div class="auth-foot"><a href="/dashboard">← Back to dashboard</a></div>
+      <div id="qumsResetSlot" class="qums-reset-slot">
+        <button id="permanentQumsResetBtn" type="button">Reset / Delete QUMS Connection</button>
+      </div>
     </div>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
     let busy = false;
     let mode = 'first-time'; // 'first-time' | 'reconnect'
+    let hasSavedCredentials = false;
 
     function setMode(m) {
       mode = m;
+      $('firstTimeBox').classList.remove('hidden');
       if (m === 'reconnect') {
-        $('modeSub').textContent = 'QUMS already configured — session expire hone par yahin se reconnect karo';
-        $('firstTimeBox').classList.add('hidden');
+        $('modeSub').textContent = 'QUMS session expired or needs reconnection — solve captcha to resume.';
         $('reconnectBox').classList.remove('hidden');
+        $('captchaBtn').textContent = '🔐 Reconnect QUMS (Get Captcha)';
       } else {
-        $('modeSub').textContent = 'Ek baar karna hai — iske baad sab automatic';
-        $('firstTimeBox').classList.remove('hidden');
+        $('modeSub').textContent = 'One-time setup — credentials are saved securely until you reset/delete.';
         $('reconnectBox').classList.add('hidden');
+        $('captchaBtn').textContent = 'Get Captcha';
       }
     }
 
-    async function startLogin() {
+    async function startLogin(confirmSwitch = false) {
       $('error').classList.add('hidden'); $('msg').classList.add('hidden');
       $('msg').textContent = 'Headless browser me login page khul raha hai…'; $('msg').classList.remove('hidden');
       try {
-        const body = mode === 'first-time'
-          ? { qid: $('qid').value.trim(), password: $('qumsPassword').value }
-          : {}; // reconnect — creds DB se auto-fill
+        const body = {
+          qid: $('qid').value.trim(),
+          password: $('qumsPassword').value,
+          confirmSwitch: Boolean(confirmSwitch),
+        };
         const res = await fetch('/api/qums-login/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -80,9 +126,24 @@
         const data = await res.json();
         if (!res.ok) {
           $('msg').classList.add('hidden');
+          if (data.identityConflict) {
+            $('error').innerHTML = `<b>⚠️ Different Student ID Detected</b><br>` +
+              `Current active QID: <b>${data.oldQid}</b><br>` +
+              `New QID: <b>${data.newQid}</b><br><br>` +
+              `Switching identities will isolate previous history under ${data.oldQid} and begin monitoring student ${data.newQid}.<br><br>` +
+              `<button id="confirmSwitchBtn" class="btn" style="background:#e11d48; margin-top:8px; width:100%;">Confirm Switch to ${data.newQid}</button>`;
+            $('error').classList.remove('hidden');
+            const btn = $('confirmSwitchBtn');
+            if (btn) {
+              btn.onclick = async () => {
+                $('error').classList.add('hidden');
+                await startLogin(true);
+              };
+            }
+            return;
+          }
           $('error').textContent = (data.error || 'Captcha load fail') + (data.hint ? '  →  ' + data.hint : '');
           $('error').classList.remove('hidden');
-          if (data.code === 'QumsCredsMissing' || data.code === 'DecryptError') setMode('first-time');
           return;
         }
         $('msg').classList.add('hidden');
@@ -99,21 +160,16 @@
     $('captchaBtn').addEventListener('click', async () => {
       if (busy) return;
       busy = true; $('captchaBtn').disabled = true;
-      if (!$('qid').value.trim() || !$('qumsPassword').value) {
-        $('error').textContent = 'QID aur QUMS password dono daalo.';
+      const qidVal = $('qid').value.trim();
+      const pwVal = $('qumsPassword').value;
+      if (!hasSavedCredentials && (!qidVal || !pwVal)) {
+        $('error').textContent = 'Please enter both your QID and your QUMS password.';
         $('error').classList.remove('hidden');
         busy = false; $('captchaBtn').disabled = false;
         return;
       }
       await startLogin();
       busy = false; $('captchaBtn').disabled = false;
-    });
-
-    $('reconnectBtn').addEventListener('click', async () => {
-      if (busy) return;
-      busy = true; $('reconnectBtn').disabled = true;
-      await startLogin();
-      busy = false; $('reconnectBtn').disabled = false;
     });
 
     $('submitBtn').addEventListener('click', async () => {
@@ -129,8 +185,10 @@
         });
         const data = await res.json();
         if (data.ok) {
-          $('msg').textContent = '✅ QUMS Connected!' + (mode === 'first-time' ? ' Dashboard pe jao aur "Connect Telegram" karo (alerts wahi aayenge)…' : ' Session refresh ho gaya.');
-          setTimeout(() => { location.href = '/dashboard'; }, 1400);
+          $('msg').textContent = mode === 'first-time'
+            ? '✅ QUMS Connected! Next: open the dashboard and press "Connect Telegram" to receive alerts.'
+            : '✅ QUMS Reconnected! Attendance and assignment monitoring has resumed.';
+          setTimeout(() => { location.href = '/dashboard'; }, 1600);
           return;
         }
         if (data.captchaImage) {
@@ -140,7 +198,7 @@
           $('captcha').focus();
         }
         $('msg').classList.add('hidden');
-        $('error').textContent = data.error || 'Login fail — dobara try karo.';
+        $('error').textContent = data.error || 'Login failed — please try again.';
         $('error').classList.remove('hidden');
       } catch (err) {
         $('msg').classList.add('hidden');
@@ -148,23 +206,89 @@
       } finally { busy = false; $('submitBtn').disabled = false; }
     });
 
+    $('permanentQumsResetBtn').addEventListener('click', async () => {
+      if (!confirm('Are you sure you want to permanently reset and delete your QUMS connection and saved credentials?\n\nThis will clear your saved QID, saved password, session, and monitoring. You can then log in with a new QID.')) {
+        return;
+      }
+      $('permanentQumsResetBtn').disabled = true;
+      $('error').classList.add('hidden');
+      $('msg').textContent = 'Resetting QUMS connection…';
+      $('msg').classList.remove('hidden');
+      try {
+        const res = await fetch('/api/qums-reset', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          hasSavedCredentials = false;
+          $('qid').value = '';
+          $('qumsPassword').value = '';
+          $('qumsPassword').placeholder = '••••••••';
+          $('captchaBox').classList.add('hidden');
+          setMode('first-time');
+          $('qumsConnBadge').className = 'badge-soft off';
+          $('qumsConnBadge').textContent = 'QUMS Not Connected';
+          $('msg').textContent = '✅ QUMS connection & saved credentials reset. You can now enter a new QID and password for a new login.';
+          $('msg').classList.remove('hidden');
+        } else {
+          $('msg').classList.add('hidden');
+          $('error').textContent = data.error || 'Reset failed';
+          $('error').classList.remove('hidden');
+        }
+      } catch (err) {
+        $('msg').classList.add('hidden');
+        $('error').textContent = 'Error: ' + err.message;
+        $('error').classList.remove('hidden');
+      } finally {
+        $('permanentQumsResetBtn').disabled = false;
+      }
+    });
+
     $('captcha').addEventListener('keydown', (e) => e.key === 'Enter' && $('submitBtn').click());
-    // password show/hide toggle
+    // password show/hide toggle with clean SVG icons (no weird emoji)
+    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
     document.querySelectorAll('.pw-toggle').forEach((b) =>
       b.addEventListener('click', () => {
         const el = document.getElementById(b.dataset.target);
-        el.type = el.type === 'password' ? 'text' : 'password';
-        b.textContent = el.type === 'password' ? '👁' : '🙈';
+        if (!el) return;
+        const isPw = el.type === 'password';
+        el.type = isPw ? 'text' : 'password';
+        b.innerHTML = isPw ? EYE_OFF_SVG : EYE_SVG;
+        b.setAttribute('aria-label', isPw ? 'Hide password' : 'Show password');
       })
     );
 
     // mode detect: DB me qumsQid hai -> reconnect (bina inputs); nahi -> first-time
     (async () => {
+      // Deep link from the Telegram "🔐 Reconnect QUMS" button:
+      // /qums-setup?reconnect=1 -> jump straight to the captcha step.
+      const wantsReconnect = new URLSearchParams(location.search).get('reconnect') === '1';
       try {
         const res = await fetch('/api/me');
         if (res.status === 401) { location.href = '/login'; return; }
         const me = await res.json();
-        setMode(me.qumsQid ? 'reconnect' : 'first-time');
+        $('userName').textContent = me.studentName || 'Student';
+        const badge = $('qumsConnBadge');
+        if (me.qumsConfigured) {
+          badge.className = 'badge-soft on';
+          badge.textContent = 'QUMS Connected';
+        } else {
+          badge.className = 'badge-soft off';
+          badge.textContent = 'QUMS Not Connected';
+        }
+        hasSavedCredentials = Boolean(me.qumsCredentialsSaved || me.qumsQid);
+        const reconnect = wantsReconnect || Boolean(me.qumsQid);
+        setMode(reconnect ? 'reconnect' : 'first-time');
+        if (me.qumsQid) {
+          $('qid').value = me.qumsQid;
+          if (hasSavedCredentials) {
+            $('qumsPassword').placeholder = '•••••••• (Password saved securely)';
+          } else {
+            $('qumsPassword').focus();
+          }
+        }
+        if (wantsReconnect && me.qumsQid) {
+          await startLogin();
+        }
       } catch {
         setMode('first-time');
       }
