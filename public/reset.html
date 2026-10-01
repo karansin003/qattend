@@ -75,7 +75,7 @@
     async function resetViaFirebase(code, password) {
       const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
-      const app = appMod.initializeApp(firebaseConfig);
+      const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
       await authMod.confirmPasswordReset(authMod.getAuth(app), code, password);
     }
 
