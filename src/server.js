@@ -651,7 +651,11 @@ app.post('/api/qums-reset', requireAuth, async (req, res) => {
       qumsSessionPath: '',
       studentName: '',
       qumsYearSem: '',
+      qumsSessionStatus: 'disconnected',
     });
+    if (db.USE_PG && db.pool) {
+      await db.pool.query('UPDATE qums_identities SET is_active=FALSE, updated_at=NOW() WHERE user_id=$1', [req.session.userId]).catch(() => {});
+    }
     await clearSessionAlert(req.session.userId);
     res.json({
       ok: true,
