@@ -218,6 +218,13 @@ const MIGRATIONS = [
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS qums_password_encrypted TEXT DEFAULT ''`,
     ],
   },
+  {
+    id: '014_email_verified',
+    statements: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+      `CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified)`,
+    ],
+  },
 ];
 
 /**

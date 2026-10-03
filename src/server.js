@@ -93,6 +93,15 @@ async function requireAuth(req, res, next) {
   try {
     const user = await currentUser(req);
     if (user) {
+      if (!user.emailVerified) {
+        if (req.path.startsWith('/api/')) {
+          return res.status(403).json({
+            error: 'Email verification required',
+            code: 'EMAIL_VERIFICATION_REQUIRED',
+          });
+        }
+        return res.redirect('/verify-email');
+      }
       req.appUser = user;
       return next();
     }
@@ -123,6 +132,15 @@ async function requireAdmin(req, res, next) {
       if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Login required', code: 'AUTH_REQUIRED' });
       return res.redirect('/login');
     }
+    if (!user.emailVerified) {
+      if (req.path.startsWith('/api/')) {
+        return res.status(403).json({
+          error: 'Email verification required',
+          code: 'EMAIL_VERIFICATION_REQUIRED',
+        });
+      }
+      return res.redirect('/verify-email');
+    }
     req.appUser = user;
     if (!isUserAdmin(user)) {
       if (req.path.startsWith('/api/')) {
@@ -152,7 +170,13 @@ function validEmail(e) {
 
 // ---- minimal in-memory rate limiter (auth endpoints — brute-force/email-spam guard) ----
 const RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min window
-const RATE_LIMITS = { '/api/login': 20, '/api/register': 10, '/api/forgot': 5, '/api/reset': 10 };
+const RATE_LIMITS = {
+  '/api/login': 20,
+  '/api/register': 10,
+  '/api/forgot': 5,
+  '/api/reset': 10,
+  '/api/auth/verify-token': 30,
+};
 const rateHits = new Map(); // `${ip}:${route}` -> [hit timestamps]
 
 function rateLimit(route) {
@@ -221,6 +245,15 @@ app.get('/', sendPage('home.html'));
 
 app.get('/register', sendPage('register.html'));
 app.get('/login', sendPage('login.html'));
+app.get('/verify-email', async (req, res) => {
+  try {
+    const user = await currentUser(req);
+    if (user && user.emailVerified) {
+      return res.redirect(user.qumsSessionPath ? '/dashboard' : '/qums-setup');
+    }
+  } catch {}
+  return sendPage('verify-email.html')(req, res);
+});
 app.get('/forgot', sendPage('forgot.html'));
 app.get('/reset', (req, res) => res.redirect('/login'));
 
@@ -308,10 +341,12 @@ async function resolveAppUserForFirebase(verified, candidatePassword) {
   // 1) already mapped? -> done (uid is verified, so this is authoritative)
   const byUid = await db.getUserByFirebaseUid(uid);
   if (byUid) {
-    if (byUid.email !== email) {
-      // Firebase email changed for this uid — keep app record authoritative.
-      await db.updateUser(byUid.id, { email });
-      byUid.email = email;
+    const patch = {};
+    if (byUid.email !== email) patch.email = email;
+    if (Boolean(byUid.emailVerified) !== Boolean(emailVerified)) patch.emailVerified = Boolean(emailVerified);
+    if (Object.keys(patch).length) {
+      const updated = await db.updateUser(byUid.id, patch);
+      return { user: updated };
     }
     return { user: byUid };
   }
@@ -331,11 +366,21 @@ async function resolveAppUserForFirebase(verified, candidatePassword) {
       if (!bcryptOk && !emailVerified) {
         return { error: 'link-not-authorized', user: byEmail };
       }
-      return { user: await db.updateUser(byEmail.id, { firebaseUid: uid }) };
+      return {
+        user: await db.updateUser(byEmail.id, {
+          firebaseUid: uid,
+          emailVerified: Boolean(emailVerified),
+        }),
+      };
     }
     // firebaseUid set but different uid for the same email — stale Firebase
     // user (deleted/recreated). Re-point to the current verified uid.
-    return { user: await db.updateUser(byEmail.id, { firebaseUid: uid }) };
+    return {
+      user: await db.updateUser(byEmail.id, {
+        firebaseUid: uid,
+        emailVerified: Boolean(emailVerified),
+      }),
+    };
   }
 
   // 3) brand-new user (bcrypt hash is a random unguessable placeholder —
@@ -345,12 +390,13 @@ async function resolveAppUserForFirebase(verified, candidatePassword) {
       email,
       passwordHash: bcrypt.hashSync(require('crypto').randomBytes(24).toString('hex'), 10),
       firebaseUid: uid,
+      emailVerified: Boolean(emailVerified),
     }),
   };
 }
 
 /** Firebase token -> session. Shared by /api/register and /api/login.
- *  Returns { user, redirect } or sends the response itself (null). */
+ *  Returns { user, emailVerified, redirect } or sends the response itself (null). */
 async function establishSessionFromIdToken(req, res, idToken, candidatePassword) {
   let verified;
   try {
@@ -376,7 +422,12 @@ async function establishSessionFromIdToken(req, res, idToken, candidatePassword)
   }
 
   req.session.userId = result.user.id;
-  return { user: result.user, redirect: result.user.qumsSessionPath ? '/dashboard' : '/qums-setup' };
+  const isVerified = Boolean(result.user.emailVerified);
+  const redirect = !isVerified
+    ? '/verify-email'
+    : (result.user.qumsSessionPath ? '/dashboard' : '/qums-setup');
+
+  return { user: result.user, emailVerified: isVerified, redirect };
 }
 
 app.post('/api/register', rateLimit('/api/register'), async (req, res) => {
@@ -400,18 +451,18 @@ app.post('/api/register', rateLimit('/api/register'), async (req, res) => {
     if (idToken) {
       const outcome = await establishSessionFromIdToken(req, res, idToken);
       if (!outcome) return; // response already sent (verification failure etc.)
-      console.log(`[auth] registered (Firebase) -> ${outcome.user.email}`);
-      return res.json({ ok: true, redirect: '/qums-setup' });
+      console.log(`[auth] registered (Firebase) -> ${outcome.user.email} (verified: ${outcome.emailVerified})`);
+      return res.json({ ok: true, emailVerified: outcome.emailVerified, redirect: outcome.redirect });
     }
 
     // Fallback ONLY when the Firebase SDK could not load in the browser
     // (offline/CDN blocked) — keeps registration available, same bcrypt model.
     if (firebaseUnavailable === true) {
       const passwordHash = await bcrypt.hash(String(password), 10);
-      const user = await db.createUser({ email: normalizedEmail, passwordHash });
+      const user = await db.createUser({ email: normalizedEmail, passwordHash, emailVerified: false });
       req.session.userId = user.id; // auto-login after register
       console.log(`[auth] registered (legacy fallback — Firebase SDK unavailable) -> ${user.email}`);
-      return res.json({ ok: true, redirect: '/qums-setup', warning: 'Registered without Firebase (SDK unavailable).' });
+      return res.json({ ok: true, emailVerified: false, redirect: '/verify-email', warning: 'Registered without Firebase (SDK unavailable).' });
     }
 
     return res.status(400).json({ error: 'Registration requires Firebase verification. Please retry.' });
@@ -430,8 +481,8 @@ app.post('/api/login', rateLimit('/api/login'), async (req, res) => {
     if (idToken) {
       const outcome = await establishSessionFromIdToken(req, res, idToken, password);
       if (!outcome) return;
-      console.log(`[auth] login (Firebase) -> ${outcome.user.email}`);
-      return res.json({ ok: true, redirect: outcome.redirect });
+      console.log(`[auth] login (Firebase) -> ${outcome.user.email} (verified: ${outcome.emailVerified})`);
+      return res.json({ ok: true, emailVerified: outcome.emailVerified, redirect: outcome.redirect });
     }
 
     // LEGACY FALLBACK: pre-Firebase users (or when the Firebase SDK could not
@@ -443,9 +494,74 @@ app.post('/api/login', rateLimit('/api/login'), async (req, res) => {
     }
     req.session.userId = user.id;
     console.log(`[auth] login (legacy bcrypt fallback) -> ${user.email}`);
-    res.json({ ok: true, redirect: user.qumsSessionPath ? '/dashboard' : '/qums-setup' });
+    const isVerified = Boolean(user.emailVerified);
+    const redirect = !isVerified
+      ? '/verify-email'
+      : (user.qumsSessionPath ? '/dashboard' : '/qums-setup');
+    res.json({ ok: true, emailVerified: isVerified, redirect });
   } catch (err) {
     safeServerError(res, err);
+  }
+});
+
+/**
+ * Check/refresh Firebase ID token verification state.
+ * Called by "I've Verified — Check Again" after client reloads the Firebase user.
+ */
+app.post('/api/auth/verify-token', rateLimit('/api/auth/verify-token'), async (req, res) => {
+  try {
+    const { idToken } = req.body || {};
+    if (!idToken) return res.status(400).json({ error: 'Token missing.' });
+
+    let verified;
+    try {
+      verified = await firebaseAuth.verifyIdToken(idToken);
+    } catch (err) {
+      return res.status(401).json({ error: firebaseAuth.friendlyTokenError(err) });
+    }
+
+    if (!verified.emailVerified) {
+      return res.status(400).json({
+        ok: false,
+        emailVerified: false,
+        error: 'Email is not verified yet. Please check your inbox and click the verification link.',
+      });
+    }
+
+    const outcome = await resolveAppUserForFirebase(verified);
+    if (!outcome || !outcome.user) {
+      return res.status(401).json({ error: 'Could not resolve user account.' });
+    }
+
+    const updatedUser = await db.updateUser(outcome.user.id, { emailVerified: true });
+    req.session.userId = outcome.user.id;
+
+    console.log(`[auth] email verified -> ${updatedUser.email}`);
+    return res.json({
+      ok: true,
+      emailVerified: true,
+      redirect: updatedUser.qumsSessionPath ? '/dashboard' : '/qums-setup',
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+/** Current user verification status check (used by the verification page). */
+app.get('/api/auth/verification-status', async (req, res) => {
+  try {
+    const user = await currentUser(req);
+    if (!user) {
+      return res.json({ loggedIn: false, email: '', emailVerified: false });
+    }
+    return res.json({
+      loggedIn: true,
+      email: user.email,
+      emailVerified: Boolean(user.emailVerified),
+      redirect: user.qumsSessionPath ? '/dashboard' : '/qums-setup',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not check status' });
   }
 });
 
@@ -788,30 +904,34 @@ process.on('uncaughtException', (err) => {
 });
 
 // ---- boot ----
-(async () => {
-  try {
-    await db.init();
-    startScheduler();
-    startWatcher();
-    telegram.initTelegram();
-    // 8:30 IST par server band tha / late start hua -> aaj ka timetable ek baar
-    // catch-up bhej do (per-day marker same-day duplicate rokta hai).
-    catchUpMorningSchedule().catch((e) => console.error('[server] morning catch-up failed:', e.message));
+if (require.main === module) {
+  (async () => {
+    try {
+      await db.init();
+      startScheduler();
+      startWatcher();
+      telegram.initTelegram();
+      // 8:30 IST par server band tha / late start hua -> aaj ka timetable ek baar
+      // catch-up bhej do (per-day marker same-day duplicate rokta hai).
+      catchUpMorningSchedule().catch((e) => console.error('[server] morning catch-up failed:', e.message));
 
-    app.listen(PORT,() => {
-  console.log(`[server] QUMS Attendance Bot (multi-user) running at ${BASE_URL}`);
-  console.log(`[server] (listening on 0.0.0.0:${PORT}${IS_PROD ? ', production mode' : ', development mode'})`);
-  console.log('[server] Pages: / (home) /features /how-it-works /about /faq /contact /privacy /terms | /register /login /dashboard /qums-setup /telegram-setup /forgot /reset');
-  console.log('[server] APIs: /api/attendance | /api/today | /api/trigger-telegram | /health');
-  console.log('[server] Scheduler: 8:30 AM IST (today\'s classes) — saare users, missed-run recovery + boot catch-up (daily 9 PM summary removed)');
-  console.log('[server] Watcher: per-class alerts, college hours 08:30-17:00 IST + backdated month-register loop');
-  console.log('[server] Assignments: new-assignment check (30 min) + deadline reminder 7:00 PM IST');
-  if (!telegram.isConfigured()) {
-    console.log('[server] Telegram: DISABLED — TELEGRAM_BOT_TOKEN set karo (Render env ya .env) aur restart; bina iske server theek chalega.');
-  }
-    });
-  } catch (err) {
-    console.error('[server] database boot failed:', err);
-    process.exit(1);
-  }
-})();
+      app.listen(PORT,() => {
+    console.log(`[server] QUMS Attendance Bot (multi-user) running at ${BASE_URL}`);
+    console.log(`[server] (listening on 0.0.0.0:${PORT}${IS_PROD ? ', production mode' : ', development mode'})`);
+    console.log('[server] Pages: / (home) /features /how-it-works /about /faq /contact /privacy /terms | /register /login /dashboard /qums-setup /telegram-setup /forgot /reset');
+    console.log('[server] APIs: /api/attendance | /api/today | /api/trigger-telegram | /health');
+    console.log('[server] Scheduler: 8:30 AM IST (today\'s classes) — saare users, missed-run recovery + boot catch-up (daily 9 PM summary removed)');
+    console.log('[server] Watcher: per-class alerts, college hours 08:30-17:00 IST + backdated month-register loop');
+    console.log('[server] Assignments: new-assignment check (30 min) + deadline reminder 7:00 PM IST');
+    if (!telegram.isConfigured()) {
+      console.log('[server] Telegram: DISABLED — TELEGRAM_BOT_TOKEN set karo (Render env ya .env) aur restart; bina iske server theek chalega.');
+    }
+      });
+    } catch (err) {
+      console.error('[server] database boot failed:', err);
+      process.exit(1);
+    }
+  })();
+}
+
+module.exports = app;

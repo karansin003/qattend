@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verify Your Email — QAttend</title>
+  <meta name="description" content="Verify ownership of your email address to access your QAttend attendance and notifications." />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="robots" content="noindex" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    .email-display-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 16px 0;
+      text-align: center;
+      word-break: break-all;
+    }
+    .email-display-card .email-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+    .email-display-card .email-value {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .btn-secondary {
+      background: #f1f5f9;
+      color: #1e293b;
+      border: 1px solid #cbd5e1;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: #e2e8f0;
+    }
+    .btn-logout {
+      background: transparent;
+      color: #64748b;
+      border: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      text-decoration: underline;
+      padding: 8px 12px;
+    }
+    .btn-logout:hover {
+      color: #0f172a;
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-bg auth-white">
+    <div class="auth-card">
+      <div class="auth-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
+      <p class="auth-tagline">Track. Alert. Stay Updated.</p>
+
+      <h1>Verify your email</h1>
+      <div class="sub">
+        We've sent a verification link to your email address.<br />
+        Please verify your email to continue using QAttend.
+      </div>
+
+      <div class="email-display-card" id="emailCard">
+        <div class="email-label">Verification Sent To</div>
+        <div class="email-value" id="userEmailText">Loading email...</div>
+      </div>
+
+      <div id="msg" class="form-ok hidden" role="status" aria-live="polite"></div>
+      <div id="error" class="form-error hidden" role="alert" aria-live="polite"></div>
+
+      <div style="margin-top: 18px; display: flex; flex-direction: column; gap: 10px;">
+        <button id="btnCheckAgain" type="button" style="width: 100%;">
+          I've Verified — Check Again
+        </button>
+
+        <button id="btnResend" type="button" class="btn-secondary" style="width: 100%;">
+          Resend Verification Email
+        </button>
+
+        <button id="btnLogout" type="button" class="btn-logout" style="width: 100%;">
+          Logout
+        </button>
+      </div>
+
+      <div class="auth-foot" style="margin-top: 20px;">
+        <a href="/">← Back to home</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const RESEND_COOLDOWN_MS = 60 * 1000;
+    const STORAGE_KEY = 'qattend_resend_cooldown_until';
+
+    let firebaseSdk = null;
+    let authUser = null;
+    let cooldownTimer = null;
+
+    async function loadFirebase() {
+      if (firebaseSdk) return firebaseSdk;
+      const { firebaseConfig } = await import('/firebase-config.js');
+      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
+      const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
+      firebaseSdk = {
+        auth: authMod.getAuth(app),
+        onAuthStateChanged: authMod.onAuthStateChanged,
+        sendEmailVerification: authMod.sendEmailVerification,
+        signOut: authMod.signOut,
+      };
+      return firebaseSdk;
+    }
+
+    function showMsg(text) {
+      $('msg').textContent = text;
+      $('msg').classList.remove('hidden');
+      $('error').classList.add('hidden');
+    }
+
+    function showError(text) {
+      $('error').textContent = text;
+      $('error').classList.remove('hidden');
+      $('msg').classList.add('hidden');
+    }
+
+    function updateCooldownUI() {
+      const until = Number(localStorage.getItem(STORAGE_KEY) || 0);
+      const remainingSec = Math.ceil((until - Date.now()) / 1000);
+      const btn = $('btnResend');
+
+      if (remainingSec > 0) {
+        btn.disabled = true;
+        btn.textContent = `Resend Verification Email (${remainingSec}s)`;
+        if (!cooldownTimer) {
+          cooldownTimer = setInterval(updateCooldownUI, 1000);
+        }
+      } else {
+        if (cooldownTimer) {
+          clearInterval(cooldownTimer);
+          cooldownTimer = null;
+        }
+        localStorage.removeItem(STORAGE_KEY);
+        btn.disabled = false;
+        btn.textContent = 'Resend Verification Email';
+      }
+    }
+
+    function startCooldown(seconds = 60) {
+      const until = Date.now() + seconds * 1000;
+      localStorage.setItem(STORAGE_KEY, String(until));
+      updateCooldownUI();
+    }
+
+    // Init page state and Firebase listeners
+    (async () => {
+      updateCooldownUI();
+
+      // Check server session state
+      let serverEmail = '';
+      try {
+        const sRes = await fetch('/api/auth/verification-status');
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (sData.loggedIn && sData.email) {
+            serverEmail = sData.email;
+            $('userEmailText').textContent = serverEmail;
+          }
+          if (sData.emailVerified) {
+            window.location.href = sData.redirect || '/dashboard';
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('Status check warning:', e);
+      }
+
+      try {
+        const fb = await loadFirebase();
+        fb.onAuthStateChanged(fb.auth, async (user) => {
+          authUser = user;
+          if (user) {
+            $('userEmailText').textContent = user.email || serverEmail || 'Your email address';
+            if (user.emailVerified) {
+              // User is already verified! Sync with backend and redirect
+              await handleVerifiedUser(user);
+            }
+          } else if (!serverEmail) {
+            $('userEmailText').textContent = 'Your email address';
+          }
+        });
+      } catch (err) {
+        console.error('Firebase load error:', err);
+        if (!serverEmail) {
+          $('userEmailText').textContent = 'Your email address';
+        }
+      }
+    })();
+
+    async function handleVerifiedUser(user) {
+      try {
+        const idToken = await user.getIdToken(true);
+        const res = await fetch('/api/auth/verify-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ idToken }),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          window.location.href = data.redirect || '/dashboard';
+          return true;
+        }
+      } catch (err) {
+        console.error('Sync verification error:', err);
+      }
+      return false;
+    }
+
+    // "I've Verified — Check Again"
+    $('btnCheckAgain').addEventListener('click', async () => {
+      const btn = $('btnCheckAgain');
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+      $('error').classList.add('hidden');
+      $('msg').classList.add('hidden');
+
+      try {
+        const fb = await loadFirebase();
+        const user = fb.auth.currentUser || authUser;
+
+        if (!user) {
+          showError('Session not found. Please log in again to verify your email.');
+          btn.disabled = false;
+          btn.textContent = "I've Verified — Check Again";
+          return;
+        }
+
+        // Refresh user and token state from Firebase
+        await user.reload();
+
+        if (!user.emailVerified) {
+          showError("Email not verified yet. Please check your inbox (and spam folder) and click the link before checking again.");
+          btn.disabled = false;
+          btn.textContent = "I've Verified — Check Again";
+          return;
+        }
+
+        // Token refresh and backend sync
+        const idToken = await user.getIdToken(true);
+        const res = await fetch('/api/auth/verify-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ idToken }),
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          showError(data.error || 'Verification check failed. Please try again.');
+          btn.disabled = false;
+          btn.textContent = "I've Verified — Check Again";
+          return;
+        }
+
+        showMsg('Email verified successfully! Redirecting...');
+        setTimeout(() => {
+          window.location.href = data.redirect || '/dashboard';
+        }, 500);
+      } catch (err) {
+        console.error('Check again error:', err);
+        showError('Could not verify status. Please check your connection and try again.');
+        btn.disabled = false;
+        btn.textContent = "I've Verified — Check Again";
+      }
+    });
+
+    // "Resend Verification Email"
+    $('btnResend').addEventListener('click', async () => {
+      const until = Number(localStorage.getItem(STORAGE_KEY) || 0);
+      if (Date.now() < until) {
+        updateCooldownUI();
+        return;
+      }
+
+      $('error').classList.add('hidden');
+      $('msg').classList.add('hidden');
+
+      try {
+        const fb = await loadFirebase();
+        const user = fb.auth.currentUser || authUser;
+
+        if (!user) {
+          showError('User session expired. Please log in again to request a verification email.');
+          return;
+        }
+
+        await fb.sendEmailVerification(user);
+        startCooldown(60);
+        showMsg("Verification link sent! Please check your inbox (and spam/junk folder).");
+      } catch (err) {
+        console.error('Resend verification error:', err);
+        const code = (err && err.code) || '';
+        if (code === 'auth/too-many-requests') {
+          startCooldown(60);
+          showError('Too many email requests sent recently. Please wait a few minutes before trying again.');
+        } else {
+          showError('Could not send verification email. Please try again in a few moments.');
+        }
+      }
+    });
+
+    // "Logout"
+    $('btnLogout').addEventListener('click', async () => {
+      try {
+        const fb = await loadFirebase();
+        if (fb.auth) await fb.signOut(fb.auth);
+      } catch {}
+      try {
+        await fetch('/logout');
+      } catch {}
+      window.location.href = '/login';
+    });
+  </script>
+</body>
+</html>

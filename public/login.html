@@ -84,9 +84,10 @@
        * if Firebase does not know the account, the backend bcrypt fallback runs.
        */
       let idToken = null;
+      let credential = null;
       try {
         const fb = await loadFirebase();
-        const credential = await fb.signInWithEmailAndPassword(fb.auth, email, password);
+        credential = await fb.signInWithEmailAndPassword(fb.auth, email, password);
         idToken = await credential.user.getIdToken();
       } catch (fbError) {
         const code = (fbError && fbError.code) || '';
@@ -119,7 +120,8 @@
         });
         const data = await res.json();
         if (!res.ok) { $('error').textContent = data.error || 'Login fail'; $('error').classList.remove('hidden'); return; }
-        location.href = data.redirect || '/dashboard';
+        const target = data.redirect || (credential && credential.user && !credential.user.emailVerified ? '/verify-email' : '/dashboard');
+        location.href = target;
       } catch (err) {
         $('error').textContent = err.message; $('error').classList.remove('hidden');
       } finally { btn.disabled = false; }

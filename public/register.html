@@ -180,7 +180,8 @@
         createUserWithEmailAndPassword: authMod.createUserWithEmailAndPassword,
         signInWithEmailAndPassword: authMod.signInWithEmailAndPassword,
         sendPasswordResetEmail: authMod.sendPasswordResetEmail,
-        confirmPasswordReset: authMod.confirmPasswordReset
+        confirmPasswordReset: authMod.confirmPasswordReset,
+        sendEmailVerification: authMod.sendEmailVerification
       };
       return firebaseSdk;
     }
@@ -386,6 +387,15 @@
         );
 
         /*
+         * Call Firebase official sendEmailVerification()
+         */
+        try {
+          await fb.sendEmailVerification(credential.user);
+        } catch (verifyErr) {
+          console.warn("sendEmailVerification error:", verifyErr);
+        }
+
+        /*
          * ID token = cryptographic proof for the backend (never a raw uid).
          */
         idToken = await credential.user.getIdToken();
@@ -504,7 +514,7 @@
          * Redirect returned by backend
          */
         const redirect =
-          data.redirect || "/qums-setup";
+          data.redirect || "/verify-email";
 
 
         /*
@@ -535,7 +545,7 @@
          * Only reset button if we are
          * not redirecting.
          */
-        if (!window.location.href.includes("/qums-setup")) {
+        if (!window.location.href.includes("/verify-email") && !window.location.href.includes("/qums-setup")) {
 
           setLoading(false);
 
