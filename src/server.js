@@ -93,6 +93,18 @@ async function requireAuth(req, res, next) {
   try {
     const user = await currentUser(req);
     if (user) {
+      if (user.isSuspended) {
+        if (req.session) {
+          req.session.userId = null;
+        }
+        if (req.path.startsWith('/api/')) {
+          return res.status(403).json({
+            error: 'Your account has been suspended by the administrator.',
+            code: 'ACCOUNT_SUSPENDED',
+          });
+        }
+        return res.status(403).send('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Account Suspended</title><link rel="stylesheet" href="/style.css"></head><body style="padding:40px;text-align:center;"><h1>Account Suspended</h1><p>Your account has been suspended by the administrator. Please contact support if you believe this is an error.</p><p style="margin-top:20px;"><a href="/login" class="btn" style="display:inline-block;padding:8px 16px;background:var(--primary,#1e3a8a);color:#fff;text-decoration:none;border-radius:6px;">Back to Login</a></p></body></html>');
+      }
       if (!user.emailVerified) {
         if (req.path.startsWith('/api/')) {
           return res.status(403).json({
@@ -131,6 +143,18 @@ async function requireAdmin(req, res, next) {
     if (!user) {
       if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Login required', code: 'AUTH_REQUIRED' });
       return res.redirect('/login');
+    }
+    if (user.isSuspended) {
+      if (req.session) {
+        req.session.userId = null;
+      }
+      if (req.path.startsWith('/api/')) {
+        return res.status(403).json({
+          error: 'Your account has been suspended by the administrator.',
+          code: 'ACCOUNT_SUSPENDED',
+        });
+      }
+      return res.status(403).send('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Account Suspended</title><link rel="stylesheet" href="/style.css"></head><body style="padding:40px;text-align:center;"><h1>Account Suspended</h1><p>Your account has been suspended by the administrator.</p></body></html>');
     }
     if (!user.emailVerified) {
       if (req.path.startsWith('/api/')) {
@@ -421,6 +445,14 @@ async function establishSessionFromIdToken(req, res, idToken, candidatePassword)
     return null;
   }
 
+  if (result.user.isSuspended) {
+    res.status(403).json({
+      error: 'Your account has been suspended by the administrator.',
+      code: 'ACCOUNT_SUSPENDED',
+    });
+    return null;
+  }
+
   req.session.userId = result.user.id;
   const isVerified = Boolean(result.user.emailVerified);
   const redirect = !isVerified
@@ -492,6 +524,12 @@ app.post('/api/login', rateLimit('/api/login'), async (req, res) => {
     if (!user || !(await bcrypt.compare(String(password || ''), user.passwordHash))) {
       return res.status(401).json({ error: 'wrong email or password.' });
     }
+    if (user.isSuspended) {
+      return res.status(403).json({
+        error: 'Your account has been suspended by the administrator.',
+        code: 'ACCOUNT_SUSPENDED',
+      });
+    }
     req.session.userId = user.id;
     console.log(`[auth] login (legacy bcrypt fallback) -> ${user.email}`);
     const isVerified = Boolean(user.emailVerified);
@@ -531,6 +569,13 @@ app.post('/api/auth/verify-token', rateLimit('/api/auth/verify-token'), async (r
     const outcome = await resolveAppUserForFirebase(verified);
     if (!outcome || !outcome.user) {
       return res.status(401).json({ error: 'Could not resolve user account.' });
+    }
+
+    if (outcome.user.isSuspended) {
+      return res.status(403).json({
+        error: 'Your account has been suspended by the administrator.',
+        code: 'ACCOUNT_SUSPENDED',
+      });
     }
 
     const updatedUser = await db.updateUser(outcome.user.id, { emailVerified: true });
@@ -862,6 +907,7 @@ app.get('/api/admin/health', requireAdmin, async (req, res) => {
         qumsConnected: stats.qumsConnected,
         sessionExpired: stats.sessionExpired,
         telegramConnected: stats.telegramConnected,
+        suspended: stats.suspended,
         notificationsSent: notifs,
       },
       serverTime: new Date().toISOString(),
@@ -870,6 +916,65 @@ app.get('/api/admin/health', requireAdmin, async (req, res) => {
     safeServerError(res, err);
   }
 });
+
+app.post('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const target = await db.getUserById(targetId);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (req.appUser && req.appUser.id === target.id) {
+      return res.status(400).json({ error: 'Cannot suspend your own admin account.' });
+    }
+    const isSuspended = req.body && typeof req.body.suspended === 'boolean'
+      ? req.body.suspended
+      : !target.isSuspended;
+    await db.setUserSuspended(target.id, isSuspended);
+    console.log(`[admin] user ${target.email} (${target.id}) suspended: ${isSuspended} by ${req.appUser ? req.appUser.email : 'admin'}`);
+    res.json({
+      ok: true,
+      id: target.id,
+      isSuspended,
+      message: isSuspended ? 'User has been suspended.' : 'User suspension lifted.',
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+async function handleAdminDeleteUser(req, res) {
+  try {
+    const targetId = req.params.id;
+    const target = await db.getUserById(targetId);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (req.appUser && req.appUser.id === target.id) {
+      return res.status(400).json({ error: 'Cannot delete your own admin account.' });
+    }
+    const sessionPath = target.qumsSessionPath || db.sessionPathFor(target.id);
+    if (sessionPath) {
+      try {
+        if (fs.existsSync(sessionPath)) fs.unlinkSync(sessionPath);
+      } catch (e) {
+        console.warn(`[admin] failed to unlink session file for ${target.id}:`, e.message);
+      }
+    }
+    await db.deleteUser(target.id);
+    console.log(`[admin] user ${target.email} (${target.id}) deleted by ${req.appUser ? req.appUser.email : 'admin'}`);
+    res.json({
+      ok: true,
+      id: target.id,
+      message: `User ${target.email} deleted successfully.`,
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+}
+
+app.post('/api/admin/users/:id/delete', requireAdmin, handleAdminDeleteUser);
+app.delete('/api/admin/users/:id', requireAdmin, handleAdminDeleteUser);
 
 // ---- misc ----
 // Health check — simple, secret-free: user counts / telegram state / internals

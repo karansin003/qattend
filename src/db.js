@@ -658,6 +658,7 @@ function fromUserRow(r) {
     qumsYearSem: r.qums_year_sem || '',
     isAdmin: r.is_admin === true,
     emailVerified: r.email_verified === true,
+    isSuspended: r.is_suspended === true,
     qumsSessionStatus: r.qums_session_status || 'active',
     monitoringStartedDate: mDate,
     monitoringStartedAt: r.monitoring_started_at ? new Date(r.monitoring_started_at).toISOString() : '',
@@ -677,7 +678,7 @@ function fromUserRow(r) {
 }
 
 /** Blank app-user template shared by the JSON store and PG inserts. */
-function blankUser({ email, passwordHash, firebaseUid, emailVerified }) {
+function blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended }) {
   return {
     id: newId(),
     email: String(email).trim().toLowerCase(),
@@ -691,6 +692,7 @@ function blankUser({ email, passwordHash, firebaseUid, emailVerified }) {
     qumsYearSem: '', // QUMS Year/Sem CACHE (fetched from the portal, never hardcoded)
     isAdmin: false,
     emailVerified: Boolean(emailVerified || false),
+    isSuspended: Boolean(isSuspended || false),
     qumsSessionStatus: 'active',
     monitoringStartedDate: '',
     monitoringStartedAt: '',
@@ -720,13 +722,13 @@ async function getUserById(id) {
   return r.rows[0] ? fromUserRow(r.rows[0]) : null;
 }
 
-async function createUser({ email, passwordHash, firebaseUid, emailVerified }) {
-  const user = blankUser({ email, passwordHash, firebaseUid, emailVerified });
+async function createUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended }) {
+  const user = blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended });
   if (!USE_PG) { data.users.push(user); persistJson(); return user; }
   await init();
   const r = await pool.query(
-    `INSERT INTO users(id,email,password_hash,firebase_uid,email_verified,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [user.id, user.email, user.passwordHash, user.firebaseUid, user.emailVerified, user.createdAt]
+    `INSERT INTO users(id,email,password_hash,firebase_uid,email_verified,is_suspended,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [user.id, user.email, user.passwordHash, user.firebaseUid, user.emailVerified, user.isSuspended, user.createdAt]
   );
   return fromUserRow(r.rows[0]);
 }
@@ -748,6 +750,7 @@ const WRITABLE_USER_COLUMNS = {
   qumsYearSem: 'qums_year_sem',
   isAdmin: 'is_admin',
   emailVerified: 'email_verified',
+  isSuspended: 'is_suspended',
   qumsSessionStatus: 'qums_session_status',
   monitoringStartedDate: 'monitoring_started_date',
   monitoringStartedAt: 'monitoring_started_at',
@@ -768,7 +771,7 @@ async function updateUser(id, patch) {
   for (const [appKey, column] of Object.entries(WRITABLE_USER_COLUMNS)) {
     if (!(appKey in patch)) continue;
     let v = merged[appKey];
-    if (v === undefined || v === null) v = (appKey === 'isAdmin' || appKey === 'emailVerified') ? false : '';
+    if (v === undefined || v === null) v = (appKey === 'isAdmin' || appKey === 'emailVerified' || appKey === 'isSuspended') ? false : '';
     values.push(v);
     cols.push(`${column}=$${values.length}`);
   }
@@ -821,6 +824,10 @@ async function touchUserSync(userId, { attendance, assignment, profile, error } 
 
 async function setUserAdmin(userId, isAdmin) {
   return updateUser(userId, { isAdmin: Boolean(isAdmin) });
+}
+
+async function setUserSuspended(userId, isSuspended) {
+  return updateUser(userId, { isSuspended: Boolean(isSuspended) });
 }
 
 async function getQumsEncryptedPassword(userId) {
@@ -1204,6 +1211,7 @@ function safeAdminUser(u, expiredUserIds = []) {
     telegramConnected: Boolean(u.telegramChatId),
     isAdmin: Boolean(u.isAdmin),
     emailVerified: Boolean(u.emailVerified),
+    isSuspended: Boolean(u.isSuspended),
     createdAt: u.createdAt || '',
     profileSyncedAt: u.profileSyncedAt || '',
     attendanceLastCheckedAt: u.attendanceLastCheckedAt || '',
@@ -1214,7 +1222,7 @@ function safeAdminUser(u, expiredUserIds = []) {
 
 /**
  * Pure: search (name/email/QID) + filter for the admin list. Exported for tests.
- * filter: 'all' | 'qums_connected' | 'session_expired' | 'telegram_connected'
+ * filter: 'all' | 'qums_connected' | 'session_expired' | 'telegram_connected' | 'suspended'
  */
 function applyAdminFilters(rows, { search = '', filter = 'all' } = {}) {
   const q = String(search || '').trim().toLowerCase();
@@ -1226,6 +1234,7 @@ function applyAdminFilters(rows, { search = '', filter = 'all' } = {}) {
     if (filter === 'qums_connected' && !r.qumsConnected) return false;
     if (filter === 'session_expired' && !r.sessionExpired) return false;
     if (filter === 'telegram_connected' && !r.telegramConnected) return false;
+    if (filter === 'suspended' && !r.isSuspended) return false;
     return true;
   });
 }
@@ -1261,6 +1270,7 @@ async function adminStats() {
     qumsConnected: withSession.length,
     sessionExpired: users.filter((u) => expired.includes(u.id)).length,
     telegramConnected: users.filter((u) => u.telegramChatId).length,
+    suspended: users.filter((u) => u.isSuspended).length,
     admins: users.filter((u) => u.isAdmin).length,
     dbMode: USE_PG ? 'postgres' : 'json',
     database: {
@@ -1620,7 +1630,7 @@ module.exports={
   // migrations / schema
   runMigrations, schemaHealth, importLocalJsonData, sslConfig,
   // per-user sync bookkeeping
-  touchUserSync, setUserAdmin, getQumsEncryptedPassword,
+  touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
   // session-expiry state (PostgreSQL-backed)
   SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, clearSessionExpiry, listSessionExpiredUsers,
   // notification log / analytics

@@ -166,6 +166,43 @@
     tbody tr:hover {
       background: #f8fafc;
     }
+    .btn-action {
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid var(--border, #cbd5e1);
+      cursor: pointer;
+      background: #ffffff;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .btn-action:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn-suspend {
+      color: #b45309;
+      border-color: #fde68a;
+    }
+    .btn-suspend:hover:not(:disabled) {
+      background: #fef3c7;
+    }
+    .btn-unsuspend {
+      color: #15803d;
+      border-color: #bbf7d0;
+    }
+    .btn-unsuspend:hover:not(:disabled) {
+      background: #dcfce7;
+    }
+    .btn-delete {
+      color: #b91c1c;
+      border-color: #fecaca;
+      margin-left: 6px;
+    }
+    .btn-delete:hover:not(:disabled) {
+      background: #fee2e2;
+    }
   </style>
 </head>
 <body>
@@ -215,6 +252,10 @@
       <div class="metric-card">
         <div class="metric-label">Telegram Linked</div>
         <div class="metric-num" id="statTelegramConnected" style="color: #2563eb;">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Suspended Users</div>
+        <div class="metric-num" id="statSuspended" style="color: #dc2626;">—</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Notifications Sent</div>
@@ -274,6 +315,7 @@
           <option value="qums_connected">QUMS Connected</option>
           <option value="session_expired">Session Expired</option>
           <option value="telegram_connected">Telegram Connected</option>
+          <option value="suspended">Suspended Users</option>
         </select>
         <span id="userCountBadge" style="font-size: 13px; color: var(--muted); margin-left: auto;">Showing 0 users</span>
       </div>
@@ -284,16 +326,18 @@
             <tr>
               <th>Student Name</th>
               <th>Email</th>
+              <th>Status</th>
               <th>QID</th>
               <th>QUMS Session</th>
               <th>Telegram</th>
               <th>Attendance Last Checked</th>
               <th>Assignment Last Checked</th>
               <th>Created</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="userTableBody">
-            <tr><td colspan="8" style="text-align:center; padding: 24px; color: var(--muted);">Loading users…</td></tr>
+            <tr><td colspan="10" style="text-align:center; padding: 24px; color: var(--muted);">Loading users…</td></tr>
           </tbody>
         </table>
       </div>
@@ -344,6 +388,7 @@
         document.getElementById('statQumsConnected').textContent = s.qumsConnected != null ? s.qumsConnected : '0';
         document.getElementById('statSessionExpired').textContent = s.sessionExpired != null ? s.sessionExpired : '0';
         document.getElementById('statTelegramConnected').textContent = s.telegramConnected != null ? s.telegramConnected : '0';
+        document.getElementById('statSuspended').textContent = s.suspended != null ? s.suspended : '0';
         const notifCount = (s.notificationsSent && s.notificationsSent.total != null) ? s.notificationsSent.total : '0';
         document.getElementById('statNotificationsSent').textContent = notifCount;
 
@@ -445,7 +490,7 @@
 
         tbody.innerHTML = '';
         if (users.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 24px; color: var(--muted);">No users found matching current filters.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 24px; color: var(--muted);">No users found matching current filters.</td></tr>';
           return;
         }
 
@@ -480,6 +525,22 @@
             tdEmail.appendChild(adminTag);
           }
           tr.appendChild(tdEmail);
+
+          // Status (Suspended / Unverified / Active)
+          const tdStatus = document.createElement('td');
+          const statusBadge = document.createElement('span');
+          if (u.isSuspended) {
+            statusBadge.className = 'badge-err';
+            statusBadge.textContent = 'SUSPENDED';
+          } else if (!u.emailVerified) {
+            statusBadge.className = 'badge-warn';
+            statusBadge.textContent = 'UNVERIFIED';
+          } else {
+            statusBadge.className = 'badge-ok';
+            statusBadge.textContent = 'ACTIVE';
+          }
+          tdStatus.appendChild(statusBadge);
+          tr.appendChild(tdStatus);
 
           // QID
           const tdQid = document.createElement('td');
@@ -530,13 +591,112 @@
           tdCreated.textContent = formatTime(u.createdAt);
           tr.appendChild(tdCreated);
 
+          // Actions
+          const tdActions = document.createElement('td');
+          tdActions.style.whiteSpace = 'nowrap';
+
+          const suspendBtn = document.createElement('button');
+          suspendBtn.type = 'button';
+          if (u.isSuspended) {
+            suspendBtn.className = 'btn-action btn-unsuspend';
+            suspendBtn.textContent = 'Unsuspend';
+            suspendBtn.dataset.action = 'unsuspend';
+          } else {
+            suspendBtn.className = 'btn-action btn-suspend';
+            suspendBtn.textContent = 'Suspend';
+            suspendBtn.dataset.action = 'suspend';
+          }
+          suspendBtn.dataset.id = u.id;
+          suspendBtn.dataset.email = u.email || '';
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'btn-action btn-delete';
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.dataset.action = 'delete';
+          deleteBtn.dataset.id = u.id;
+          deleteBtn.dataset.email = u.email || '';
+
+          tdActions.appendChild(suspendBtn);
+          tdActions.appendChild(deleteBtn);
+          tr.appendChild(tdActions);
+
           tbody.appendChild(tr);
         }
       } catch (err) {
         console.error('Failed to load users:', err);
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color: #dc2626; padding: 24px;">Failed to load users: ${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color: #dc2626; padding: 24px;">Failed to load users: ${err.message}</td></tr>`;
       }
     }
+
+    async function handleUserAction(btn) {
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      const email = btn.dataset.email;
+
+      if (action === 'suspend') {
+        if (!confirm(`Are you sure you want to suspend user "${email}"?\n\nThey will be immediately blocked from logging in and accessing QAttend.`)) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}/suspend`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suspended: true }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to suspend user');
+          await loadHealth();
+          await loadUsers();
+        } catch (err) {
+          alert(`Error: ${err.message}`);
+          btn.disabled = false;
+        }
+      } else if (action === 'unsuspend') {
+        if (!confirm(`Unsuspend user "${email}"?\n\nThey will regain access to QAttend.`)) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}/suspend`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suspended: false }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to lift suspension');
+          await loadHealth();
+          await loadUsers();
+        } catch (err) {
+          alert(`Error: ${err.message}`);
+          btn.disabled = false;
+        }
+      } else if (action === 'delete') {
+        if (!confirm(`DANGER: Are you sure you want to permanently delete user "${email}"?\n\nThis will remove their account and all associated attendance/assignment data from the database. This action cannot be undone.`)) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/admin/users/${encodeURIComponent(id)}/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+          await loadHealth();
+          await loadUsers();
+        } catch (err) {
+          alert(`Error: ${err.message}`);
+          btn.disabled = false;
+        }
+      }
+    }
+
+    document.getElementById('userTableBody').addEventListener('click', (e) => {
+      const btn = e.target.closest('.btn-action');
+      if (btn) handleUserAction(btn);
+    });
 
     document.getElementById('searchInput').addEventListener('input', () => {
       clearTimeout(searchDebounce);

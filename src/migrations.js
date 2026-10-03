@@ -225,6 +225,13 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified)`,
     ],
   },
+  {
+    id: '015_user_suspension',
+    statements: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE`,
+      `CREATE INDEX IF NOT EXISTS idx_users_is_suspended ON users(is_suspended)`,
+    ],
+  },
 ];
 
 /**
