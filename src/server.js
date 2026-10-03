@@ -674,17 +674,28 @@ app.post('/api/reset', rateLimit('/api/reset'), async (req, res) => {
   }
 });
 
+// In-memory data caches for fast dashboard loading
+const attendanceCache = new Map(); // userId -> { data, timestamp }
+const ATTENDANCE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+const todayCache = new Map(); // userId -> { data, timestamp }
+const TODAY_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+function invalidateUserDataCaches(userId) {
+  if (userId) {
+    attendanceCache.delete(userId);
+    todayCache.delete(userId);
+  }
+}
+
 // ---- protected data APIs (per-user) ----
 app.get('/api/me', requireAuth, async (req, res) => {
   let user = await db.getUserById(req.session.userId);
   if (user && !user.studentName && user.qumsSessionPath && fs.existsSync(user.qumsSessionPath)) {
-    try {
-      await Promise.race([
-        ensureStudentName(user.id),
-        new Promise((resolve) => setTimeout(resolve, 2500)),
-      ]);
-      user = (await db.getUserById(req.session.userId)) || user;
-    } catch {}
+    // Refresh student name asynchronously in background — DO NOT block response
+    setImmediate(() => {
+      ensureStudentName(user.id).catch(() => {});
+    });
   }
   const hasSavedCreds = Boolean(user && user.qumsQid && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(user.id))));
   res.json({
@@ -704,11 +715,26 @@ app.get('/api/attendance', requireAuth, async (req, res) => {
   try {
     const runtime = resolveUserRuntime(req.appUser);
     const overrideTotal = Number(req.query.total);
-    const subjects = await scrapeAttendance({ sessionPath: runtime.sessionPath });
+    const forceFresh = req.query.fresh === '1' || req.query.refresh === '1' || req.query.force === '1';
+    const userId = req.appUser.id;
+
+    const cached = attendanceCache.get(userId);
+    if (!forceFresh && !overrideTotal && cached && (Date.now() - cached.timestamp < ATTENDANCE_CACHE_TTL_MS)) {
+      return res.json({ ...cached.data, _cached: true, _cachedAt: new Date(cached.timestamp).toISOString() });
+    }
+
+    const subjects = await scrapeAttendance({
+      sessionPath: runtime.sessionPath,
+      yearSem: req.appUser.qumsYearSem,
+      studentName: req.appUser.studentName,
+    });
     const analysis = analyzeAttendance(
       subjects,
       Number.isFinite(overrideTotal) && overrideTotal > 0 ? overrideTotal : undefined
     );
+    if (!overrideTotal) {
+      attendanceCache.set(userId, { data: analysis, timestamp: Date.now() });
+    }
     res.json(analysis);
   } catch (err) {
     res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
@@ -719,8 +745,18 @@ app.get('/api/today', requireAuth, async (req, res) => {
   // Debug aid: shows exactly what the watcher polls for THIS user.
   try {
     const runtime = resolveUserRuntime(req.appUser);
+    const forceFresh = req.query.fresh === '1' || req.query.refresh === '1' || req.query.force === '1';
+    const userId = req.appUser.id;
+
+    const cached = todayCache.get(userId);
+    if (!forceFresh && cached && (Date.now() - cached.timestamp < TODAY_CACHE_TTL_MS)) {
+      return res.json({ ...cached.data, _cached: true });
+    }
+
     const periods = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
-    res.json({ date: new Date().toISOString(), periods });
+    const payload = { date: new Date().toISOString(), periods };
+    todayCache.set(userId, { data: payload, timestamp: Date.now() });
+    res.json(payload);
   } catch (err) {
     res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
   }
@@ -784,6 +820,7 @@ app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
     const text = String(captchaText || captcha || '').trim();
     const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text);
     if (result && result.ok) {
+      invalidateUserDataCaches(req.session.userId);
       // Seed baseline marked periods for today
       runBaselineForUser(req.session.userId).catch((e) =>
         console.error('[qums-setup] baseline fetch fail:', e.message)
@@ -798,6 +835,7 @@ app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
 // ---- QUMS reset (permanent reset for req.session.userId only) ----
 app.post('/api/qums-reset', requireAuth, async (req, res) => {
   try {
+    invalidateUserDataCaches(req.session.userId);
     const user = await db.getUserById(req.session.userId);
     const sp = (user && user.qumsSessionPath) || db.sessionPathFor(req.session.userId);
     if (sp && fs.existsSync(sp)) {
@@ -828,6 +866,7 @@ app.post('/api/qums-reset', requireAuth, async (req, res) => {
 // ---- QUMS logout (deletes session file for req.session.userId only; retains QID for reconnect) ----
 app.post('/api/qums-logout', requireAuth, async (req, res) => {
   try {
+    invalidateUserDataCaches(req.session.userId);
     const user = await db.getUserById(req.session.userId);
     const sp = (user && user.qumsSessionPath) || db.sessionPathFor(req.session.userId);
     if (sp && fs.existsSync(sp)) {
@@ -983,7 +1022,10 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, status: 'ok', uptimeSeconds: Math.round(process.uptime()), timestamp: new Date().toISOString() });
 });
 
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(PUBLIC_DIR, {
+  maxAge: IS_PROD ? '1d' : 0,
+  etag: true,
+}));
 
 // ---- API fallbacks: kabhi bhi HTML API clients tak na jaaye ----
 app.use('/api', (req, res) => {

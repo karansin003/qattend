@@ -113,8 +113,31 @@ async function throwIfLoginPage(page) {
   if (looksLikeLoginHtml(html)) throw new SessionExpiredError();
 }
 
+const regIdMemoryCache = new Map(); // sessionPath -> { regId, time }
+const REGID_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+function getCachedRegId(sessionPath) {
+  if (!sessionPath) return null;
+  const entry = regIdMemoryCache.get(sessionPath);
+  if (entry && Date.now() - entry.time < REGID_CACHE_TTL) {
+    return entry.regId;
+  }
+  return null;
+}
+
+function setCachedRegId(sessionPath, regId) {
+  if (sessionPath && regId) {
+    regIdMemoryCache.set(sessionPath, { regId, time: Date.now() });
+  }
+}
+
+function clearCachedRegId(sessionPath) {
+  if (sessionPath) regIdMemoryCache.delete(sessionPath);
+}
+
 /** Fetch the dashboard page and pull out the embedded RegID + selected Year/Sem. */
-async function getStudentContext(apiContext) {
+async function getStudentContext(apiContext, opts = {}) {
+  const sessionPath = opts.sessionPath || null;
   const resp = await apiGet(apiContext, DASHBOARD_URL, { timeout: 60000 });
 
   if (!resp.ok()) {
@@ -125,7 +148,10 @@ async function getStudentContext(apiContext) {
   }
 
   const html = await resp.text();
-  if (looksLikeLoginHtml(html)) throw new SessionExpiredError();
+  if (looksLikeLoginHtml(html)) {
+    if (sessionPath) clearCachedRegId(sessionPath);
+    throw new SessionExpiredError();
+  }
 
   // QUMS embeds RegID in the dashboard page.
   const regIdMatch =
@@ -140,58 +166,90 @@ async function getStudentContext(apiContext) {
       'Dashboard → QUMS Setup → Reconnect QUMS try karo.'
     );
   }
+  if (sessionPath) setCachedRegId(sessionPath, regId);
 
-  // Do not trust txtYearSem / ddlYearSemAttendance from the initial HTML.
-  // QUMS can populate/update these asynchronously. The reliable signal is
-  // the attendance API: the student's active Year/Sem returns real subjects.
-  // Probe all valid values so this works for every student/year without a
-  // global QUMS_CURRENT_YEARSEM setting.
   const detectedYearSems = [];
   let yearSem = null;
+  let attendancePayload = null;
 
-  for (let sem = 1; sem <= 8; sem++) {
+  // FAST PATH 1: If known/hinted yearSem is passed (e.g. from user profile or opts), check it FIRST!
+  const candidateSem = String(opts.yearSem || opts.hintYearSem || '').trim();
+  if (/^[1-8]$/.test(candidateSem)) {
     try {
       const attendanceResp = await apiPost(apiContext, ATTENDANCE_API, {
-        form: { RegID: regId, YearSem: String(sem) },
-        timeout: 60000,
+        form: { RegID: regId, YearSem: candidateSem },
+        timeout: 30000,
       });
-
-      if (!attendanceResp.ok()) continue;
-
-      const raw = await attendanceResp.text();
-      if (!raw || raw.trim().startsWith('<')) continue;
-
-      let payload;
-      try {
-        payload = JSON.parse(raw);
-      } catch {
-        continue;
+      if (attendanceResp.ok()) {
+        const raw = await attendanceResp.text();
+        if (raw && !raw.trim().startsWith('<')) {
+          const payload = JSON.parse(raw);
+          let rawRows = [];
+          try {
+            rawRows = typeof payload.data === 'string'
+              ? JSON.parse(payload.data || '[]')
+              : (Array.isArray(payload.data) ? payload.data : []);
+          } catch {
+            rawRows = [];
+          }
+          const hasSubjects = Array.isArray(rawRows) && rawRows.some(
+            (row) => row && (norm(row.Subject) || norm(row.SubjectCode))
+          );
+          if (hasSubjects) {
+            yearSem = candidateSem;
+            detectedYearSems.push(candidateSem);
+            attendancePayload = payload;
+          }
+        }
       }
+    } catch {}
+  }
 
-      let rawRows = [];
-      try {
-        rawRows = typeof payload.data === 'string'
-          ? JSON.parse(payload.data || '[]')
-          : (Array.isArray(payload.data) ? payload.data : []);
-      } catch {
-        rawRows = [];
+  // FAST PATH 2: If not found yet, probe remaining semesters in PARALLEL via Promise.all
+  if (!yearSem) {
+    const semsToProbe = [1, 2, 3, 4, 5, 6, 7, 8].filter((s) => String(s) !== candidateSem);
+    const probeResults = await Promise.all(
+      semsToProbe.map(async (sem) => {
+        try {
+          const attendanceResp = await apiPost(apiContext, ATTENDANCE_API, {
+            form: { RegID: regId, YearSem: String(sem) },
+            timeout: 30000,
+          });
+          if (!attendanceResp.ok()) return null;
+          const raw = await attendanceResp.text();
+          if (!raw || raw.trim().startsWith('<')) return null;
+          const payload = JSON.parse(raw);
+          let rawRows = [];
+          try {
+            rawRows = typeof payload.data === 'string'
+              ? JSON.parse(payload.data || '[]')
+              : (Array.isArray(payload.data) ? payload.data : []);
+          } catch {
+            rawRows = [];
+          }
+          const hasSubjects = Array.isArray(rawRows) && rawRows.some(
+            (row) => row && (norm(row.Subject) || norm(row.SubjectCode))
+          );
+          if (hasSubjects) {
+            return { sem: String(sem), payload };
+          }
+        } catch {}
+        return null;
+      })
+    );
+
+    for (const res of probeResults) {
+      if (res) {
+        detectedYearSems.push(res.sem);
+        if (!yearSem) {
+          yearSem = res.sem;
+          attendancePayload = res.payload;
+        }
       }
-
-      const hasSubjects = Array.isArray(rawRows) && rawRows.some(
-        (row) => row && (norm(row.Subject) || norm(row.SubjectCode))
-      );
-
-      if (hasSubjects) {
-        detectedYearSems.push(String(sem));
-        if (!yearSem) yearSem = String(sem);
-      }
-    } catch {
-      // Try the next semester.
     }
   }
 
   // Compatibility fallback only if the portal API returned no active semester.
-  // It can never override a working API result.
   if (!yearSem) {
     const envSem = String(process.env.QUMS_CURRENT_YEARSEM || '').trim();
     if (/^[1-8]$/.test(envSem)) yearSem = envSem;
@@ -211,32 +269,32 @@ async function getStudentContext(apiContext) {
       : '')
   );
 
-  // Part 1 — student's real name from QUMS (GetStudentDetailOnRegID).
-  // Best-effort: a name lookup failure must NEVER break attendance scraping.
-  let studentName = '';
-  try {
-    let detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
-      data: { RegID: String(regId) },
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
-      timeout: 30000,
-    }).catch(() => null);
-    if (!detailResp || !detailResp.ok()) {
-      detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
-        form: { RegID: String(regId) },
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+  let studentName = opts.studentName || '';
+  if (!studentName) {
+    try {
+      let detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+        data: { RegID: String(regId) },
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Requested-With': 'XMLHttpRequest' },
         timeout: 30000,
       }).catch(() => null);
-    }
-    if (detailResp && detailResp.ok()) {
-      const detailRaw = await detailResp.text();
-      if (detailRaw && !detailRaw.trim().startsWith('<')) {
-        const parsed = JSON.parse(detailRaw);
-        const extracted = extractProfileFromPayload(parsed);
-        if (extracted.studentName) studentName = extracted.studentName;
+      if (!detailResp || !detailResp.ok()) {
+        detailResp = await apiPost(apiContext, STUDENT_DETAIL_API, {
+          form: { RegID: String(regId) },
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          timeout: 30000,
+        }).catch(() => null);
       }
+      if (detailResp && detailResp.ok()) {
+        const detailRaw = await detailResp.text();
+        if (detailRaw && !detailRaw.trim().startsWith('<')) {
+          const parsed = JSON.parse(detailRaw);
+          const extracted = extractProfileFromPayload(parsed);
+          if (extracted.studentName) studentName = extracted.studentName;
+        }
+      }
+    } catch (err) {
+      console.log(`[QUMS] student-name lookup skipped: ${err.name || 'Error'}: ${err.message}`);
     }
-  } catch (err) {
-    console.log(`[QUMS] student-name lookup skipped: ${err.name || 'Error'}: ${err.message}`);
   }
 
   return {
@@ -244,6 +302,7 @@ async function getStudentContext(apiContext) {
     yearSem,
     availableYearSems: detectedYearSems,
     studentName,
+    attendancePayload,
   };
 }
 
@@ -320,28 +379,34 @@ async function scrapeAttendance(opts = {}) {
   assertSessionFile(sessionPath);
   const apiContext = await newApiContext(sessionPath);
   try {
-    const { regId, yearSem, availableYearSems } = await getStudentContext(apiContext);
+    const { regId, yearSem, availableYearSems, attendancePayload } = await getStudentContext(apiContext, {
+      sessionPath,
+      yearSem: opts.yearSem,
+      studentName: opts.studentName,
+    });
     const candidates = [yearSem, ...(availableYearSems || []).filter((v) => v !== yearSem)];
-    let payload = null;
+    let payload = attendancePayload || null;
     let usedYearSem = yearSem;
 
-    for (const candidate of candidates) {
-      const resp = await apiPost(apiContext, ATTENDANCE_API, {
-        form: { RegID: regId, YearSem: candidate },
-        timeout: 60000,
-      });
-      if (!resp.ok()) continue;
-      try {
-        const p = await resp.json();
-        const rowsText = typeof p.data === 'string' ? p.data.trim() : '';
-        if (!rowsText) continue;
-        const rawRows = JSON.parse(rowsText);
-        if (Array.isArray(rawRows) && rawRows.some((r) => r && (r.Subject || r.SubjectCode))) {
-          payload = p;
-          usedYearSem = candidate;
-          break;
-        }
-      } catch { }
+    if (!payload) {
+      for (const candidate of candidates) {
+        const resp = await apiPost(apiContext, ATTENDANCE_API, {
+          form: { RegID: regId, YearSem: candidate },
+          timeout: 60000,
+        });
+        if (!resp.ok()) continue;
+        try {
+          const p = await resp.json();
+          const rowsText = typeof p.data === 'string' ? p.data.trim() : '';
+          if (!rowsText) continue;
+          const rawRows = JSON.parse(rowsText);
+          if (Array.isArray(rawRows) && rawRows.some((r) => r && (r.Subject || r.SubjectCode))) {
+            payload = p;
+            usedYearSem = candidate;
+            break;
+          }
+        } catch { }
+      }
     }
 
     if (!payload) {
@@ -439,7 +504,7 @@ async function scrapeTodaysAttendance(opts = {}) {
   assertSessionFile(sessionPath);
   const apiContext = await newApiContext(sessionPath);
   try {
-    const { regId } = await getStudentContext(apiContext);
+    const regId = await getRegIdLight(apiContext, { sessionPath });
     const date = dateStr || istDateString();
 
     const resp = await apiPost(apiContext, TODAY_ATTENDANCE_API, {
@@ -453,7 +518,10 @@ async function scrapeTodaysAttendance(opts = {}) {
       );
     }
     const body = await resp.text();
-    if (body.trim().startsWith('<')) throw new SessionExpiredError(); // HTML = login page
+    if (body.trim().startsWith('<')) {
+      clearCachedRegId(sessionPath);
+      throw new SessionExpiredError(); // HTML = login page
+    }
 
     let rawRows = [];
     try {
@@ -751,7 +819,7 @@ async function scrapeTimetable(opts = {}) {
   //    Rooms/teachers wahi text format me aate hain jo parser expect karta hai.
   const apiContext = await newApiContext(sessionPath);
   try {
-    const { regId } = await getStudentContext(apiContext);
+    const regId = await getRegIdLight(apiContext, { sessionPath });
     const viaApi = await fetchTimetableViaApi(apiContext, regId);
     if (viaApi.days && viaApi.days.length) {
       viaApi.source = 'api';
@@ -887,7 +955,7 @@ async function scrapeAssignments(opts = {}) {
   assertSessionFile(sessionPath);
   const apiContext = await newApiContext(sessionPath);
   try {
-    const { regId } = await getStudentContext(apiContext);
+    const regId = await getRegIdLight(apiContext, { sessionPath });
     const resp = await apiPost(apiContext, ASSIGNMENT_API, {
       form: { RegID: regId },
       timeout: 60000,
@@ -1006,7 +1074,7 @@ async function scrapeMonthRegister(opts = {}) {
   const year = Number(opts.year) || (month > curMonth ? curYear - 1 : curYear);
   const apiContext = await newApiContext(sessionPath);
   try {
-    const { regId } = await getStudentContext(apiContext);
+    const regId = await getRegIdLight(apiContext, { sessionPath });
     const resp = await apiPost(apiContext, MONTH_REGISTER_API, {
       form: { RegID: regId, Month: month },
       timeout: 60000,
@@ -1255,6 +1323,12 @@ async function getStudentProfile(opts = {}) {
 
 /** RegID from the dashboard page ONLY (no semester probing — light path). */
 async function getRegIdLight(apiContext, opts = {}) {
+  const sessionPath = opts && opts.sessionPath;
+  if (sessionPath && !opts.returnHtml) {
+    const cached = getCachedRegId(sessionPath);
+    if (cached) return cached;
+  }
+
   const resp = await apiContext.get(DASHBOARD_URL, { timeout: 60000 });
   if (!resp.ok()) {
     throw new ScrapeError(
@@ -1263,7 +1337,10 @@ async function getRegIdLight(apiContext, opts = {}) {
     );
   }
   const html = await resp.text();
-  if (looksLikeLoginHtml(html)) throw new SessionExpiredError();
+  if (looksLikeLoginHtml(html)) {
+    if (sessionPath) clearCachedRegId(sessionPath);
+    throw new SessionExpiredError();
+  }
   const regIdMatch =
     html.match(/var\s+RegID\s*=\s*['"]?(\d+)['"]?/i) ||
     html.match(/\bRegID\s*[:=]\s*['"]?(\d+)['"]?/i) ||
@@ -1277,10 +1354,12 @@ async function getRegIdLight(apiContext, opts = {}) {
       'Dashboard → QUMS Setup → Reconnect QUMS try karo.'
     );
   }
+  const regId = regIdMatch[1];
+  if (sessionPath) setCachedRegId(sessionPath, regId);
   if (opts && opts.returnHtml) {
-    return { regId: regIdMatch[1], html };
+    return { regId, html };
   }
-  return regIdMatch[1];
+  return regId;
 }
 
 /**
@@ -1541,6 +1620,7 @@ module.exports = {
   getStudentContext,
   getStudentProfile,
   getRegIdLight,
+  clearCachedRegId,
   fetchQumsProfile,
   profileNeedsRefresh,
   refreshQumsProfile,

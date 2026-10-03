@@ -233,14 +233,20 @@
       tableEl.hidden = false;
     }
 
-    async function loadAttendance() {
+    async function loadAttendance(forceFresh = false) {
       refreshBtn.disabled = true;
       errorBox.classList.add('hidden');
-      tableEl.hidden = true;
-      statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Fetching fresh attendance from QUMS portal… (~10-20s)';
+      const hasRendered = !tableEl.hidden;
+      if (!hasRendered) {
+        statusEl.classList.remove('hidden');
+        statusEl.textContent = 'Fetching attendance from QUMS portal…';
+      } else {
+        statusEl.classList.remove('hidden');
+        statusEl.textContent = 'Refreshing attendance from QUMS…';
+      }
       try {
-        const res = await fetch('/api/attendance');
+        const url = forceFresh ? '/api/attendance?fresh=1' : '/api/attendance';
+        const res = await fetch(url);
         if (res.status === 401) { location.href = '/login'; return; }
         const data = await res.json();
         if (!res.ok) {
@@ -251,11 +257,16 @@
           return;
         }
         statusEl.classList.add('hidden');
+        try {
+          localStorage.setItem('qattend_attendance_cache', JSON.stringify(data));
+        } catch {}
         render(data);
       } catch (err) {
         statusEl.classList.add('hidden');
-        errorBox.textContent = 'Network error: ' + err.message;
-        errorBox.classList.remove('hidden');
+        if (!hasRendered) {
+          errorBox.textContent = 'Network error: ' + err.message;
+          errorBox.classList.remove('hidden');
+        }
       } finally {
         refreshBtn.disabled = false;
       }
@@ -356,9 +367,19 @@
       } catch {}
     }
 
+    let tgAttempts = 0;
     function startTgPoll() {
       stopTgPoll();
-      tgPollTimer = setInterval(loadTelegramStatus, 3000);
+      tgAttempts = 0;
+      tgPollTimer = setInterval(async () => {
+        tgAttempts++;
+        await loadTelegramStatus();
+        if (tgAttempts > 15) {
+          // Slow down after 45s if not linked yet to save network/CPU
+          stopTgPoll();
+          tgPollTimer = setInterval(loadTelegramStatus, 15000);
+        }
+      }, 3000);
     }
 
     $('tgUnlinkBtn').addEventListener('click', async () => {
@@ -420,11 +441,22 @@
       btn.disabled = false;
     }
 
-    refreshBtn.addEventListener('click', loadAttendance);
+    refreshBtn.addEventListener('click', () => loadAttendance(true));
     $('todayLoadBtn').addEventListener('click', (e) => loadToday(e.currentTarget));
 
+    // Instant First Paint from localStorage cache if present (0ms display!)
+    try {
+      const cached = localStorage.getItem('qattend_attendance_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && Array.isArray(parsed.subjects) && parsed.subjects.length > 0) {
+          render(parsed);
+        }
+      }
+    } catch {}
+
     loadMe();
-    loadAttendance();
+    loadAttendance(false);
     loadTelegramStatus();
     startTgPoll();
     // (mobile drawer/active-nav/year are handled once by /site.js)

@@ -8,6 +8,9 @@
   <meta name="theme-color" content="#1e3a8a" />
   <meta name="robots" content="noindex" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="modulepreload" href="/firebase-config.js" />
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js" />
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js" />
   <style>
     .email-display-card {
       background: #f8fafc;
@@ -329,6 +332,9 @@
       } catch {}
       window.location.href = '/login';
     });
+
+    // Warm up Firebase in background
+    loadFirebase().catch(() => {});
   </script>
 </body>
 </html>

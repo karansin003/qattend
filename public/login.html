@@ -8,6 +8,9 @@
   <meta name="theme-color" content="#1e3a8a" />
   <meta name="robots" content="noindex" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="modulepreload" href="/firebase-config.js" />
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js" />
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js" />
 </head>
 <body>
   <div class="auth-bg auth-white">
@@ -141,6 +144,9 @@
         b.setAttribute('aria-label', isPw ? 'Hide password' : 'Show password');
       })
     );
+
+    // Warm up Firebase in background while user types credentials
+    loadFirebase().catch(() => {});
   </script>
 </body>
 </html>
