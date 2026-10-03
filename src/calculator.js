@@ -121,18 +121,38 @@ function analyzeAttendance(subjects, totalClasses) {
   const detailed = list.map((s) => analyzeSubject(s, tc));
   const below = detailed.filter((d) => d.status === 'below-75');
 
-  // Overall attendance: weighted by exact totals when available.
-  let overall = null;
-  const exactRows = detailed.filter((d) => d.countSource === 'exact');
-  if (exactRows.length) {
-    const tot = exactRows.reduce((a, d) => a + d.totalClassesAssumed, 0);
-    const att = exactRows.reduce((a, d) => a + d.attendedEstimate, 0);
-    if (tot > 0) overall = { attended: att, total: tot, percentage: Math.round((att / tot) * 1000) / 10 };
-  }
-
   // Period info from the portal (DateFrom/DateTo/overall %), if scraped.
   const withPeriod = list.find((s) => s && s.periodSummary);
   const period = withPeriod ? withPeriod.periodSummary : null;
+
+  // Overall attendance: exact match to QUMS portal.
+  // 1. If QUMS provides the official overall percentage in periodSummary (st.TotalPercentage),
+  //    use it directly without altering or rounding.
+  // 2. Otherwise fall back to weighted totals across subjects.
+  let overall = null;
+  const exactRows = detailed.filter((d) => d.countSource === 'exact');
+  const tot = exactRows.length ? exactRows.reduce((a, d) => a + d.totalClassesAssumed, 0) : 0;
+  const att = exactRows.length ? exactRows.reduce((a, d) => a + d.attendedEstimate, 0) : 0;
+
+  const portalOverall = period && (period.overallPercentageRaw || (period.overallPercentage != null ? String(period.overallPercentage) : null));
+  if (portalOverall != null && portalOverall !== '') {
+    const num = Number(portalOverall);
+    overall = {
+      attended: att,
+      total: tot,
+      percentage: Number.isFinite(num) ? num : portalOverall,
+      percentageRaw: String(portalOverall),
+    };
+  } else if (tot > 0) {
+    const rawCalc = (att / tot) * 100;
+    const exactPct = Math.round(rawCalc * 100) / 100;
+    overall = {
+      attended: att,
+      total: tot,
+      percentage: exactPct,
+      percentageRaw: String(exactPct),
+    };
+  }
 
   return {
     generatedAt: new Date().toISOString(),

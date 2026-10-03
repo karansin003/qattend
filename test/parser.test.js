@@ -108,6 +108,8 @@ function extractFunction(src, name) {
   check('analysis: summary counts', [analysis.summary.totalSubjects, analysis.summary.below75], [2, 1]);
   check('analysis: weighted overall', [analysis.overall.attended, analysis.overall.total, analysis.overall.percentage], [64, 80, 80]);
   check('analysis: period passthrough', analyzeAttendance([{ subject: 'A', subjectCode: 'A1', percentage: 80, periodSummary: { dateFrom: '01/07/2026', dateTo: '10/09/2026', overallPercentage: 80 } }]).period.dateTo, '10/09/2026');
+  const exactPortalAnalysis = analyzeAttendance([{ subject: 'A', subjectCode: 'A1', percentage: 78.46, periodSummary: { dateFrom: '01/07/2026', dateTo: '10/09/2026', overallPercentage: 78.46, overallPercentageRaw: '78.46' } }]);
+  check('analysis: exact portal overall percentage used without round-off', [exactPortalAnalysis.overall.percentage, exactPortalAnalysis.overall.percentageRaw], [78.46, '78.46']);
 
   // ---- 4. timetable DOM parsing (simulated) ----
   const SIMULATED_TIMETABLE = `

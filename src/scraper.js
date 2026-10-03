@@ -357,7 +357,18 @@ async function scrapeAttendance(opts = {}) {
     let summary = null;
     try {
       const st = JSON.parse(payload.state || '[]')[0];
-      if (st) summary = { dateFrom: norm(st.DateFrom), dateTo: norm(st.DateTo), overallPercentage: Number(st.TotalPercentage) || null };
+      if (st) {
+        const rawTot = st.TotalPercentage !== undefined && st.TotalPercentage !== null && String(st.TotalPercentage).trim() !== ''
+          ? String(st.TotalPercentage).trim()
+          : null;
+        const numTot = rawTot !== null && !isNaN(Number(rawTot)) ? Number(rawTot) : null;
+        summary = {
+          dateFrom: norm(st.DateFrom),
+          dateTo: norm(st.DateTo),
+          overallPercentage: numTot,
+          overallPercentageRaw: rawTot || undefined,
+        };
+      }
     } catch { }
 
     return rows.map((r) => ({ ...r, periodSummary: summary }));

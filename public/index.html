@@ -178,13 +178,18 @@
       chipsEl.appendChild(chip('Subjects', s.totalSubjects != null ? s.totalSubjects : '-'));
       chipsEl.appendChild(chip('Below 75%', s.below75 != null ? s.below75 : '-'));
       chipsEl.appendChild(chip('OK (>=75%)', s.ok != null ? s.ok : '-'));
-      if (data.overall) chipsEl.appendChild(chip('Overall', data.overall.percentage + '%'));
+      const overallVal = data.overall
+        ? (data.overall.percentageRaw || data.overall.percentage)
+        : (data.period && (data.period.overallPercentageRaw || data.period.overallPercentage != null)
+            ? (data.period.overallPercentageRaw || data.period.overallPercentage)
+            : null);
+      if (overallVal != null) chipsEl.appendChild(chip('Overall', overallVal + '%'));
       if (data.period && data.period.dateFrom) {
         chipsEl.appendChild(chip('Period', data.period.dateFrom + ' – ' + data.period.dateTo));
       }
 
-      // status card (overall attendance)
-      $('overallValue').textContent = data.overall ? data.overall.percentage + '%' : '—';
+      // status card (overall attendance - exact as on QUMS portal)
+      $('overallValue').textContent = overallVal != null ? overallVal + '%' : '—';
       $('overallNote').textContent = s.below75 != null
         ? s.below75 + ' subject(s) below 75%'
         : 'Across all subjects';
