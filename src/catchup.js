@@ -19,7 +19,7 @@ const db = require('./db');
 const { scrapeMonthRegisterRange, scrapeAssignments, istDateString } = require('./scraper');
 const { sendMessage } = require('./telegram');
 const { formatBackdatedUpdate, formatNewAssignment } = require('./messages');
-const { RECONNECTED_TEXT } = require('./alerts');
+const { notifyQumsReconnected } = require('./alerts');
 
 /**
  * Perform silent baseline on first QUMS connection.
@@ -230,9 +230,7 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
   }
 
   // 3. Send QUMS Reconnected confirmation message to Telegram
-  if (user.telegramChatId) {
-    await sendMessage(userId, RECONNECTED_TEXT, log).catch(() => {});
-  }
+  await notifyQumsReconnected(log, userId).catch(() => {});
 
   await db.updateUser(userId, { qumsSessionStatus: 'active' });
   await db.clearSessionExpiry(userId);

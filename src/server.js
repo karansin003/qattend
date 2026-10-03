@@ -21,7 +21,7 @@ const { sendMessage } = require('./telegram');
 const { startScheduler, runMorningScheduleJob, catchUpMorningSchedule, getMorningScheduleText, getSchedulerStatus } = require('./scheduler');
 const { startWatcher, runBaselineForUser, getWatcherStatus } = require('./watcher');
 const { getAssignmentStatus } = require('./assignments');
-const { notifyQumsReconnected, clearSessionAlert } = require('./alerts');
+const { clearSessionAlert } = require('./alerts');
 const qumsLogin = require('./qums-login-web');
 const { formatMorningSchedule, formatAttendanceMessage } = require('./messages');
 
@@ -204,7 +204,7 @@ function withContactEmail(html) {
       /__CONTACT_EMAIL_NOTE__/g,
       valid
         ? 'This is the support address configured for this QAttend deployment.'
-        : 'Placeholder: this deployment has no support email configured yet (set CONTACT_EMAIL to publish a real one). Please use the GitHub channel instead.'
+        : 'Placeholder: this deployment has no support email configured yet (set CONTACT_EMAIL to publish a real one). Please use the Telegram bot channel instead.'
     );
 }
 
@@ -623,12 +623,9 @@ app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
     const text = String(captchaText || captcha || '').trim();
     const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text);
     if (result && result.ok) {
-      // Seed baseline marked periods for today and notify Telegram if reconnected
+      // Seed baseline marked periods for today
       runBaselineForUser(req.session.userId).catch((e) =>
         console.error('[qums-setup] baseline fetch fail:', e.message)
-      );
-      notifyQumsReconnected(console, req.session.userId).catch((e) =>
-        console.error('[qums-setup] reconnect notification fail:', e.message)
       );
     }
     res.json(result); // { ok: true, sessionPath, studentName, yearSem } or { ok: false, error, captchaImage }
