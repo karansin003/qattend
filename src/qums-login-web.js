@@ -103,11 +103,36 @@ async function gotoLoginPage(page) {
 async function openLoginFormPage() {
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--mute-audio',
+    ],
   });
   const context = await browser.newContext({
-    viewport: { width: 1366, height: 900 },
-    deviceScaleFactor: 2,
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 1, // 1x saves 4x RAM and GPU compared to 2x
+  });
+  // Abort non-essential network requests (fonts, media) to cut bandwidth and speed up page load
+  await context.route('**/*', (route) => {
+    const type = route.request().resourceType();
+    if (type === 'font' || type === 'media') {
+      return route.abort();
+    }
+    return route.continue();
   });
   const page = await context.newPage();
   try {
@@ -162,6 +187,31 @@ async function startQumsLogin(userId, credsInput, log = console) {
     err.oldQid = user.qumsQid;
     err.newQid = qid;
     throw err;
+  }
+
+  // Fast path: if browser & page are already active for this user, reuse them via page reload (~1s vs ~6s)
+  const existing = pending.get(userId);
+  if (existing && existing.page && !existing.page.isClosed()) {
+    try {
+      log.log(`[qums-login] Reusing existing browser page for user ${userId} to refresh captcha...`);
+      await existing.page.reload({ waitUntil: 'commit', timeout: 15000 });
+      const frame = await gotoLoginPage(existing.page);
+      await autofillCredentials(frame, qid, password);
+      existing.frame = frame;
+      existing.qid = qid;
+      existing.password = password;
+      existing.confirmSwitch = confirmSwitch;
+      const captchaImage = await captureCaptchaFor(existing);
+      if (existing.timer) clearTimeout(existing.timer);
+      existing.timer = setTimeout(() => {
+        log.log(`[qums-login] pending login timeout for user ${userId} — browser close.`);
+        disposePending(userId);
+      }, PENDING_TTL_MS);
+      return { ok: true, captchaImage };
+    } catch (reloadErr) {
+      log.log(`[qums-login] page reload failed (${reloadErr.message}), falling back to fresh browser...`);
+      await disposePending(userId);
+    }
   }
 
   await disposePending(userId); // koi purana pending ho to clean

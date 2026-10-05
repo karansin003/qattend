@@ -140,23 +140,33 @@ async function captureCaptchaImage(page, frame) {
   if (n === 0) throw new Error('No <img> found for the captcha on the login form.');
 
   let chosen = null;
-  for (let i = 0; i < n; i++) {
-    const el = imgs.nth(i);
-    const attrs = [
-      await el.getAttribute('src'),
-      await el.getAttribute('id'),
-      await el.getAttribute('name'),
-      await el.getAttribute('alt'),
-      await el.getAttribute('class'),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    if (/captcha/.test(attrs)) {
-      chosen = el;
-      break;
+  // Fast path: QUMS portal uses img#imgPhoto
+  const fastImg = frame.locator('img#imgPhoto, img[src*="captcha" i], img[id*="captcha" i]');
+  const fastCount = await fastImg.count().catch(() => 0);
+  if (fastCount > 0) {
+    chosen = fastImg.first();
+  }
+
+  if (!chosen) {
+    for (let i = 0; i < n; i++) {
+      const el = imgs.nth(i);
+      const attrs = [
+        await el.getAttribute('src'),
+        await el.getAttribute('id'),
+        await el.getAttribute('name'),
+        await el.getAttribute('alt'),
+        await el.getAttribute('class'),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (/captcha/.test(attrs)) {
+        chosen = el;
+        break;
+      }
     }
   }
+
   if (!chosen) {
     // fallback: imgs with a real size (skip icons/spacers), pick the widest that looks text-ish
     let best = null;
@@ -187,8 +197,10 @@ async function captureCaptchaImage(page, frame) {
     if (pageOrFrame && typeof pageOrFrame.evaluate === 'function') {
       const padded = await pageOrFrame.evaluate((srcUrl) => {
         return new Promise((resolve) => {
+          const timeout = setTimeout(() => resolve(null), 1500);
           const img = new Image();
           img.onload = () => {
+            clearTimeout(timeout);
             const w = img.naturalWidth || img.width || 180;
             const h = img.naturalHeight || img.height || 45;
             const scale = 2; // 2x sharp display
@@ -205,7 +217,10 @@ async function captureCaptchaImage(page, frame) {
             ctx.drawImage(img, padX, padY, w * scale, h * scale);
             resolve(canvas.toDataURL('image/png'));
           };
-          img.onerror = () => resolve(null);
+          img.onerror = () => {
+            clearTimeout(timeout);
+            resolve(null);
+          };
           img.src = srcUrl;
         });
       }, rawBase64).catch(() => null);

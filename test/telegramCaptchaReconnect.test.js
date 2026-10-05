@@ -58,6 +58,8 @@ const sentPhotos = [];
 const deletedMessages = [];
 let nextMsgId = 2001;
 
+const answeredQueries = [];
+
 // Override bot in telegram.js state
 const fakeBot = {
   sendMessage: async (chatId, text, opts = {}) => {
@@ -74,7 +76,10 @@ const fakeBot = {
     deletedMessages.push({ chatId, messageId: Number(messageId) });
     return true;
   },
-  answerCallbackQuery: async () => true,
+  answerCallbackQuery: async (id, opts = {}) => {
+    answeredQueries.push({ id, opts });
+    return true;
+  },
 };
 
 (async () => {
@@ -235,6 +240,37 @@ const fakeBot = {
 
   check('4b. Fresh CAPTCHA photo sent even after session was expired', sentPhotos.length, 1);
   check('4b. User A is re-armed into waiting captcha state', telegram.isWaitingCaptcha(userA.id), true);
+
+  // ----------------------------------------------------
+  // TEST 4c: Concurrent regenerate requests are guarded (prevents duplicate browser launches)
+  // ----------------------------------------------------
+  answeredQueries.length = 0;
+  sentPhotos.length = 0;
+  const originalStart = qumsLogin.startQumsLogin;
+  let startCalled = 0;
+  qumsLogin.startQumsLogin = async (userId, credsInput, log) => {
+    startCalled++;
+    await new Promise((r) => setTimeout(r, 50));
+    return { ok: true, captchaImage: mockCaptchaImage };
+  };
+
+  const p1 = telegram.handleCallbackQuery({
+    id: 'query_concurrent_1',
+    data: 'qums_regen_captcha',
+    message: { chat: { id: CHAT_A } },
+  }, quiet);
+
+  const p2 = telegram.handleCallbackQuery({
+    id: 'query_concurrent_2',
+    data: 'qums_regen_captcha',
+    message: { chat: { id: CHAT_A } },
+  }, quiet);
+
+  await Promise.all([p1, p2]);
+  qumsLogin.startQumsLogin = originalStart;
+
+  check('4c. Only 1 QUMS login started during concurrent taps', startCalled, 1);
+  check('4c. Second click received in-progress toast', answeredQueries.some((q) => q.id === 'query_concurrent_2' && q.opts && q.opts.text && q.opts.text.includes('already in progress')), true);
 
   // ----------------------------------------------------
   // TEST 5: Valid CAPTCHA reconnects successfully
