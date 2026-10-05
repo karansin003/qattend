@@ -254,10 +254,8 @@ const MSG_TOO_MANY_ATTEMPTS = '❌ Too many failed attempts. Reconnect cancelled
 function captchaKeyboard() {
   return {
     inline_keyboard: [
-      [
-        { text: '🔄 Regenerate CAPTCHA', callback_data: 'qums_regen_captcha' },
-        { text: '❌ Cancel Reconnect', callback_data: 'qums_cancel_reconnect' },
-      ],
+      [{ text: '🔄 Regenerate CAPTCHA', callback_data: 'qums_regen_captcha' }],
+      [{ text: '❌ Cancel Reconnect', callback_data: 'qums_cancel_reconnect' }],
     ],
   };
 }
@@ -513,20 +511,22 @@ async function handleCallbackQuery(query, log = console) {
     log.log(`[telegram-reconnect] reconnect cancelled by user ${user.id}`);
     await clearReconnectState(user.id, log);
     await reply(chatId, MSG_RECONNECT_CANCELLED, log);
+    if (bot && typeof bot.answerCallbackQuery === 'function') {
+      await bot.answerCallbackQuery(query.id, { text: 'Reconnect cancelled' }).catch(() => {});
+    }
     return;
   }
 
   if (data === 'qums_regen_captcha') {
     log.log(`[telegram-reconnect] regenerating captcha for user ${user.id}`);
     const rState = getReconnectState(user.id);
-    if (!rState) {
-      await reply(chatId, '❌ Reconnect session expired. Please start again.', log);
-      return;
-    }
+    const prevAttempts = rState ? rState.attempts : 0;
+    const prevAlertMsgId = rState ? rState.alertMessageId : null;
 
     try {
       const qumsLogin = require('./qums-login-web');
-      await qumsLogin.disposePending(user.id);
+      await clearReconnectState(user.id, log);
+
       const res = await qumsLogin.startQumsLogin(user.id, undefined, log);
       if (!res || !res.captchaImage) {
         throw new Error('Failed to capture regenerated CAPTCHA');
@@ -536,14 +536,18 @@ async function handleCallbackQuery(query, log = console) {
       await sendPhoto(user.id, res.captchaImage, '', log, photoOpts);
       setReconnectState(user.id, {
         chatId,
-        attempts: rState.attempts,
-        alertMessageId: rState.alertMessageId,
+        attempts: prevAttempts,
+        alertMessageId: prevAlertMsgId,
         captchaMessageId: photoOpts.messageId || null,
       }, log);
+      if (bot && typeof bot.answerCallbackQuery === 'function') {
+        await bot.answerCallbackQuery(query.id, { text: 'New CAPTCHA generated!' }).catch(() => {});
+      }
     } catch (err) {
       log.error(`[telegram-reconnect] failed to regenerate captcha for user ${user.id}: ${err.message}`);
       await reply(chatId, '❌ Could not regenerate CAPTCHA. Please try again in a few moments.', log);
     }
+    return;
   }
 }
 

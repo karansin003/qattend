@@ -176,7 +176,7 @@ const fakeBot = {
   check('1. CAPTCHA photo sent to chat A', sentPhotos.some((p) => p.chatId === CHAT_A), true);
   const photoMsg = sentPhotos.find((p) => p.chatId === CHAT_A);
   ok('1. CAPTCHA photo has inline buttons', photoMsg.opts.reply_markup && photoMsg.opts.reply_markup.inline_keyboard.length > 0);
-  const buttons = photoMsg.opts.reply_markup.inline_keyboard[0];
+  const buttons = photoMsg.opts.reply_markup.inline_keyboard.flat();
   check('1. Regenerate button present', buttons.some((b) => b.text.includes('Regenerate CAPTCHA') && b.callback_data === 'qums_regen_captcha'), true);
   check('1. Cancel button present', buttons.some((b) => b.text.includes('Cancel Reconnect') && b.callback_data === 'qums_cancel_reconnect'), true);
 
@@ -218,6 +218,23 @@ const fakeBot = {
   check('4. Old CAPTCHA disposed on regenerate', disposeCalls > 0, true);
   check('4. New CAPTCHA photo sent on regenerate', sentPhotos.length, 1);
   check('4. User A remains in reconnect state', telegram.isWaitingCaptcha(userA.id), true);
+
+  // ----------------------------------------------------
+  // TEST 4b: Regenerate works even after session expired (user comes back hours later)
+  // ----------------------------------------------------
+  const expState = telegram.getReconnectState(userA.id);
+  if (expState) expState.expiresAt = Date.now() - 1000; // simulate hours later
+  check('4b. Session is expired', telegram.isWaitingCaptcha(userA.id), false);
+
+  sentPhotos.length = 0;
+  await telegram.handleCallbackQuery({
+    id: 'query_expired_regen',
+    data: 'qums_regen_captcha',
+    message: { chat: { id: CHAT_A } },
+  }, quiet);
+
+  check('4b. Fresh CAPTCHA photo sent even after session was expired', sentPhotos.length, 1);
+  check('4b. User A is re-armed into waiting captcha state', telegram.isWaitingCaptcha(userA.id), true);
 
   // ----------------------------------------------------
   // TEST 5: Valid CAPTCHA reconnects successfully

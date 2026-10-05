@@ -178,7 +178,45 @@ async function captureCaptchaImage(page, frame) {
     await chosen.scrollIntoViewIfNeeded();
   } catch {}
   const buf = await chosen.screenshot({ type: 'png' });
-  return `data:image/png;base64,${buf.toString('base64')}`;
+  const rawBase64 = `data:image/png;base64,${buf.toString('base64')}`;
+
+  // Pad the captcha image onto a clean canvas with generous margins so mobile Telegram
+  // (especially Android) never clips the letters on the left or right edges.
+  try {
+    const pageOrFrame = page || frame;
+    if (pageOrFrame && typeof pageOrFrame.evaluate === 'function') {
+      const padded = await pageOrFrame.evaluate((srcUrl) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const w = img.naturalWidth || img.width || 180;
+            const h = img.naturalHeight || img.height || 45;
+            const scale = 2; // 2x sharp display
+            const padX = 50; // 50px left/right safe zone
+            const padY = 25; // 25px top/bottom safe zone
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(w * scale + padX * 2);
+            canvas.height = Math.round(h * scale + padY * 2);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, padX, padY, w * scale, h * scale);
+            resolve(canvas.toDataURL('image/png'));
+          };
+          img.onerror = () => resolve(null);
+          img.src = srcUrl;
+        });
+      }, rawBase64).catch(() => null);
+
+      if (padded && typeof padded === 'string' && padded.startsWith('data:image/png;base64,')) {
+        return padded;
+      }
+    }
+  } catch {}
+
+  return rawBase64;
 }
 
 module.exports = {

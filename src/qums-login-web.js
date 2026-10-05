@@ -105,7 +105,10 @@ async function openLoginFormPage() {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
-  const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 900 },
+    deviceScaleFactor: 2,
+  });
   const page = await context.newPage();
   try {
     const frame = await gotoLoginPage(page); // commit + explicit form wait
