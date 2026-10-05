@@ -32,8 +32,30 @@ const LOGIN_URL =
   process.env.QUMS_LOGIN_URL || 'https://qums.quantumuniversity.edu.in/';
 const PENDING_TTL_MS = 5 * 60 * 1000; // 5 min to solve the captcha
 
+class ConcurrentLoginError extends Error {
+  constructor(message = 'Another QUMS reconnect or login is already in progress. Please wait a moment and try again.') {
+    super(message);
+    this.name = 'ConcurrentLoginError';
+    this.code = 'CONCURRENT_LOGIN_LIMIT';
+    this.hint = 'Only 1 active QUMS login or reconnect browser session is permitted at a time. Please wait a moment and retry.';
+  }
+}
+
 /** userId -> { browser, context, page, frame, startedAt, timer } */
 const pending = new Map();
+let activeLaunchingUserId = null;
+
+function isConcurrentBrowserActive(userId) {
+  if (activeLaunchingUserId && activeLaunchingUserId !== userId) {
+    return true;
+  }
+  for (const [id] of pending) {
+    if (id !== userId) {
+      return true;
+    }
+  }
+  return false;
+}
 
 async function disposePending(userId) {
   const p = pending.get(userId);
@@ -43,7 +65,13 @@ async function disposePending(userId) {
   // Wipe the in-memory credential copy immediately (never persisted anywhere).
   p.password = '';
   try {
-    await p.browser.close();
+    if (p.page && !p.page.isClosed()) await p.page.close().catch(() => {});
+  } catch {}
+  try {
+    if (p.context) await p.context.close().catch(() => {});
+  } catch {}
+  try {
+    if (p.browser) await p.browser.close().catch(() => {});
   } catch {}
 }
 
@@ -189,6 +217,11 @@ async function startQumsLogin(userId, credsInput, log = console) {
     throw err;
   }
 
+  if (isConcurrentBrowserActive(userId)) {
+    log.log(`[qums-login] Concurrent login rejected for user ${userId}: another browser session is active.`);
+    throw new ConcurrentLoginError();
+  }
+
   // Fast path: if browser & page are already active for this user, reuse them via page reload (~1s vs ~6s)
   const existing = pending.get(userId);
   if (existing && existing.page && !existing.page.isClosed()) {
@@ -214,31 +247,38 @@ async function startQumsLogin(userId, credsInput, log = console) {
     }
   }
 
-  await disposePending(userId); // koi purana pending ho to clean
-  const { browser, context, page, frame } = await openLoginFormPage();
+  activeLaunchingUserId = userId;
   try {
-    await autofillCredentials(frame, qid, password);
-    // qid/password sirf IN-MEMORY pending object me (captcha-retry ke liye).
-    const pendingLogin = {
-      browser,
-      context,
-      page,
-      frame,
-      startedAt: Date.now(),
-      qid,
-      password,
-      confirmSwitch,
-    };
-    const captchaImage = await captureCaptchaFor(pendingLogin);
-    pendingLogin.timer = setTimeout(() => {
-      log.log(`[qums-login] pending login timeout for user ${userId} — browser close.`);
-      disposePending(userId);
-    }, PENDING_TTL_MS);
-    pending.set(userId, pendingLogin);
-    return { ok: true, captchaImage };
-  } catch (err) {
-    await browser.close().catch(() => {});
-    throw err;
+    await disposePending(userId); // koi purana pending ho to clean
+    const { browser, context, page, frame } = await openLoginFormPage();
+    try {
+      await autofillCredentials(frame, qid, password);
+      // qid/password sirf IN-MEMORY pending object me (captcha-retry ke liye).
+      const pendingLogin = {
+        browser,
+        context,
+        page,
+        frame,
+        startedAt: Date.now(),
+        qid,
+        password,
+        confirmSwitch,
+      };
+      const captchaImage = await captureCaptchaFor(pendingLogin);
+      pendingLogin.timer = setTimeout(() => {
+        log.log(`[qums-login] pending login timeout for user ${userId} — browser close.`);
+        disposePending(userId);
+      }, PENDING_TTL_MS);
+      pending.set(userId, pendingLogin);
+      return { ok: true, captchaImage };
+    } catch (err) {
+      await browser.close().catch(() => {});
+      throw err;
+    }
+  } finally {
+    if (activeLaunchingUserId === userId) {
+      activeLaunchingUserId = null;
+    }
   }
 }
 
@@ -260,9 +300,16 @@ async function submitQumsCaptcha(userId, captchaText, log = console) {
     await p.page.waitForURL((url) => !isLoginLikeUrl(url.toString()), { timeout: 30000 });
   } catch {
     // login fail (galat captcha / timeout) — fresh login page + FRESH captcha
-    const { browser, context, page, frame } = await openLoginFormPage();
-    await autofillCredentials(frame, p.qid, p.password);
     await p.browser.close().catch(() => {});
+    activeLaunchingUserId = userId;
+    let fresh;
+    try {
+      fresh = await openLoginFormPage();
+    } finally {
+      if (activeLaunchingUserId === userId) activeLaunchingUserId = null;
+    }
+    const { browser, context, page, frame } = fresh;
+    await autofillCredentials(frame, p.qid, p.password);
     const newPending = {
       browser,
       context,
@@ -376,9 +423,11 @@ function hasPendingLogin(userId) {
 }
 
 module.exports = {
+  ConcurrentLoginError,
   startQumsLogin,
   submitQumsCaptcha,
   completeQumsSetup,
   hasPendingLogin,
   disposePending,
+  isConcurrentBrowserActive,
 };

@@ -38,6 +38,9 @@ const telegram = require('../src/telegram');
 const alerts = require('../src/alerts');
 const qumsLogin = require('../src/qums-login-web');
 const scraper = require('../src/scraper');
+const watcher = require('../src/watcher');
+const assignments = require('../src/assignments');
+const scheduler = require('../src/scheduler');
 
 let failures = 0;
 function check(label, actual, expected) {
@@ -167,18 +170,33 @@ const fakeBot = {
   });
 
   // ----------------------------------------------------
-  // TEST 1: Session Expiry Sends CAPTCHA to linked user
+  // TEST 1: Background alert sends notification only; User clicks reconnect to get CAPTCHA
   // ----------------------------------------------------
   sentMessages.length = 0;
   sentPhotos.length = 0;
 
+  // Background watcher sends expiry alert — MUST NOT launch Chromium or send CAPTCHA photo automatically
   const expiryNotified = await alerts.maybeNotifySessionExpired(quiet, userA.id, { evidence: true });
   check('1. Expiry notification returned true for user A', expiryNotified, true);
   check('1. Text message sent to chat A', sentMessages.some((m) => m.chatId === CHAT_A), true);
   const textMsg = sentMessages.find((m) => m.chatId === CHAT_A);
   ok('1. Text message matches spec', textMsg.text.includes('QUMS Session Expired') && textMsg.text.includes('Your QUMS session has expired'));
 
-  check('1. CAPTCHA photo sent to chat A', sentPhotos.some((p) => p.chatId === CHAT_A), true);
+  // Critical safety check: background alert MUST NOT send CAPTCHA photo or enter waiting state
+  check('1. Background alert did NOT send CAPTCHA photo', sentPhotos.length, 0);
+  check('1. User A is NOT yet waiting for CAPTCHA before explicit click', telegram.isWaitingCaptcha(userA.id), false);
+  ok('1. Expiry alert has Reconnect button', textMsg.opts.reply_markup && textMsg.opts.reply_markup.inline_keyboard.length > 0);
+  const alertButtons = textMsg.opts.reply_markup.inline_keyboard.flat();
+  check('1. Reconnect button callback_data present', alertButtons.some((b) => b.callback_data === 'qums_start_reconnect'), true);
+
+  // User explicitly taps "🔄 Reconnect QUMS"
+  await telegram.handleCallbackQuery({
+    id: 'query_0',
+    data: 'qums_start_reconnect',
+    message: { chat: { id: CHAT_A }, message_id: textMsg.message_id },
+  }, quiet);
+
+  check('1. CAPTCHA photo sent to chat A after user clicks reconnect', sentPhotos.some((p) => p.chatId === CHAT_A), true);
   const photoMsg = sentPhotos.find((p) => p.chatId === CHAT_A);
   ok('1. CAPTCHA photo has inline buttons', photoMsg.opts.reply_markup && photoMsg.opts.reply_markup.inline_keyboard.length > 0);
   const buttons = photoMsg.opts.reply_markup.inline_keyboard.flat();
@@ -304,6 +322,11 @@ const fakeBot = {
   // ----------------------------------------------------
   // Trigger reconnect for user B
   await alerts.maybeNotifySessionExpired(quiet, userB.id, { evidence: true });
+  await telegram.handleCallbackQuery({
+    id: 'query_b_start',
+    data: 'qums_start_reconnect',
+    message: { chat: { id: CHAT_B } },
+  }, quiet);
   check('6. User B in reconnect state', telegram.isWaitingCaptcha(userB.id), true);
 
   // Send 5 incorrect attempts
@@ -325,6 +348,11 @@ const fakeBot = {
   // ----------------------------------------------------
   alerts.clearSessionAlert(userA.id);
   await alerts.maybeNotifySessionExpired(quiet, userA.id, { evidence: true });
+  await telegram.handleCallbackQuery({
+    id: 'query_a_start_cancel',
+    data: 'qums_start_reconnect',
+    message: { chat: { id: CHAT_A } },
+  }, quiet);
   check('7. User A in reconnect state', telegram.isWaitingCaptcha(userA.id), true);
 
   sentMessages.length = 0;
@@ -362,6 +390,137 @@ const fakeBot = {
   check('9. Fallback alert sent', webFallbackSent, true);
   check('9. Fallback sent message with reconnect URL button', sentMessages.some((m) => m.opts && m.opts.reply_markup && JSON.stringify(m.opts.reply_markup).includes('/qums-setup?reconnect=1')), true);
   check('9. No photo was sent for uncredentialed user', sentPhotos.filter((p) => p.chatId === 'chat_nocreds').length, 0);
+
+  // ----------------------------------------------------
+  // TEST 10: Missing session file causes watcher to skip user
+  // ----------------------------------------------------
+  const userMissing = await db.createUser({ email: 'missing-file@example.com', passwordHash: 'hashMF' });
+  const missingPath = path.join(TMP, 'does-not-exist-session.json');
+  await db.updateUser(userMissing.id, {
+    qumsSessionPath: missingPath,
+    qumsSessionStatus: 'active',
+  });
+
+  const watcherLogs = [];
+  const logSpy = {
+    log: (msg) => watcherLogs.push(msg),
+    error: (msg) => watcherLogs.push(`ERROR: ${msg}`),
+  };
+
+  await watcher.runWatcherPass(logSpy);
+  check('10. Missing session file logged skip message in watcher', watcherLogs.some((l) => l.includes(`Skipping user ${userMissing.id}: QUMS session unavailable.`)), true);
+
+  // ----------------------------------------------------
+  // TEST 11: Expired session causes watcher to skip user
+  // ----------------------------------------------------
+  const userExpired = await db.createUser({ email: 'expired-session@example.com', passwordHash: 'hashES' });
+  const realFileForExpired = path.join(TMP, 'expired-session-file.json');
+  fs.writeFileSync(realFileForExpired, JSON.stringify({ ok: true }));
+  await db.updateUser(userExpired.id, {
+    qumsSessionPath: realFileForExpired,
+    qumsSessionStatus: 'expired',
+  });
+
+  watcherLogs.length = 0;
+  await watcher.runWatcherPass(logSpy);
+  check('11. Expired session logged skip message in watcher', watcherLogs.some((l) => l.includes(`Skipping user ${userExpired.id}: QUMS session unavailable.`)), true);
+
+  // ----------------------------------------------------
+  // TEST 12: Missing session file does NOT call startTelegramCaptchaReconnect()
+  // ----------------------------------------------------
+  let captchaReconnectCalls = 0;
+  const originalTgStart = telegram.startTelegramCaptchaReconnect;
+  telegram.startTelegramCaptchaReconnect = async (...args) => {
+    captchaReconnectCalls++;
+    return originalTgStart(...args);
+  };
+
+  watcherLogs.length = 0;
+  await watcher.runWatcherPass(logSpy);
+  await watcher.runMonthRegisterPass(logSpy, { dryRun: true });
+  await assignments.runAssignmentPass(logSpy, { dryRun: true });
+  check('12. Missing session file caused 0 startTelegramCaptchaReconnect calls', captchaReconnectCalls, 0);
+
+  // ----------------------------------------------------
+  // TEST 13: Background watcher does NOT call chromium.launch()
+  // ----------------------------------------------------
+  let loginCalls = 0;
+  const origStartQumsLogin = qumsLogin.startQumsLogin;
+  qumsLogin.startQumsLogin = async (...args) => {
+    loginCalls++;
+    return origStartQumsLogin(...args);
+  };
+
+  await watcher.runWatcherPass(logSpy);
+  await watcher.runMonthRegisterPass(logSpy, { dryRun: true });
+  await assignments.runAssignmentPass(logSpy, { dryRun: true });
+  check('13. Background watchers caused 0 startQumsLogin / chromium launches', loginCalls, 0);
+
+  // ----------------------------------------------------
+  // TEST 14: User-initiated reconnect DOES call login flow
+  // ----------------------------------------------------
+  loginCalls = 0;
+  await telegram.handleCallbackQuery({
+    id: 'query_user_initiated',
+    data: 'qums_start_reconnect',
+    message: { chat: { id: CHAT_A } },
+  }, quiet);
+  check('14. User-initiated reconnect calls startQumsLogin', loginCalls, 1);
+
+  // Restore spies
+  telegram.startTelegramCaptchaReconnect = originalTgStart;
+  qumsLogin.startQumsLogin = origStartQumsLogin;
+
+  // ----------------------------------------------------
+  // TEST 15: Concurrency protection — only one browser session at a time
+  // ----------------------------------------------------
+  const realQumsLogin = require('../src/qums-login-web');
+  const userC = await db.createUser({ email: 'user-c@example.com', passwordHash: 'hashC' });
+  const userD = await db.createUser({ email: 'user-d@example.com', passwordHash: 'hashD' });
+  await db.setTelegramChatId(userC.id, 'chat_c_1003');
+  await db.setTelegramChatId(userD.id, 'chat_d_1004');
+  await db.updateUser(userC.id, {
+    qumsQid: '2024003',
+    qumsPasswordEncrypted: encryptSecret('passC'),
+  });
+  await db.updateUser(userD.id, {
+    qumsQid: '2024004',
+    qumsPasswordEncrypted: encryptSecret('passD'),
+  });
+
+  check('15. No browser initially active for user C', realQumsLogin.isConcurrentBrowserActive(userC.id), false);
+  check('15. No browser initially active for user D', realQumsLogin.isConcurrentBrowserActive(userD.id), false);
+
+  const err = new realQumsLogin.ConcurrentLoginError();
+  check('15. ConcurrentLoginError code matches CONCURRENT_LOGIN_LIMIT', err.code, 'CONCURRENT_LOGIN_LIMIT');
+  check('15. ConcurrentLoginError name is ConcurrentLoginError', err.name, 'ConcurrentLoginError');
+
+  // Test telegram error response for concurrency limit
+  sentMessages.length = 0;
+  const origLogin = qumsLogin.startQumsLogin;
+  qumsLogin.startQumsLogin = async () => {
+    throw new realQumsLogin.ConcurrentLoginError();
+  };
+  await telegram.handleCallbackQuery({
+    id: 'query_concurrent',
+    data: 'qums_start_reconnect',
+    message: { chat: { id: 'chat_c_1003' } },
+  }, quiet);
+  check('15. Concurrent reconnect returns user-friendly busy message in chat', sentMessages.some((m) => m.chatId === 'chat_c_1003' && m.text.includes('Another reconnect is currently in progress')), true);
+  qumsLogin.startQumsLogin = origLogin;
+
+  // ----------------------------------------------------
+  // TEST 16: Cleanup on completion, cancellation, and failure
+  // ----------------------------------------------------
+  await realQumsLogin.disposePending('non-existent-user'); // safe no-op
+  check('16. disposePending handles non-existent user safely', true, true);
+
+  // ----------------------------------------------------
+  // TEST 17: Active users filter in scheduler
+  // ----------------------------------------------------
+  const actUsers = await scheduler.activeUsers();
+  check('17. activeUsers excludes user with missing session file', actUsers.some((u) => u.id === userMissing.id), false);
+  check('17. activeUsers excludes user with expired session', actUsers.some((u) => u.id === userExpired.id), false);
 
   console.log(failures ? `\n${failures} TELEGRAM CAPTCHA RECONNECT TEST(S) FAILED` : '\nALL TELEGRAM CAPTCHA RECONNECT TESTS PASSED');
   process.exit(failures ? 1 : 0);

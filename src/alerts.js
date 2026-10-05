@@ -49,8 +49,18 @@ const RECONNECTED_TEXT = [
   'Your QUMS session has been restored. Attendance and assignment monitoring has resumed.',
 ].join('\n');
 
-/** Inline keyboard with the Reconnect button (URL button — no data payload). */
-function reconnectButton() {
+/** Inline keyboard with the Reconnect button. */
+function reconnectButton(canTelegramReconnect = false) {
+  if (canTelegramReconnect) {
+    return {
+      inline_keyboard: [
+        [
+          { text: '🔄 Reconnect QUMS', callback_data: 'qums_start_reconnect' },
+          { text: '🔐 Dashboard', url: reconnectUrl() },
+        ],
+      ],
+    };
+  }
   return {
     inline_keyboard: [[{ text: '🔐 Reconnect QUMS', url: reconnectUrl() }]],
   };
@@ -128,26 +138,14 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
         return false;
       }
 
-      // Attempt Telegram-based CAPTCHA reconnect if user has stored credentials and linked Telegram
+      // Check whether user has Telegram and credentials saved for Telegram reconnect button
       const user = await db.getUserById(userId);
       const savedEncrypted = user && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(userId)));
       const canTelegramReconnect = Boolean(user && user.telegramChatId && user.qumsQid && savedEncrypted);
 
-      if (canTelegramReconnect) {
-        const telegram = require('./telegram');
-        if (typeof telegram.startTelegramCaptchaReconnect === 'function') {
-          const started = await telegram.startTelegramCaptchaReconnect(userId, log);
-          if (started && started.ok) {
-            const messageId = started.alertMessageId || started.captchaMessageId || null;
-            await db.recordSessionExpiryAlert(userId, messageId);
-            await db.recordNotification(userId, 'session_expired', { messageId, telegramCaptcha: true }, log).catch(() => {});
-            log.log(`[alerts] 📲 Telegram CAPTCHA reconnect initiated for user=${userId} (msgId=${messageId || 'n/a'}).`);
-            return true;
-          }
-        }
-      }
-
-      const sendOpts = { replyMarkup: reconnectButton() };
+      // CRITICAL: Background watcher must NEVER automatically launch Chromium or call startTelegramCaptchaReconnect().
+      // Instead, we attach an interactive reconnect action/button and wait for the USER to explicitly initiate reconnect.
+      const sendOpts = { replyMarkup: reconnectButton(canTelegramReconnect) };
       const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, sendOpts);
       if (!sent) {
         log.log('[alerts] user has not linked Telegram — expiry alert skipped (the next cycle retries).');

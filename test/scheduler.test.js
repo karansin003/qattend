@@ -119,6 +119,8 @@ if (process.argv[2] === '--phase2') {
 } else {
   (async () => {
     await db.init();
+    fs.writeFileSync('/tmp/a.json', '{}');
+    fs.writeFileSync('/tmp/b.json', '{}');
     const uA = await db.createUser({ email: 'a@example.com', passwordHash: 'x' });
     await db.updateUser(uA.id, { studentName: 'KARAN KUMAR', qumsSessionPath: '/tmp/a.json' });
     const uB = await db.createUser({ email: 'b@example.com', passwordHash: 'x' });

@@ -30,6 +30,7 @@ if (process.argv.includes('--test') && !process.env.DB_FILE) {
   const os = require('os');
   process.env.DB_FILE = require('path').join(os.tmpdir(), `qums-assign-test-${Date.now()}.json`);
 }
+const fs = require('fs');
 const cron = require('node-cron');
 const db = require('./db');
 const { scrapeAssignments, qumsDateToYMD } = require('./scraper');
@@ -179,7 +180,15 @@ async function runAssignmentCycle(opts = {}) {
 
 /** One pass over ALL users with a linked QUMS session. */
 async function runAssignmentPass(log = console, { mode = 'new', dryRun = false } = {}) {
-  const users = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const users = [];
+  for (const user of allUsers) {
+    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    users.push(user);
+  }
   if (!users.length) {
     log.log('[assignments] no user has a linked QUMS session — pass skip.');
     return { users: 0 };

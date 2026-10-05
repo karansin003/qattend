@@ -180,6 +180,7 @@ async function requireAdmin(req, res, next) {
 }
 
 function httpStatusFor(err) {
+  if (err.name === 'ConcurrentLoginError') return 429;
   if (err.name === 'QumsSetupRequired') return 403;
   if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') return 409;
   if (err.name === 'NoPendingLogin' || err.name === 'TelegramNotLinked') return 409;

@@ -294,7 +294,15 @@ async function runWatcherCycle(opts = {}) {
 
 /** One full watcher pass over ALL users with a linked QUMS session. */
 async function runWatcherPass(log = console) {
-  const users = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const users = [];
+  for (const user of allUsers) {
+    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    users.push(user);
+  }
   if (!users.length) {
     log.log('[watcher] koi user ka QUMS session linked nahi — pass skip.');
     return { users: 0 };
@@ -727,7 +735,15 @@ async function runBaselineForUser(userId, log = console) {
 
 /** One full month-register pass over ALL users with a linked QUMS session. */
 async function runMonthRegisterPass(log = console, opts = {}) {
-  const users = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const users = [];
+  for (const user of allUsers) {
+    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    users.push(user);
+  }
   if (!users.length) {
     log.log('[watcher] month-register: koi user ka QUMS session linked nahi — pass skip.');
     return { users: 0 };

@@ -119,7 +119,8 @@ function pruneMorningState(state, todayYMD) {
 
 
 async function activeUsers() {
-  return (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const all = await db.allUsers();
+  return all.filter((u) => u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath));
 }
 
 /**
@@ -346,6 +347,7 @@ module.exports = {
   startScheduler,
   getSchedulerStatus,
   runMorningScheduleJob,
+  activeUsers,
   catchUpMorningSchedule,
   prewarmMorningSchedule,
   getMorningScheduleText,
