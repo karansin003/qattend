@@ -283,6 +283,7 @@ function setReconnectState(userId, data = {}, log = console) {
     timer,
     alertMessageId: data.alertMessageId || (prev && prev.alertMessageId) || null,
     captchaMessageId: data.captchaMessageId || (prev && prev.captchaMessageId) || null,
+    userMessageIds: data.userMessageIds || (prev && prev.userMessageIds) || [],
     submitting: false,
   });
 }
@@ -415,6 +416,13 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
+  if (msg.message_id) {
+    if (!rState.userMessageIds) rState.userMessageIds = [];
+    if (!rState.userMessageIds.includes(msg.message_id)) {
+      rState.userMessageIds.push(msg.message_id);
+    }
+  }
+
   rState.submitting = true;
   rState.attempts += 1;
 
@@ -425,11 +433,22 @@ async function handleUserMessage(msg, log = console) {
     if (result && result.ok) {
       log.log(`[telegram-reconnect] ✅ CAPTCHA validated successfully for user ${user.id}`);
       const oldCaptchaMsgId = rState.captchaMessageId;
+      const userMsgIds = [...(rState.userMessageIds || [])];
+      if (msg.message_id && !userMsgIds.includes(msg.message_id)) {
+        userMsgIds.push(msg.message_id);
+      }
       await clearReconnectState(user.id, log);
+
       // Clean up the captcha photo message from chat on successful reconnect
       if (oldCaptchaMsgId) {
         await deleteMessage(user.id, oldCaptchaMsgId, log).catch(() => {});
       }
+
+      // Clean up the user's typed captcha message(s) from chat on successful reconnect
+      for (const uMsgId of userMsgIds) {
+        await deleteMessage(user.id, uMsgId, log).catch(() => {});
+      }
+
       // Note: submitQumsCaptcha -> runReconnectCatchup -> notifyQumsReconnected
       // sends "✅ QUMS Reconnected", deletes the old session-expired alert, and schedules auto-delete after 1 min!
       return;

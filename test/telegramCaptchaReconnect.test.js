@@ -243,6 +243,8 @@ const fakeBot = {
 
   // Check previous alert message deletion was attempted
   check('5. Previous expired alert deletion called', deletedMessages.some((d) => d.chatId === CHAT_A), true);
+  // Check user's typed captcha message was deleted
+  check('5. User typed captcha message deleted', deletedMessages.some((d) => d.chatId === CHAT_A && d.messageId === 3003), true);
 
   // ----------------------------------------------------
   // TEST 6: Rate limiting / brute-force protection
