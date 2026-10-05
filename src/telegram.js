@@ -159,6 +159,375 @@ async function deleteMessage(userId, messageId, log = console) {
   }
 }
 
+/**
+ * Convert base64 Data URL or string to Buffer.
+ */
+function toPhotoBuffer(photo) {
+  if (Buffer.isBuffer(photo)) return photo;
+  if (typeof photo === 'string') {
+    const match = photo.match(/^data:image\/[a-zA-Z]+;base64,(.+)$/);
+    if (match) {
+      return Buffer.from(match[1], 'base64');
+    }
+    if (/^[A-Za-z0-9+/=]+$/.test(photo.trim()) && photo.trim().length > 100) {
+      return Buffer.from(photo.trim(), 'base64');
+    }
+  }
+  return photo;
+}
+
+/**
+ * Send a photo directly to a chat ID.
+ */
+async function sendPhotoToChat(chatId, photo, caption = '', log = console, opts = {}) {
+  if (!chatId) return false;
+  if (!isConfigured()) return false;
+  if (!state.bot) ensureSendOnlyBot(log);
+
+  const photoBuf = toPhotoBuffer(photo);
+  const payload = {};
+  if (caption) {
+    payload.caption = toTelegramHtml(caption);
+    payload.parse_mode = 'HTML';
+  }
+  if (opts && opts.replyMarkup) {
+    payload.reply_markup = opts.replyMarkup;
+  }
+
+  try {
+    const sentMsg = await state.bot.sendPhoto(chatId, photoBuf, payload);
+    if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
+      opts.messageId = sentMsg.message_id;
+    }
+    return sentMsg;
+  } catch (err) {
+    log.error(`[Telegram] sendPhotoToChat FAILED for chat ${chatId}: ${err.message}`);
+    try {
+      const fbPayload = {};
+      if (caption) fbPayload.caption = caption;
+      if (opts && opts.replyMarkup) fbPayload.reply_markup = opts.replyMarkup;
+      const sentMsg = await state.bot.sendPhoto(chatId, photoBuf, fbPayload);
+      if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
+        opts.messageId = sentMsg.message_id;
+      }
+      return sentMsg;
+    } catch (err2) {
+      throw err;
+    }
+  }
+}
+
+/**
+ * Send a photo to a user by QAttend user ID.
+ */
+async function sendPhoto(userId, photo, caption = '', log = console, opts = {}) {
+  if (!userId) return false;
+  const user = await db.getUserById(userId);
+  if (!user || !user.telegramChatId) return false;
+  const res = await sendPhotoToChat(user.telegramChatId, photo, caption, log, opts);
+  return Boolean(res);
+}
+
+// ---- Telegram-based CAPTCHA Reconnect State Machine ----
+const RECONNECT_STATE_NAME = 'QUMS_RECONNECT_WAITING_CAPTCHA';
+const RECONNECT_TTL_MS = 5 * 60 * 1000; // 5 min TTL
+const MAX_CAPTCHA_ATTEMPTS = 5;
+
+// userId -> { state, chatId, attempts, maxAttempts, startedAt, expiresAt, timer, alertMessageId, captchaMessageId, submitting }
+const reconnectStates = new Map();
+
+const TELEGRAM_SESSION_EXPIRED_TEXT = [
+  '⚠️ *QUMS Session Expired*',
+  '',
+  'Your QUMS session has expired. Please reconnect to continue receiving attendance and assignment updates.',
+].join('\n');
+
+const MSG_INCORRECT_CAPTCHA = [
+  '❌ *Incorrect CAPTCHA*',
+  '',
+  'Please try again.',
+].join('\n');
+
+const MSG_RECONNECT_CANCELLED = '❌ Reconnect cancelled.';
+const MSG_TOO_MANY_ATTEMPTS = '❌ Too many failed attempts. Reconnect cancelled.';
+
+function captchaKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🔄 Regenerate CAPTCHA', callback_data: 'qums_regen_captcha' },
+        { text: '❌ Cancel Reconnect', callback_data: 'qums_cancel_reconnect' },
+      ],
+    ],
+  };
+}
+
+function setReconnectState(userId, data = {}, log = console) {
+  if (!userId) return;
+  const prev = reconnectStates.get(userId);
+  if (prev && prev.timer) clearTimeout(prev.timer);
+
+  const expiresAt = Date.now() + RECONNECT_TTL_MS;
+  const timer = setTimeout(async () => {
+    log.log(`[telegram-reconnect] reconnect session expired for user ${userId}`);
+    await clearReconnectState(userId, log);
+  }, RECONNECT_TTL_MS);
+
+  reconnectStates.set(userId, {
+    state: RECONNECT_STATE_NAME,
+    chatId: data.chatId || (prev && prev.chatId),
+    attempts: data.attempts !== undefined ? data.attempts : (prev ? prev.attempts : 0),
+    maxAttempts: data.maxAttempts || MAX_CAPTCHA_ATTEMPTS,
+    startedAt: data.startedAt || Date.now(),
+    expiresAt,
+    timer,
+    alertMessageId: data.alertMessageId || (prev && prev.alertMessageId) || null,
+    captchaMessageId: data.captchaMessageId || (prev && prev.captchaMessageId) || null,
+    submitting: false,
+  });
+}
+
+function getReconnectState(userId) {
+  if (!userId) return null;
+  const s = reconnectStates.get(userId);
+  if (!s) return null;
+  if (Date.now() > s.expiresAt) {
+    clearReconnectState(userId);
+    return null;
+  }
+  return s;
+}
+
+function isWaitingCaptcha(userId) {
+  const s = getReconnectState(userId);
+  return Boolean(s && s.state === RECONNECT_STATE_NAME);
+}
+
+async function clearReconnectState(userId, log = console) {
+  const s = reconnectStates.get(userId);
+  if (!s) return;
+  if (s.timer) clearTimeout(s.timer);
+  reconnectStates.delete(userId);
+
+  try {
+    const qumsLogin = require('./qums-login-web');
+    if (typeof qumsLogin.disposePending === 'function') {
+      await qumsLogin.disposePending(userId);
+    }
+  } catch (err) {
+    log.log(`[telegram-reconnect] clearReconnectState dispose warning: ${err.message}`);
+  }
+}
+
+/**
+ * Initiates the Telegram CAPTCHA-only reconnect flow for a user whose QUMS session expired.
+ */
+async function startTelegramCaptchaReconnect(userId, log = console) {
+  if (!userId) return { ok: false, error: 'no-user' };
+  const user = await db.getUserById(userId);
+  if (!user || !user.telegramChatId) return { ok: false, error: 'not-linked' };
+
+  const savedEncrypted = user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(userId));
+  if (!user.qumsQid || !savedEncrypted) {
+    log.log(`[telegram-reconnect] user ${userId} has no saved QUMS credentials`);
+    return { ok: false, error: 'no-credentials' };
+  }
+
+  // Clear any existing reconnect state
+  await clearReconnectState(userId, log);
+
+  // Send the expired text message
+  const alertOpts = {};
+  await sendMessage(userId, TELEGRAM_SESSION_EXPIRED_TEXT, log, alertOpts);
+  const alertMsgId = alertOpts.messageId || null;
+
+  try {
+    const qumsLogin = require('./qums-login-web');
+    const res = await qumsLogin.startQumsLogin(userId, undefined, log);
+    if (!res || !res.captchaImage) {
+      throw new Error('No captcha image returned from QUMS login');
+    }
+
+    const photoOpts = { replyMarkup: captchaKeyboard() };
+    await sendPhoto(userId, res.captchaImage, '', log, photoOpts);
+    const captchaMsgId = photoOpts.messageId || null;
+
+    setReconnectState(userId, {
+      chatId: user.telegramChatId,
+      alertMessageId: alertMsgId,
+      captchaMessageId: captchaMsgId,
+      attempts: 0,
+    }, log);
+
+    return { ok: true, alertMessageId: alertMsgId, captchaMessageId: captchaMsgId };
+  } catch (err) {
+    log.error(`[telegram-reconnect] failed to start QUMS login for user ${userId}: ${err.message}`);
+    return { ok: false, error: err.message, alertMessageId: alertMsgId };
+  }
+}
+
+/**
+ * Handle incoming user text messages (processes CAPTCHA when user is in reconnect state).
+ */
+async function handleUserMessage(msg, log = console) {
+  if (!msg || !msg.text) return;
+  const text = msg.text.trim();
+  if (isDuplicateUpdate(msg)) return;
+
+  const chatId = msg.chat && msg.chat.id;
+  if (!chatId) return;
+
+  if (/^\/reconnect(?:@\w+)?/i.test(text)) {
+    const user = await db.getUserByTelegramChatId(chatId);
+    if (!user) {
+      await reply(chatId, MSG.STATUS_NONE, log);
+      return;
+    }
+    const started = await startTelegramCaptchaReconnect(user.id, log);
+    if (!started || !started.ok) {
+      await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+    }
+    return;
+  }
+
+  if (text.startsWith('/')) return; // ignore other commands
+
+  // Strict multi-user mapping: only the user who owns this chat
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) return;
+
+  if (!isWaitingCaptcha(user.id)) {
+    // User is not in reconnect mode — do not interpret text as CAPTCHA
+    return;
+  }
+
+  const rState = getReconnectState(user.id);
+  if (!rState) return;
+
+  if (rState.submitting) {
+    return; // avoid parallel submissions
+  }
+
+  // Rate limiting / brute-force protection
+  if (rState.attempts >= rState.maxAttempts) {
+    await clearReconnectState(user.id, log);
+    await reply(chatId, MSG_TOO_MANY_ATTEMPTS, log);
+    return;
+  }
+
+  rState.submitting = true;
+  rState.attempts += 1;
+
+  try {
+    const qumsLogin = require('./qums-login-web');
+    const result = await qumsLogin.submitQumsCaptcha(user.id, text, log);
+
+    if (result && result.ok) {
+      log.log(`[telegram-reconnect] ✅ CAPTCHA validated successfully for user ${user.id}`);
+      const oldCaptchaMsgId = rState.captchaMessageId;
+      await clearReconnectState(user.id, log);
+      // Clean up the captcha photo message from chat on successful reconnect
+      if (oldCaptchaMsgId) {
+        await deleteMessage(user.id, oldCaptchaMsgId, log).catch(() => {});
+      }
+      // Note: submitQumsCaptcha -> runReconnectCatchup -> notifyQumsReconnected
+      // sends "✅ QUMS Reconnected", deletes the old session-expired alert, and schedules auto-delete after 1 min!
+      return;
+    }
+
+    // Wrong CAPTCHA
+    log.log(`[telegram-reconnect] ❌ Incorrect CAPTCHA for user ${user.id} (attempt ${rState.attempts}/${rState.maxAttempts})`);
+
+    if (rState.attempts >= rState.maxAttempts) {
+      await clearReconnectState(user.id, log);
+      await reply(chatId, MSG_TOO_MANY_ATTEMPTS, log);
+      return;
+    }
+
+    // Send incorrect captcha message
+    await reply(chatId, MSG_INCORRECT_CAPTCHA, log);
+
+    // Provide the new captcha image
+    if (result && result.captchaImage) {
+      const photoOpts = { replyMarkup: captchaKeyboard() };
+      await sendPhoto(user.id, result.captchaImage, '', log, photoOpts);
+      rState.captchaMessageId = photoOpts.messageId || null;
+      setReconnectState(user.id, {
+        chatId,
+        attempts: rState.attempts,
+        alertMessageId: rState.alertMessageId,
+        captchaMessageId: rState.captchaMessageId,
+      }, log);
+    }
+  } catch (err) {
+    log.error(`[telegram-reconnect] captcha submission error for user ${user.id}: ${err.message}`);
+    await reply(chatId, MSG_INCORRECT_CAPTCHA, log);
+  } finally {
+    if (reconnectStates.has(user.id)) {
+      reconnectStates.get(user.id).submitting = false;
+    }
+  }
+}
+
+/**
+ * Handle inline button clicks (🔄 Regenerate CAPTCHA, ❌ Cancel Reconnect).
+ */
+async function handleCallbackQuery(query, log = console) {
+  if (!query || !query.data) return;
+  const bot = state.bot;
+  if (bot && typeof bot.answerCallbackQuery === 'function') {
+    await bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  const data = String(query.data).trim();
+  if (data !== 'qums_regen_captcha' && data !== 'qums_cancel_reconnect') {
+    return;
+  }
+
+  const chatId = (query.message && query.message.chat && query.message.chat.id) || (query.from && query.from.id);
+  if (!chatId) return;
+
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) return;
+
+  if (data === 'qums_cancel_reconnect') {
+    log.log(`[telegram-reconnect] reconnect cancelled by user ${user.id}`);
+    await clearReconnectState(user.id, log);
+    await reply(chatId, MSG_RECONNECT_CANCELLED, log);
+    return;
+  }
+
+  if (data === 'qums_regen_captcha') {
+    log.log(`[telegram-reconnect] regenerating captcha for user ${user.id}`);
+    const rState = getReconnectState(user.id);
+    if (!rState) {
+      await reply(chatId, '❌ Reconnect session expired. Please start again.', log);
+      return;
+    }
+
+    try {
+      const qumsLogin = require('./qums-login-web');
+      await qumsLogin.disposePending(user.id);
+      const res = await qumsLogin.startQumsLogin(user.id, undefined, log);
+      if (!res || !res.captchaImage) {
+        throw new Error('Failed to capture regenerated CAPTCHA');
+      }
+
+      const photoOpts = { replyMarkup: captchaKeyboard() };
+      await sendPhoto(user.id, res.captchaImage, '', log, photoOpts);
+      setReconnectState(user.id, {
+        chatId,
+        attempts: rState.attempts,
+        alertMessageId: rState.alertMessageId,
+        captchaMessageId: photoOpts.messageId || null,
+      }, log);
+    } catch (err) {
+      log.error(`[telegram-reconnect] failed to regenerate captcha for user ${user.id}: ${err.message}`);
+      await reply(chatId, '❌ Could not regenerate CAPTCHA. Please try again in a few moments.', log);
+    }
+  }
+}
+
 /** Send-only bot (no polling) — standalone workers / second instances ke liye. */
 function ensureSendOnlyBot(log = console) {
   if (!state.bot) {
@@ -417,8 +786,16 @@ function initTelegram(log = console) {
     handleStatus(msg.chat.id, log).catch((e) => log.error(`[telegram] /status failed: ${e.message}`));
   });
 
+  bot.on('message', (msg) => {
+    handleUserMessage(msg, log).catch((e) => log.error(`[telegram] message handling failed: ${e.message}`));
+  });
+
+  bot.on('callback_query', (query) => {
+    handleCallbackQuery(query, log).catch((e) => log.error(`[telegram] callback query failed: ${e.message}`));
+  });
+
   state.pollingArmed = true;
-  log.log(`[telegram] polling armed (@${BOT_USERNAME}) — ONE /start handler + /link + /status (pid ${process.pid}).`);
+  log.log(`[telegram] polling armed (@${BOT_USERNAME}) — handlers registered (pid ${process.pid}).`);
   return bot;
 }
 
@@ -449,6 +826,22 @@ module.exports = {
   deepLink,
   sendMessage,
   deleteMessage,
+  sendPhoto,
+  sendPhotoToChat,
+  startTelegramCaptchaReconnect,
+  setReconnectState,
+  getReconnectState,
+  isWaitingCaptcha,
+  clearReconnectState,
+  handleUserMessage,
+  handleCallbackQuery,
+  captchaKeyboard,
+  RECONNECT_STATE_NAME,
+  MAX_CAPTCHA_ATTEMPTS,
+  TELEGRAM_SESSION_EXPIRED_TEXT,
+  MSG_INCORRECT_CAPTCHA,
+  MSG_RECONNECT_CANCELLED,
+  MSG_TOO_MANY_ATTEMPTS,
   sendBlockerReason,
   handleDeepLink,
   handleStart,

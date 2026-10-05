@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "scrape": "node src/scraper.js",
-    "test": "node test/parser.test.js && node test/multiuser.test.js && node test/firebaseAuth.test.js && node test/telegramStart.test.js && node test/scheduler.test.js && node test/backdated.test.js && node test/assignments.test.js && node test/reconnect.test.js && node test/ui.test.js && node test/admin.test.js && node test/architecture.test.js && node test/emailVerification.test.js",
+    "test": "node test/parser.test.js && node test/multiuser.test.js && node test/firebaseAuth.test.js && node test/telegramStart.test.js && node test/scheduler.test.js && node test/backdated.test.js && node test/assignments.test.js && node test/reconnect.test.js && node test/telegramCaptchaReconnect.test.js && node test/ui.test.js && node test/admin.test.js && node test/architecture.test.js && node test/emailVerification.test.js",
     "telegram-test": "node src/telegram.js",
     "cron": "node src/scheduler.js"
   },

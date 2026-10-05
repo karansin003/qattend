@@ -128,6 +128,25 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
         return false;
       }
 
+      // Attempt Telegram-based CAPTCHA reconnect if user has stored credentials and linked Telegram
+      const user = await db.getUserById(userId);
+      const savedEncrypted = user && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(userId)));
+      const canTelegramReconnect = Boolean(user && user.telegramChatId && user.qumsQid && savedEncrypted);
+
+      if (canTelegramReconnect) {
+        const telegram = require('./telegram');
+        if (typeof telegram.startTelegramCaptchaReconnect === 'function') {
+          const started = await telegram.startTelegramCaptchaReconnect(userId, log);
+          if (started && started.ok) {
+            const messageId = started.alertMessageId || started.captchaMessageId || null;
+            await db.recordSessionExpiryAlert(userId, messageId);
+            await db.recordNotification(userId, 'session_expired', { messageId, telegramCaptcha: true }, log).catch(() => {});
+            log.log(`[alerts] 📲 Telegram CAPTCHA reconnect initiated for user=${userId} (msgId=${messageId || 'n/a'}).`);
+            return true;
+          }
+        }
+      }
+
       const sendOpts = { replyMarkup: reconnectButton() };
       const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, sendOpts);
       if (!sent) {
