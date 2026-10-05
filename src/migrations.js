@@ -232,6 +232,12 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_users_is_suspended ON users(is_suspended)`,
     ],
   },
+  {
+    id: '016_session_expiry_telegram_message_id',
+    statements: [
+      `ALTER TABLE session_expiry_state ADD COLUMN IF NOT EXISTS telegram_message_id TEXT DEFAULT ''`,
+    ],
+  },
 ];
 
 /**

@@ -1044,7 +1044,7 @@ const SESSION_ALERT_COOLDOWN_MS = Number(process.env.SESSION_ALERT_COOLDOWN_MS |
 async function getSessionExpiryState(userId) {
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
-    return e ? { ...e } : null;
+    return e ? { ...e, telegramMessageId: e.telegramMessageId || null } : null;
   }
   await init();
   const r = await pool.query('SELECT * FROM session_expiry_state WHERE user_id=$1', [userId]);
@@ -1057,6 +1057,7 @@ async function getSessionExpiryState(userId) {
     alertCount: Number(row.alert_count || 0),
     resolvedAt: row.resolved_at ? Number(row.resolved_at) : null,
     note: row.note || '',
+    telegramMessageId: row.telegram_message_id ? String(row.telegram_message_id) : (row.telegramMessageId || null),
   };
 }
 
@@ -1065,7 +1066,7 @@ async function markSessionExpired(userId, note = '') {
   const now = Date.now();
   if (!USE_PG) {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
-    if (!e) { e = { userId, expiredAt: now, lastAlertAt: null, alertCount: 0, resolvedAt: null, note }; data.sessionExpiry.push(e); }
+    if (!e) { e = { userId, expiredAt: now, lastAlertAt: null, alertCount: 0, resolvedAt: null, note, telegramMessageId: null }; data.sessionExpiry.push(e); }
     else { e.expiredAt = now; e.resolvedAt = null; if (note) e.note = note; }
     persistJson();
     return e;
@@ -1080,23 +1081,37 @@ async function markSessionExpired(userId, note = '') {
 }
 
 /** Persist that an expiry alert went out (dedupe across restarts). */
-async function recordSessionExpiryAlert(userId) {
+async function recordSessionExpiryAlert(userId, messageId = null) {
   const now = Date.now();
+  const msgIdStr = messageId ? String(messageId) : null;
   if (!USE_PG) {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
-    if (!e) { e = { userId, expiredAt: now, lastAlertAt: now, alertCount: 1, resolvedAt: null, note: '' }; data.sessionExpiry.push(e); }
-    else { e.lastAlertAt = now; e.alertCount = Number(e.alertCount || 0) + 1; }
+    if (!e) { e = { userId, expiredAt: now, lastAlertAt: now, alertCount: 1, resolvedAt: null, note: '', telegramMessageId: msgIdStr }; data.sessionExpiry.push(e); }
+    else { e.lastAlertAt = now; e.alertCount = Number(e.alertCount || 0) + 1; if (msgIdStr) e.telegramMessageId = msgIdStr; }
     persistJson();
     return e;
   }
   await init();
   await pool.query(
-    `INSERT INTO session_expiry_state(user_id,expired_at,last_alert_at,alert_count)
-     VALUES($1,$2,$2,1)
-     ON CONFLICT(user_id) DO UPDATE SET last_alert_at=EXCLUDED.last_alert_at, alert_count=session_expiry_state.alert_count+1`,
-    [userId, now]
+    `INSERT INTO session_expiry_state(user_id,expired_at,last_alert_at,alert_count,telegram_message_id)
+     VALUES($1,$2,$2,1,$3)
+     ON CONFLICT(user_id) DO UPDATE SET last_alert_at=EXCLUDED.last_alert_at, alert_count=session_expiry_state.alert_count+1,
+     telegram_message_id=COALESCE(EXCLUDED.telegram_message_id, session_expiry_state.telegram_message_id)`,
+    [userId, now, msgIdStr]
   );
   return getSessionExpiryState(userId);
+}
+
+/** Clear the recorded Telegram message ID for session expiry (e.g. after deletion). */
+async function clearSessionExpiryTelegramMessage(userId) {
+  if (!userId) return;
+  if (!USE_PG) {
+    const e = data.sessionExpiry.find((s) => s.userId === userId);
+    if (e) { e.telegramMessageId = null; persistJson(); }
+    return;
+  }
+  await init();
+  await pool.query('UPDATE session_expiry_state SET telegram_message_id=NULL WHERE user_id=$1', [userId]).catch(() => {});
 }
 
 /** Reconnect succeeded -> clear expiry state so a future expiry alerts again. */
@@ -1632,7 +1647,7 @@ module.exports={
   // per-user sync bookkeeping
   touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
   // session-expiry state (PostgreSQL-backed)
-  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, clearSessionExpiry, listSessionExpiredUsers,
+  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
   // notification log / analytics
   NOTIFICATION_KINDS, recordNotification, notificationStats, recentNotifications,
   // admin

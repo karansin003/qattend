@@ -14,10 +14,12 @@
  *   - a successful reconnect clears the state, so a LATER expiry alerts again.
  */
 require('dotenv').config();
-const { isConfigured, sendMessage } = require('./telegram');
+const { isConfigured, sendMessage, deleteMessage } = require('./telegram');
 const db = require('./db');
 
 const COOLDOWN_MS = db.SESSION_ALERT_COOLDOWN_MS;
+// In-flight mutex per user to prevent concurrent duplicate session-expiry alerts
+const alertInFlight = new Set();
 
 /** Public base URL (same resolution order as server.js — Render-safe). */
 function baseUrl() {
@@ -55,6 +57,35 @@ function reconnectButton() {
 }
 
 /**
+ * Delete previous session-expired alert from Telegram chat.
+ * Requirement: Reconnect hone ke baad session expired wala massage delete krdo.
+ */
+async function deleteSessionExpiredAlert(userId, log = console) {
+  try {
+    if (!userId) return false;
+    const state = await db.getSessionExpiryState(userId);
+    let messageId = state?.telegramMessageId;
+    if (!messageId) {
+      const notifs = await db.recentNotifications(20).catch(() => []);
+      const match = (notifs || []).find((n) => n.userId === userId && n.kind === 'session_expired' && n.meta && n.meta.messageId);
+      if (match) messageId = match.meta.messageId;
+    }
+    if (messageId) {
+      if (typeof deleteMessage === 'function') {
+        await deleteMessage(userId, messageId, log).catch(() => {});
+      }
+      await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
+      log.log(`[alerts] 🗑️ Session-expired message ${messageId} deleted for user=${userId}.`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.log(`[alerts] deleteSessionExpiredAlert warning: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Send the session-expired Telegram alert to ONE user — but only if:
  *   1. Telegram is configured (token present), and
  *   2. that user has linked their Telegram (telegramChatId), and
@@ -75,28 +106,42 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
       log.log(`[alerts] user=${userId} QUMS unreachable — not treated as expiry, no alert sent.`);
       return false;
     }
-    // Reliable expiry evidence: mark the event if this is a new one.
-    const before = await db.getSessionExpiryState(userId);
-    const isNewEvent = !before || !before.expiredAt || before.resolvedAt;
-    if (isNewEvent) await db.markSessionExpired(userId, 'session-expired');
-    const state = await db.getSessionExpiryState(userId);
-    if (state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
-      log.log(`[alerts] user=${userId} expiry alert already sent for this event — skip.`);
+
+    if (alertInFlight.has(userId)) {
+      log.log(`[alerts] user=${userId} expiry alert already in flight — skip duplicate send.`);
       return false;
     }
-    if (!isConfigured()) {
-      log.log('[alerts] Telegram not configured (TELEGRAM_BOT_TOKEN missing) — expiry alert skipped.');
-      return false;
+    alertInFlight.add(userId);
+
+    try {
+      // Reliable expiry evidence: mark the event if this is a new one.
+      const before = await db.getSessionExpiryState(userId);
+      const isNewEvent = !before || !before.expiredAt || before.resolvedAt;
+      if (isNewEvent) await db.markSessionExpired(userId, 'session-expired');
+      const state = await db.getSessionExpiryState(userId);
+      if (state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
+        log.log(`[alerts] user=${userId} expiry alert already sent for this event — skip.`);
+        return false;
+      }
+      if (!isConfigured()) {
+        log.log('[alerts] Telegram not configured (TELEGRAM_BOT_TOKEN missing) — expiry alert skipped.');
+        return false;
+      }
+
+      const sendOpts = { replyMarkup: reconnectButton() };
+      const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, sendOpts);
+      if (!sent) {
+        log.log('[alerts] user has not linked Telegram — expiry alert skipped (the next cycle retries).');
+        return false;
+      }
+      const messageId = sendOpts.messageId || null;
+      await db.recordSessionExpiryAlert(userId, messageId);
+      await db.recordNotification(userId, 'session_expired', { messageId }, log).catch(() => {});
+      log.log(`[alerts] 📲 session-expiry alert sent user=${userId} (msgId=${messageId || 'n/a'}, Reconnect button attached).`);
+      return true;
+    } finally {
+      alertInFlight.delete(userId);
     }
-    const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, { replyMarkup: reconnectButton() });
-    if (!sent) {
-      log.log('[alerts] user has not linked Telegram — expiry alert skipped (the next cycle retries).');
-      return false;
-    }
-    await db.recordSessionExpiryAlert(userId);
-    await db.recordNotification(userId, 'session_expired', {}, log).catch(() => {});
-    log.log(`[alerts] 📲 session-expiry alert sent user=${userId} (Reconnect button attached).`);
-    return true;
   } catch (err) {
     log.error(`[alerts] session-expiry alert failed: ${err.message}`);
     return false;
@@ -106,10 +151,13 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
 /**
  * "✅ QUMS Reconnected" confirmation — sent only after a SUCCESSFUL manual
  * reconnect (the user solved the captcha themselves). Never sent on failure.
+ * Deletes any pending "Session Expired" alert message from Telegram.
  */
 async function notifyQumsReconnected(log = console, userId) {
   try {
     if (!userId) return false;
+    // Reconnect hone ke baad session expired wala message delete krdo
+    await deleteSessionExpiredAlert(userId, log);
     await db.clearSessionExpiry(userId);
     if (!isConfigured()) return false;
     const sent = await sendMessage(userId, RECONNECTED_TEXT, log);
@@ -117,7 +165,7 @@ async function notifyQumsReconnected(log = console, userId) {
       await db.recordNotification(userId, 'qums_reconnected', {}, log).catch(() => {});
       log.log(`[alerts] 📲 QUMS reconnected confirmation sent user=${userId}.`);
     }
-    return sent;
+    return Boolean(sent);
   } catch (err) {
     log.error(`[alerts] reconnect confirmation failed: ${err.message}`);
     return false;
@@ -125,11 +173,12 @@ async function notifyQumsReconnected(log = console, userId) {
 }
 
 /**
- * Clear one user's session-expiry state — called after a SUCCESSFUL reconnect so
- * a later expiry alerts again (PostgreSQL-backed; JSON fallback in db.js).
+ * Clear one user's session-expiry state and delete stale Telegram alert — called
+ * after a SUCCESSFUL reconnect so a later expiry alerts again.
  */
-async function clearSessionAlert(userId) {
+async function clearSessionAlert(userId, log = console) {
   try {
+    await deleteSessionExpiredAlert(userId, log);
     await db.clearSessionExpiry(userId);
   } catch { /* clearing must never block the reconnect flow */ }
 }
@@ -137,6 +186,7 @@ async function clearSessionAlert(userId) {
 module.exports = {
   maybeNotifySessionExpired,
   notifyQumsReconnected,
+  deleteSessionExpiredAlert,
   clearSessionAlert,
   reconnectUrl,
   reconnectButton,

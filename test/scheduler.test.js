@@ -236,6 +236,16 @@ if (process.argv[2] === '--phase2') {
     r = await scheduler.prewarmMorningSchedule(quiet, { now: IST('2026-10-01T02:50:00.000Z'), sleepMs: 0, fetchFn: countFetch });
     check('S10 warm cache wale user ka koi naya scrape nahi', [r.built, fetches], [1, 1]);
 
+    // ---- S11: concurrent morning job runs -> exactly 1 execution (no duplicate messages) ----
+    const dayOct2 = '2026-10-02T03:00:00.000Z';
+    sends.length = 0;
+    const [c1, c2] = await Promise.all([
+      scheduler.runMorningScheduleJob(quiet, opts(dayOct2)),
+      scheduler.runMorningScheduleJob(quiet, opts(dayOct2)),
+    ]);
+    check('S11 concurrent runs -> exactly 2 sends for 2 users (not 4)', sends.length, 2);
+    check('S11 one run succeeds and concurrent run skips', [c1.sent, c2.sent].sort(), [0, 2]);
+
     console.log(failures === 0 ? '\nALL MORNING SCHEDULE TESTS PASSED' : `\n${failures} MORNING SCHEDULE TEST(S) FAILED`);
     process.exit(failures === 0 ? 0 : 1);
   })().catch((err) => {

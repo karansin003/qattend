@@ -114,20 +114,48 @@ async function sendMessage(userId, text, log = console, opts = {}) {
     log.log(`[Telegram] Sending notification for user: ${userId}`);
     const payload = { parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) payload.reply_markup = replyMarkup;
-    await state.bot.sendMessage(user.telegramChatId, toTelegramHtml(text), payload);
+    const sentMsg = await state.bot.sendMessage(user.telegramChatId, toTelegramHtml(text), payload);
+    if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
+      opts.messageId = sentMsg.message_id;
+    }
     log.log(`[Telegram] Notification sent successfully for user: ${userId}`);
     return true;
   } catch (err) {
     try {
       // plain-text fallback (markup HTML parse fail hone par bhi button intact)
       const fallback = replyMarkup ? { reply_markup: replyMarkup } : {};
-      await state.bot.sendMessage(user.telegramChatId, text, fallback);
+      const sentMsg = await state.bot.sendMessage(user.telegramChatId, text, fallback);
+      if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
+        opts.messageId = sentMsg.message_id;
+      }
       log.log(`[Telegram] Notification sent successfully for user: ${userId} (plain-text fallback)`);
       return true;
     } catch (err2) {
       log.error(`[Telegram] Notification FAILED for user: ${userId}: ${err.message}`);
       throw err; // watcher/scheduler rollback-retry kar sake
     }
+  }
+}
+
+/**
+ * Delete a previously sent message from a user's Telegram chat.
+ * Used to clean up stale alerts (e.g. delete "Session Expired" alert on reconnect).
+ */
+async function deleteMessage(userId, messageId, log = console) {
+  if (!userId || !messageId) return false;
+  const user = await db.getUserById(userId);
+  if (!user || !user.telegramChatId) return false;
+  if (!isConfigured()) return false;
+  if (!state.bot) ensureSendOnlyBot(log);
+  try {
+    log.log(`[Telegram] Deleting message ${messageId} for user: ${userId}`);
+    await state.bot.deleteMessage(user.telegramChatId, Number(messageId));
+    log.log(`[Telegram] Message ${messageId} deleted successfully for user: ${userId}`);
+    return true;
+  } catch (err) {
+    // If message is already deleted or expired (>48h), silently ignore
+    log.log(`[Telegram] deleteMessage failed for user ${userId} msg=${messageId}: ${err.message}`);
+    return false;
   }
 }
 
@@ -420,6 +448,7 @@ module.exports = {
   getBotUsername,
   deepLink,
   sendMessage,
+  deleteMessage,
   sendBlockerReason,
   handleDeepLink,
   handleStart,

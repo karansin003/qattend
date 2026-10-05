@@ -151,6 +151,8 @@ async function getMorningScheduleText(user, { forceRefresh = false, log = consol
   };
 }
 
+let isMorningJobRunning = false;
+
 /**
  * Roz 08:30 (IST) — per-user aaj ki classes: kon si class, kis time, kaunse room.
  *
@@ -171,59 +173,97 @@ async function runMorningScheduleJob(log = console, opts = {}) {
   const sleepMs = opts.sleepMs === undefined ? 500 : Number(opts.sleepMs);
   const sendFn = opts.sendFn || ((user, text) => sendMessage(user.id, text));
 
-  const all = await activeUsers();
-  const users = opts.userEmail ? all.filter((u) => u.email === opts.userEmail) : all;
-
-  // Per-day dedupe: aaj jise bhej chuke hain use chhod do (force = manual).
-  const state = readMorningState(stateFile);
-  const pending = force ? users : users.filter((u) => state[u.id] !== at.ymd);
-  log.log(
-    `[scheduler] morning schedule ${at.stamp} — ${pending.length}/${users.length} user(s) pending${force ? ' (force: marker ignore)' : ' (dedupe: 1/user/day)'}.`
-  );
-  if (!pending.length) {
-    log.log('[scheduler] morning schedule skip — aaj ke saare users ko already bhej diya gaya hai.');
-    return { sent: 0, total: users.length, skipped: users.length, at: at.stamp };
+  if (isMorningJobRunning && !force) {
+    log.log(`[scheduler] morning schedule already running — skip duplicate concurrent execution.`);
+    return { sent: 0, skipped: true, running: true, at: at.stamp };
   }
+  isMorningJobRunning = true;
 
-  // Bohat late (recovered / catch-up) run: purani timetable bhejne ka fayda nahi.
-  const pastLateLimit = at.hour > MORNING_LATE_SKIP_HOUR || (at.hour === MORNING_LATE_SKIP_HOUR && at.minute > 0);
-  if (pastLateLimit && !force) {
-    log.log(
-      `[scheduler] morning schedule SKIPPED — ${at.stamp} late hai (limit ${MORNING_LATE_SKIP_HOUR}:00 IST). Aaj ka timetable purana ho gaya; kal 8:30 par normal run hoga.`
-    );
-    return { sent: 0, total: users.length, skipped: users.length, late: true, at: at.stamp };
-  }
+  try {
+    const all = await activeUsers();
+    const users = opts.userEmail ? all.filter((u) => u.email === opts.userEmail) : all;
 
-  let ok = 0;
-  for (const user of pending) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const { text, mode } = await getMorningScheduleText(user, { log, fetchFn: opts.fetchFn, now });
-      // eslint-disable-next-line no-await-in-loop
-      const sent = await sendFn(user, text);
-      if (sent) {
-        // Persistent audit/analytics row (best-effort, never blocks delivery).
-        // eslint-disable-next-line no-await-in-loop
-        await db.recordNotification(user.id, 'morning_schedule', {}, log).catch(() => {});
+    // Per-day dedupe: check both local state file and DB notification_log
+    const state = readMorningState(stateFile);
+    const pending = [];
+    for (const u of (force ? users : users.filter((u) => state[u.id] !== at.ymd))) {
+      if (force) {
+        pending.push(u);
+        continue;
       }
-      if (!sent) throw new Error('Telegram linked nahi hai — dashboard se Connect Telegram karo.');
-      ok += 1;
-      // Marker sirf SUCCESSFUL send par — fail hone par agla run retry karega.
-      state[user.id] = at.ymd;
-      writeMorningState(pruneMorningState(state, at.ymd), stateFile);
-      log.log(`[scheduler] 📲 morning schedule sent -> ${user.email} [${mode}] at ${istParts().stamp}`);
-    } catch (err) {
-      log.error(`[scheduler] morning schedule FAILED for ${user.email}: ${err.message}`);
-      if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
-        // eslint-disable-next-line no-await-in-loop
-        await maybeNotifySessionExpired(log, user.id);
+      const dedupeKey = `morning_schedule:${u.id}:${at.ymd}`;
+      // eslint-disable-next-line no-await-in-loop
+      const alreadyInDb = await db.hasNotificationLog(u.id, dedupeKey).catch(() => false);
+      if (alreadyInDb) {
+        state[u.id] = at.ymd;
+      } else {
+        pending.push(u);
       }
     }
-    // eslint-disable-next-line no-await-in-loop
-    if (sleepMs > 0) await sleep(sleepMs);
+    writeMorningState(pruneMorningState(state, at.ymd), stateFile);
+
+    log.log(
+      `[scheduler] morning schedule ${at.stamp} — ${pending.length}/${users.length} user(s) pending${force ? ' (force: marker ignore)' : ' (dedupe: 1/user/day)'}.`
+    );
+    if (!pending.length) {
+      log.log('[scheduler] morning schedule skip — aaj ke saare users ko already bhej diya gaya hai.');
+      return { sent: 0, total: users.length, skipped: users.length, at: at.stamp };
+    }
+
+    // Bohat late (recovered / catch-up) run: purani timetable bhejne ka fayda nahi.
+    const pastLateLimit = at.hour > MORNING_LATE_SKIP_HOUR || (at.hour === MORNING_LATE_SKIP_HOUR && at.minute > 0);
+    if (pastLateLimit && !force) {
+      log.log(
+        `[scheduler] morning schedule SKIPPED — ${at.stamp} late hai (limit ${MORNING_LATE_SKIP_HOUR}:00 IST). Aaj ka timetable purana ho gaya; kal 8:30 par normal run hoga.`
+      );
+      return { sent: 0, total: users.length, skipped: users.length, late: true, at: at.stamp };
+    }
+
+    let ok = 0;
+    for (const user of pending) {
+      try {
+        const dedupeKey = `morning_schedule:${user.id}:${at.ymd}`;
+        if (!force) {
+          // eslint-disable-next-line no-await-in-loop
+          const alreadyInDb = await db.hasNotificationLog(user.id, dedupeKey).catch(() => false);
+          if (alreadyInDb) {
+            state[user.id] = at.ymd;
+            writeMorningState(pruneMorningState(state, at.ymd), stateFile);
+            log.log(`[scheduler] ${user.email}: morning schedule already sent in DB — skipping duplicate.`);
+            continue;
+          }
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const { text, mode } = await getMorningScheduleText(user, { log, fetchFn: opts.fetchFn, now });
+        // eslint-disable-next-line no-await-in-loop
+        const sent = await sendFn(user, text);
+        if (sent) {
+          state[user.id] = at.ymd;
+          writeMorningState(pruneMorningState(state, at.ymd), stateFile);
+          // Persistent audit/analytics row with persistent deduplication
+          // eslint-disable-next-line no-await-in-loop
+          await db.tryRecordNotificationLog(user.id, 'morning_schedule', dedupeKey, { date: at.ymd }).catch(() => {});
+          // eslint-disable-next-line no-await-in-loop
+          await db.recordNotification(user.id, 'morning_schedule', { dedupeKey, classDate: at.ymd }, log).catch(() => {});
+        }
+        if (!sent) throw new Error('Telegram linked nahi hai — dashboard se Connect Telegram karo.');
+        ok += 1;
+        log.log(`[scheduler] 📲 morning schedule sent -> ${user.email} [${mode}] at ${istParts().stamp}`);
+      } catch (err) {
+        log.error(`[scheduler] morning schedule FAILED for ${user.email}: ${err.message}`);
+        if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+          // eslint-disable-next-line no-await-in-loop
+          await maybeNotifySessionExpired(log, user.id);
+        }
+      }
+      // eslint-disable-next-line no-await-in-loop
+      if (sleepMs > 0) await sleep(sleepMs);
+    }
+    log.log(`[scheduler] morning schedule done: ${ok}/${pending.length} sent at ${istParts().stamp}.`);
+    return { sent: ok, total: users.length, at: at.stamp };
+  } finally {
+    isMorningJobRunning = false;
   }
-  log.log(`[scheduler] morning schedule done: ${ok}/${pending.length} sent at ${istParts().stamp}.`);
-  return { sent: ok, total: users.length, at: at.stamp };
 }
 
 /**

@@ -33,14 +33,22 @@ delete process.env.RENDER_EXTERNAL_URL;
 
 // ---- telegram stub: captures (userId, text, opts) ----
 const telegramSends = [];
+const telegramDeletes = [];
 let telegramConfigured = true;
+let nextMessageId = 1001;
 const origRequire = Module.prototype.require;
 Module.prototype.require = function (id) {
   if (id === './telegram' || id === 'telegram') {
     return {
       isConfigured: () => telegramConfigured,
       sendMessage: async (userId, text, log, opts) => {
-        telegramSends.push({ userId, text, opts: opts || {} });
+        const msgId = nextMessageId++;
+        if (opts && typeof opts === 'object') opts.messageId = msgId;
+        telegramSends.push({ userId, text, opts: opts || {}, messageId: msgId });
+        return true;
+      },
+      deleteMessage: async (userId, messageId, log) => {
+        telegramDeletes.push({ userId, messageId: String(messageId) });
         return true;
       },
       deepLink: () => '',
@@ -109,17 +117,30 @@ function mkRec(date, code, statusRaw) {
   ok('R4 no password/token/cookie words in the alert', !/password|captcha value|token|cookie|secret/i.test(allText), allText);
   ok('R4 no email address in the alert', !/@/.test(allText), allText);
 
-  // ---------- R5: reconnect confirmation ----------
+  // ---------- R5: reconnect confirmation & stale alert deletion ----------
   telegramSends.length = 0;
+  telegramDeletes.length = 0;
   check('R5 confirmation sent', await alerts.notifyQumsReconnected(quiet, U1), true);
   check('R5 confirmation went to user 1 only', [lastTo(U1).length, lastTo(U2).length], [1, 0]);
   ok('R5 confirmation copy is the spec text', lastTo(U1)[0].text === alerts.RECONNECTED_TEXT, lastTo(U1)[0].text);
+  check('R5 stale session-expired alert deleted from Telegram', telegramDeletes.some((d) => d.userId === U1), true);
 
   // ---------- R8: cooldown cleared after a successful reconnect ----------
   alerts.clearSessionAlert(U1);
   telegramSends.length = 0;
   check('R8 after reconnect, a new expiry alerts immediately', await alerts.maybeNotifySessionExpired(quiet, U1), true);
   check('R8 that alert went to user 1', lastTo(U1).length, 1);
+
+  // ---------- R8b: concurrent expiry alerts never send twice ----------
+  telegramSends.length = 0;
+  const U3 = 'concurrent-user';
+  alerts.clearSessionAlert(U3);
+  const results = await Promise.all([
+    alerts.maybeNotifySessionExpired(quiet, U3),
+    alerts.maybeNotifySessionExpired(quiet, U3),
+  ]);
+  check('R8b concurrent expiry alerts sent exactly once', results.filter(Boolean).length, 1);
+  check('R8b exactly 1 Telegram message sent for concurrent triggers', lastTo(U3).length, 1);
 
   // ---------- R6/R7: monitor cycles ----------
   const EXPIRED = 'expired-user';
