@@ -125,6 +125,15 @@ function mkRec(date, code, statusRaw) {
   ok('R5 confirmation copy is the spec text', lastTo(U1)[0].text === alerts.RECONNECTED_TEXT, lastTo(U1)[0].text);
   check('R5 stale session-expired alert deleted from Telegram', telegramDeletes.some((d) => d.userId === U1), true);
 
+  // ---------- R5b: reconnect confirmation auto-deletes after 1 min (tested with short delay) ----------
+  telegramSends.length = 0;
+  telegramDeletes.length = 0;
+  await alerts.notifyQumsReconnected(quiet, U1, { deleteAfterMs: 15 });
+  check('R5b reconnect confirmation sent', telegramSends.length, 1);
+  const reconnectedMsgId = String(telegramSends[0].messageId);
+  await new Promise((r) => setTimeout(r, 35));
+  check('R5b reconnect confirmation auto-deleted after delay', telegramDeletes.some((d) => d.userId === U1 && d.messageId === reconnectedMsgId), true);
+
   // ---------- R8: cooldown cleared after a successful reconnect ----------
   alerts.clearSessionAlert(U1);
   telegramSends.length = 0;

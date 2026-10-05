@@ -148,22 +148,54 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
   }
 }
 
+const RECONNECT_DELETE_DELAY_MS = Number(process.env.RECONNECT_DELETE_DELAY_MS || 60 * 1000); // 1 minute default
+
+/**
+ * Schedule a Telegram message to be deleted after a specified delay (default: 1 min / 60,000 ms).
+ */
+function scheduleMessageDeletion(userId, messageId, delayMs = RECONNECT_DELETE_DELAY_MS, log = console) {
+  if (!userId || !messageId) return null;
+  const timer = setTimeout(async () => {
+    try {
+      if (typeof deleteMessage === 'function') {
+        await deleteMessage(userId, messageId, log).catch(() => {});
+        log.log(`[alerts] 🗑️ Reconnect confirmation message ${messageId} auto-deleted after 1 min for user=${userId}.`);
+      }
+    } catch (err) {
+      log.log(`[alerts] auto-delete reconnect message warning: ${err.message}`);
+    }
+  }, Math.max(0, delayMs));
+
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  return timer;
+}
+
 /**
  * "✅ QUMS Reconnected" confirmation — sent only after a SUCCESSFUL manual
  * reconnect (the user solved the captcha themselves). Never sent on failure.
- * Deletes any pending "Session Expired" alert message from Telegram.
+ * Deletes any pending "Session Expired" alert message from Telegram,
+ * and schedules the reconnect message itself to be deleted after 1 minute.
  */
-async function notifyQumsReconnected(log = console, userId) {
+async function notifyQumsReconnected(log = console, userId, opts = {}) {
   try {
     if (!userId) return false;
     // Reconnect hone ke baad session expired wala message delete krdo
     await deleteSessionExpiredAlert(userId, log);
     await db.clearSessionExpiry(userId);
     if (!isConfigured()) return false;
-    const sent = await sendMessage(userId, RECONNECTED_TEXT, log);
+    const sendOpts = {};
+    const sent = await sendMessage(userId, RECONNECTED_TEXT, log, sendOpts);
     if (sent) {
-      await db.recordNotification(userId, 'qums_reconnected', {}, log).catch(() => {});
-      log.log(`[alerts] 📲 QUMS reconnected confirmation sent user=${userId}.`);
+      const messageId = sendOpts.messageId || null;
+      await db.recordNotification(userId, 'qums_reconnected', { messageId }, log).catch(() => {});
+      log.log(`[alerts] 📲 QUMS reconnected confirmation sent user=${userId} (msgId=${messageId || 'n/a'}).`);
+      // Requirement: Reconnect wala massage fir 1 min ke baad wo v delete ho jaye
+      const delayMs = opts && opts.deleteAfterMs !== undefined ? Number(opts.deleteAfterMs) : RECONNECT_DELETE_DELAY_MS;
+      if (messageId) {
+        scheduleMessageDeletion(userId, messageId, delayMs, log);
+      }
     }
     return Boolean(sent);
   } catch (err) {
@@ -187,6 +219,7 @@ module.exports = {
   maybeNotifySessionExpired,
   notifyQumsReconnected,
   deleteSessionExpiredAlert,
+  scheduleMessageDeletion,
   clearSessionAlert,
   reconnectUrl,
   reconnectButton,
@@ -194,4 +227,5 @@ module.exports = {
   SESSION_EXPIRED_TEXT,
   RECONNECTED_TEXT,
   COOLDOWN_MS,
+  RECONNECT_DELETE_DELAY_MS,
 };
