@@ -506,6 +506,18 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
+  const startMatch = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?/i);
+  if (startMatch) {
+    await handleStart(chatId, startMatch[1], log);
+    return;
+  }
+
+  const linkMatch = text.match(/^\/link(?:@\w+)?(?:\s+(\S+))?/i);
+  if (linkMatch) {
+    await handleLinkCommand(chatId, linkMatch[1], log);
+    return;
+  }
+
   if (text.startsWith('/')) {
     await reply(chatId, `❓ Unknown command: ${text}\n\nSend /help to see all available commands.`, log);
     return;

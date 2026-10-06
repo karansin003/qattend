@@ -144,7 +144,21 @@ async function run() {
   assert(attendenceMsg.text.includes('This message will automatically delete in 1 hour') || attendenceMsg.text.includes('Offline Cache'), 'Must notify about auto-delete');
   console.log('PASS  6. /attendence (and /attendance) sends attendance summary with 1-hour auto-delete');
 
-  console.log('\nALL 6 TELEGRAM COMMAND & AUTO-DELETE TESTS PASSED!');
+  // 7. Test /start <linkCode> deep link handling
+  const userToLink = await db.createUser({ email: 'linktest@example.com', passwordHash: 'hash', emailVerified: true });
+  await db.updateUser(userToLink.id, { studentName: 'Deep Link Student' });
+  const code = await db.telegramLinkCodeFor(userToLink.id);
+  sentMessages.length = 0;
+  await telegram.handleUserMessage({ chat: { id: 99887766 }, text: `/start ${code}`, message_id: 3001 });
+  assert(sentMessages.length === 1, 'Should send exactly 1 response for /start <code>');
+  const startMsg = sentMessages[0];
+  assert(!startMsg.text.includes('Unknown command'), 'Must NEVER say Unknown command for /start <code>');
+  assert(startMsg.text.includes('Connected') || startMsg.text.includes('Deep Link Student'), 'Must confirm connection');
+  const linkedUser = await db.getUserById(userToLink.id);
+  assert.strictEqual(linkedUser.telegramChatId, '99887766', 'User should be linked to chat');
+  console.log('PASS  7. /start <linkCode> properly links user without "Unknown command" error');
+
+  console.log('\nALL 7 TELEGRAM COMMAND & AUTO-DELETE TESTS PASSED!');
   process.exit(0);
 }
 
