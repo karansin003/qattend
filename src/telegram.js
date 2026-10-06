@@ -160,6 +160,89 @@ async function deleteMessage(userId, messageId, log = console) {
 }
 
 /**
+ * Delete a message directly by chatId and messageId.
+ */
+async function deleteMessageFromChat(chatId, messageId, log = console) {
+  if (!chatId || !messageId) return false;
+  if (!isConfigured()) return false;
+  if (!state.bot) ensureSendOnlyBot(log);
+  try {
+    await state.bot.deleteMessage(chatId, Number(messageId));
+    log.log(`[telegram] Deleted message ${messageId} from chat ${chatId}`);
+    return true;
+  } catch (err) {
+    log.log(`[telegram] deleteMessageFromChat failed for chat ${chatId} msg=${messageId}: ${err.message}`);
+    return false;
+  }
+}
+
+const AUTO_DELETE_DELAY_MS = 60 * 60 * 1000; // 1 hour (3,600,000 ms)
+
+/**
+ * Schedule a message to be automatically deleted after a delay (default 1 hour).
+ * Persists to DB so server restarts don't lose the deletion.
+ */
+function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, log = console) {
+  if (!chatId || !messageId) return null;
+  const deleteAt = Date.now() + delayMs;
+
+  if (db && typeof db.addScheduledDeletion === 'function') {
+    db.addScheduledDeletion(chatId, messageId, deleteAt).catch((err) => {
+      log.log(`[telegram] addScheduledDeletion error: ${err.message}`);
+    });
+  }
+
+  const timer = setTimeout(async () => {
+    try {
+      await deleteMessageFromChat(chatId, messageId, log);
+      if (db && typeof db.removeScheduledDeletion === 'function') {
+        await db.removeScheduledDeletion(chatId, messageId).catch(() => {});
+      }
+    } catch (err) {
+      log.log(`[telegram] scheduleAutoDelete execution error: ${err.message}`);
+    }
+  }, delayMs);
+
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  return timer;
+}
+
+/**
+ * Restore pending message auto-deletions on startup.
+ */
+async function restoreScheduledDeletions(log = console) {
+  try {
+    if (!db || typeof db.listPendingDeletions !== 'function') return;
+    const pending = await db.listPendingDeletions();
+    if (!pending || !pending.length) return;
+    const now = Date.now();
+    for (const item of pending) {
+      const remainingMs = Math.max(0, item.deleteAt - now);
+      if (remainingMs <= 0) {
+        await deleteMessageFromChat(item.chatId, item.messageId, log).catch(() => {});
+        await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
+      } else {
+        const timer = setTimeout(async () => {
+          try {
+            await deleteMessageFromChat(item.chatId, item.messageId, log);
+            await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
+          } catch (err) {
+            log.log(`[telegram] restored auto-delete error: ${err.message}`);
+          }
+        }, remainingMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+      }
+    }
+    log.log(`[telegram] Restored ${pending.length} scheduled message deletion(s).`);
+  } catch (err) {
+    log.log(`[telegram] restoreScheduledDeletions error: ${err.message}`);
+  }
+}
+
+
+/**
  * Convert base64 Data URL or string to Buffer.
  */
 function toPhotoBuffer(photo) {
@@ -398,7 +481,7 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
-  if (/^\/attendance(?:@\w+)?/i.test(text) || lower === 'attendance') {
+  if (/^\/attend[ae]nce(?:@\w+)?/i.test(text) || ['attendance', 'attendence'].includes(lower)) {
     await handleAttendance(chatId, log);
     return;
   }
@@ -903,8 +986,8 @@ async function handleHelp(chatId, log = console) {
     `${name}Welcome to the *QAttend Bot*!`,
     '',
     'Available commands:',
-    '📊 /attendance — Check your overall attendance & 75% margin',
-    '📅 /today — View today\'s classes & timetable',
+    '📊 /attendance — Full attendance summary (auto-deletes in 1 hour)',
+    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 1 hour)',
     '📚 /assignments — View pending assignments & deadlines',
     'ℹ️ /status — Check your QUMS & Telegram account status',
     '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
@@ -935,8 +1018,6 @@ async function handleAttendance(chatId, log = console) {
     return;
   }
 
-  await reply(chatId, '⏳ Fetching your latest attendance report...', log);
-
   try {
     const { resolveUserRuntime } = require('./credentials');
     const runtime = resolveUserRuntime(user);
@@ -950,13 +1031,23 @@ async function handleAttendance(chatId, log = console) {
       studentName: user.studentName,
     });
     const analysis = analyzeAttendance(subjects);
-    const text = formatAttendanceMessage(analysis);
-    await reply(chatId, text, log);
+    let text = formatAttendanceMessage(analysis);
+    text += '\n\n⏳ _This message will automatically delete in 1 hour._';
+
+    const sentMsg = await reply(chatId, text, log);
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
   } catch (err) {
     log.error(`[telegram] /attendance failed for user ${user.id}: ${err.message}`);
     if (err.name === 'SessionExpiredError' || /session expired/i.test(err.message)) {
       await db.markSessionExpired(user.id).catch(() => {});
-      await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.', log);
+      const sentMsg = await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.\n\n⏳ _This message will automatically delete in 1 hour._', log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) {
+        scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+      }
     } else {
       const known = await db.listKnownAttendance(user.id).catch(() => []);
       if (known && known.length > 0) {
@@ -977,9 +1068,18 @@ async function handleAttendance(chatId, log = console) {
         lines.push('');
         lines.push('_Live QUMS portal is temporarily unreachable or session expired._');
         lines.push('Send /reconnect if your session needs refreshing.');
-        await reply(chatId, lines.join('\n'), log);
+        lines.push('\n⏳ _This message will automatically delete in 1 hour._');
+        const sentMsg = await reply(chatId, lines.join('\n'), log);
+        const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+        if (messageId) {
+          scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+        }
       } else {
-        await reply(chatId, `⚠️ Could not fetch attendance: ${err.message}\nSend /reconnect to refresh your session.`, log);
+        const sentMsg = await reply(chatId, `⚠️ Could not fetch attendance: ${err.message}\nSend /reconnect to refresh your session.\n\n⏳ _This message will automatically delete in 1 hour._`, log);
+        const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+        if (messageId) {
+          scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+        }
       }
     }
   }
@@ -993,40 +1093,86 @@ async function handleToday(chatId, log = console) {
   }
 
   try {
-    const { getTodaysScheduleWithRoom } = require('./scraper');
-    const { formatMorningSchedule } = require('./messages');
-    let schedule = null;
+    const { resolveUserRuntime } = require('./credentials');
+    const { scrapeTodaysAttendance, scrapeTimetable, getTimetableForDate, mergeScheduleWithRoom } = require('./scraper');
+    const { formatTodayAttendanceStatus } = require('./messages');
 
+    let rows = [];
     if (user.qumsQid && user.qumsSessionPath && user.qumsSessionStatus !== 'expired') {
       try {
-        const { resolveUserRuntime } = require('./credentials');
         const runtime = resolveUserRuntime(user);
         if (fs.existsSync(runtime.sessionPath)) {
-          schedule = await getTodaysScheduleWithRoom(user.id, runtime.sessionPath, log);
+          const liveRows = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+          let timetablePeriods = [];
+          try {
+            const timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
+            timetablePeriods = getTimetableForDate(timetable, new Date());
+          } catch {
+            timetablePeriods = [];
+          }
+
+          if (liveRows && liveRows.length) {
+            rows = mergeScheduleWithRoom(liveRows, timetablePeriods);
+          } else if (timetablePeriods && timetablePeriods.length) {
+            rows = timetablePeriods.map((tp) => ({
+              period: tp.period,
+              duration: tp.duration,
+              subject: tp.subject,
+              subjectCode: tp.subjectCode,
+              teacher: tp.teacher,
+              room: tp.room,
+              status: 'unmarked',
+              attendance: 'N.M.',
+            }));
+          }
         }
-      } catch (err) {
-        log.log(`[telegram] live schedule fetch failed: ${err.message}`);
+      } catch (fetchErr) {
+        log.log(`[telegram] live today scrape error: ${fetchErr.message}`);
+        if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
+          await db.markSessionExpired(user.id).catch(() => {});
+          const sentMsg = await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.\n\n⏳ _This message will automatically delete in 1 hour._', log);
+          const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+          if (messageId) {
+            scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+          }
+          return;
+        }
       }
     }
 
-    if (!schedule || !schedule.length) {
+    if (!rows.length) {
       const now = new Date();
       const istDay = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay();
-      const dbSched = await db.getWeeklySchedule(user.id, istDay);
+      const dbSched = await db.getWeeklySchedule(user.id, istDay).catch(() => null);
       if (dbSched && dbSched.rows && dbSched.rows.length) {
-        schedule = dbSched.rows;
+        rows = dbSched.rows.map((r) => ({
+          period: r.period,
+          duration: r.duration || '',
+          subject: r.subject,
+          subjectCode: r.subjectCode,
+          teacher: r.teacher,
+          room: r.room,
+          status: 'unmarked',
+          attendance: 'N.M.',
+        }));
       }
     }
 
-    if (schedule && schedule.length) {
-      const text = formatMorningSchedule(schedule, undefined, user.studentName);
-      await reply(chatId, text, log);
-    } else {
-      await reply(chatId, '🌅 *Today\'s Classes*\n\n🎉 No classes found for today or Sunday/Holiday. Enjoy your day!', log);
+    let text = formatTodayAttendanceStatus(rows, undefined, user.studentName);
+    text += '\n\n⏳ _This message will automatically delete in 1 hour._';
+
+    const sentMsg = await reply(chatId, text, log);
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
     }
   } catch (err) {
     log.error(`[telegram] /today failed: ${err.message}`);
-    await reply(chatId, `⚠️ Could not load today's schedule: ${err.message}`, log);
+    const sentMsg = await reply(chatId, `⚠️ Could not load today's attendance: ${err.message}\n\n⏳ _This message will automatically delete in 1 hour._`, log);
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
   }
 }
 
@@ -1159,6 +1305,7 @@ function initTelegram(log = console) {
 
   state.pollingArmed = true;
   log.log(`[telegram] polling armed (@${BOT_USERNAME}) — handlers registered (pid ${process.pid}).`);
+  restoreScheduledDeletions(log);
   return bot;
 }
 
@@ -1189,6 +1336,10 @@ module.exports = {
   deepLink,
   sendMessage,
   deleteMessage,
+  deleteMessageFromChat,
+  scheduleAutoDelete,
+  AUTO_DELETE_DELAY_MS,
+  restoreScheduledDeletions,
   sendPhoto,
   sendPhotoToChat,
   startTelegramCaptchaReconnect,

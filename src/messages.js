@@ -225,5 +225,75 @@ function formatAssignmentDeadlineReminder(a) {
   ].join('\n');
 }
 
-module.exports = { dateLabelIST, dateLabelFromYMD, fullDateLabelFromYMD, statusEmoji, formatAttendanceUpdate, formatBackdatedUpdate, formatMorningSchedule, formatAttendanceMessage, formatNewAssignment, formatAssignmentDeadlineReminder, QUMS_ASSIGNMENT_URL, norm };
+/**
+ * Today's attendance report: breakdown of all classes today with
+ * Present / Absent / Not Marked status, room, and teacher.
+ */
+function formatTodayAttendanceStatus(rows, dateLabel = dateLabelIST(), studentName = '') {
+  const list = (rows || []).filter((r) => r.period || r.subject);
+  const hi = studentName ? `Hi ${studentName}! ` : '';
+  const lines = [`📅 *Today's Classes & Attendance* — ${dateLabel}`, ''];
+
+  if (!list.length) {
+    lines.push(`🎉 ${hi}No classes found for today or Sunday/Holiday. Enjoy your day!`);
+    return lines.join('\n');
+  }
+
+  if (studentName) {
+    lines.push(`${hi}Here is your period-wise attendance for today:`, '');
+  } else {
+    lines.push('Here is your period-wise attendance for today:', '');
+  }
+
+  let presentCount = 0;
+  let absentCount = 0;
+  let unmarkedCount = 0;
+  let otherCount = 0;
+
+  list.forEach((r, i) => {
+    const periodLabel = r.duration ? `🕐 *${r.duration}* (Period ${r.period})` : `🕐 *Period ${r.period}*`;
+    lines.push(`${i + 1}. ${periodLabel}`);
+    lines.push(`   📚 *${r.subject || 'Class'}*${r.subjectCode ? ` (${r.subjectCode})` : ''}`);
+
+    let statusText = '⏳ *Not Marked Yet*';
+    if (r.status === 'present') {
+      statusText = '✅ *Present*';
+      presentCount++;
+    } else if (r.status === 'absent') {
+      statusText = '❌ *Absent*';
+      absentCount++;
+    } else if (r.status === 'unmarked' || !r.status) {
+      statusText = '⏳ *Not Marked Yet*';
+      unmarkedCount++;
+    } else {
+      statusText = `ℹ️ *${norm(r.attendance) || 'Marked'}*`;
+      otherCount++;
+    }
+    lines.push(`   Status: ${statusText}`);
+
+    const details = [];
+    if (r.room) details.push(`📍 Room: ${r.room}`);
+    const teacher = r.teacher || r.employee;
+    if (teacher) details.push(`👨‍🏫 ${teacher}`);
+    if (details.length) {
+      lines.push(`   ${details.join(' • ')}`);
+    }
+    lines.push('');
+  });
+
+  lines.push('📊 *Today\'s Summary:*');
+  lines.push(`• ✅ Present: ${presentCount}`);
+  lines.push(`• ❌ Absent: ${absentCount}`);
+  if (unmarkedCount > 0) {
+    lines.push(`• ⏳ Not Marked: ${unmarkedCount}`);
+  }
+  if (otherCount > 0) {
+    lines.push(`• ℹ️ Other: ${otherCount}`);
+  }
+  lines.push(`• 📚 Total Classes: ${list.length}`);
+
+  return lines.join('\n');
+}
+
+module.exports = { dateLabelIST, dateLabelFromYMD, fullDateLabelFromYMD, statusEmoji, formatAttendanceUpdate, formatBackdatedUpdate, formatMorningSchedule, formatAttendanceMessage, formatTodayAttendanceStatus, formatNewAssignment, formatAssignmentDeadlineReminder, QUMS_ASSIGNMENT_URL, norm };
 

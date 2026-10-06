@@ -386,6 +386,7 @@ let data = {
   attendanceRecords: [],
   assignmentsTable: [],
   notificationLogs: [],
+  scheduledDeletions: [],
 };
 
 if (!USE_PG) {
@@ -403,6 +404,7 @@ if (!USE_PG) {
       attendanceRecords: raw.attendanceRecords || [],
       assignmentsTable: raw.assignmentsTable || [],
       notificationLogs: raw.notificationLogs || [],
+      scheduledDeletions: raw.scheduledDeletions || [],
     };
   } catch {}
 
@@ -1647,6 +1649,59 @@ async function deleteNotificationLog(userId, dedupeKey) {
   return (r.rowCount || 0) > 0;
 }
 
+// ---- scheduled message auto-deletions ----
+async function addScheduledDeletion(chatId, messageId, deleteAt) {
+  const row = {
+    chatId: String(chatId),
+    messageId: Number(messageId),
+    deleteAt: Number(deleteAt),
+    createdAt: Date.now(),
+  };
+  if (!USE_PG) {
+    if (!data.scheduledDeletions) data.scheduledDeletions = [];
+    data.scheduledDeletions.push(row);
+    persistJson();
+    return row;
+  }
+  await init();
+  await pool.query(
+    `INSERT INTO scheduled_message_deletions(chat_id, message_id, delete_at, created_at) VALUES($1, $2, $3, $4)`,
+    [row.chatId, row.messageId, row.deleteAt, row.createdAt]
+  );
+  return row;
+}
+
+async function listPendingDeletions() {
+  if (!USE_PG) {
+    return (data.scheduledDeletions || []).slice();
+  }
+  await init();
+  const res = await pool.query(`SELECT chat_id AS "chatId", message_id AS "messageId", delete_at AS "deleteAt" FROM scheduled_message_deletions ORDER BY delete_at ASC`);
+  return res.rows.map((r) => ({
+    chatId: r.chatId,
+    messageId: Number(r.messageId),
+    deleteAt: Number(r.deleteAt),
+  }));
+}
+
+async function removeScheduledDeletion(chatId, messageId) {
+  if (!USE_PG) {
+    if (!data.scheduledDeletions) return 0;
+    const before = data.scheduledDeletions.length;
+    data.scheduledDeletions = data.scheduledDeletions.filter(
+      (r) => !(String(r.chatId) === String(chatId) && Number(r.messageId) === Number(messageId))
+    );
+    if (data.scheduledDeletions.length !== before) persistJson();
+    return before - data.scheduledDeletions.length;
+  }
+  await init();
+  const res = await pool.query(
+    `DELETE FROM scheduled_message_deletions WHERE chat_id=$1 AND message_id=$2`,
+    [String(chatId), Number(messageId)]
+  );
+  return res.rowCount || 0;
+}
+
 module.exports={
   DB_FILE,QUMS_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,
   storeResetToken,consumeResetToken,listKnownAttendance,addKnownAttendance,upsertKnownAttendance,removeKnownAttendance,upsertWeeklySchedule,getWeeklySchedule,clearWeeklySchedule,
@@ -1664,6 +1719,8 @@ module.exports={
   touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
   // session-expiry state (PostgreSQL-backed)
   SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
+  // scheduled message auto-deletions
+  addScheduledDeletion, listPendingDeletions, removeScheduledDeletion,
   // notification log / analytics
   NOTIFICATION_KINDS, recordNotification, notificationStats, recentNotifications,
   // admin

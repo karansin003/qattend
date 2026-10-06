@@ -244,6 +244,19 @@ const MIGRATIONS = [
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS qums_session_data TEXT DEFAULT ''`,
     ],
   },
+  {
+    id: '018_scheduled_message_deletions',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS scheduled_message_deletions (
+         id SERIAL PRIMARY KEY,
+         chat_id TEXT NOT NULL,
+         message_id BIGINT NOT NULL,
+         delete_at BIGINT NOT NULL,
+         created_at BIGINT NOT NULL
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_sched_del_time ON scheduled_message_deletions (delete_at)`,
+    ],
+  },
 ];
 
 /**
