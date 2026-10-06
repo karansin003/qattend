@@ -176,10 +176,11 @@ async function deleteMessageFromChat(chatId, messageId, log = console) {
   }
 }
 
-const AUTO_DELETE_DELAY_MS = 60 * 60 * 1000; // 1 hour (3,600,000 ms)
+const AUTO_DELETE_DELAY_MS = 2 * 60 * 1000; // 2 minutes (120,000 ms)
+const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 2 minutes._';
 
 /**
- * Schedule a message to be automatically deleted after a delay (default 1 hour).
+ * Schedule a message to be automatically deleted after a delay (default 2 minutes).
  * Persists to DB so server restarts don't lose the deletion.
  */
 function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, log = console) {
@@ -998,8 +999,8 @@ async function handleHelp(chatId, log = console) {
     `${name}Welcome to the *QAttend Bot*!`,
     '',
     'Available commands:',
-    '📊 /attendance — Full attendance summary (auto-deletes in 1 hour)',
-    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 1 hour)',
+    '📊 /attendance — Full attendance summary (auto-deletes in 2 minutes)',
+    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 2 minutes)',
     '📚 /assignments — View pending assignments & deadlines',
     'ℹ️ /status — Check your QUMS & Telegram account status',
     '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
@@ -1044,7 +1045,7 @@ async function handleAttendance(chatId, log = console) {
     });
     const analysis = analyzeAttendance(subjects);
     let text = formatAttendanceMessage(analysis);
-    text += '\n\n⏳ _This message will automatically delete in 1 hour._';
+    text += AUTO_DELETE_FOOTNOTE;
 
     const sentMsg = await reply(chatId, text, log);
     const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
@@ -1055,7 +1056,7 @@ async function handleAttendance(chatId, log = console) {
     log.error(`[telegram] /attendance failed for user ${user.id}: ${err.message}`);
     if (err.name === 'SessionExpiredError' || /session expired/i.test(err.message)) {
       await db.markSessionExpired(user.id).catch(() => {});
-      const sentMsg = await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.\n\n⏳ _This message will automatically delete in 1 hour._', log);
+      const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
       const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
       if (messageId) {
         scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
@@ -1080,14 +1081,14 @@ async function handleAttendance(chatId, log = console) {
         lines.push('');
         lines.push('_Live QUMS portal is temporarily unreachable or session expired._');
         lines.push('Send /reconnect if your session needs refreshing.');
-        lines.push('\n⏳ _This message will automatically delete in 1 hour._');
+        lines.push(AUTO_DELETE_FOOTNOTE);
         const sentMsg = await reply(chatId, lines.join('\n'), log);
         const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
         if (messageId) {
           scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
         }
       } else {
-        const sentMsg = await reply(chatId, `⚠️ Could not fetch attendance: ${err.message}\nSend /reconnect to refresh your session.\n\n⏳ _This message will automatically delete in 1 hour._`, log);
+        const sentMsg = await reply(chatId, `⚠️ Could not fetch attendance: ${err.message}\nSend /reconnect to refresh your session.${AUTO_DELETE_FOOTNOTE}`, log);
         const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
         if (messageId) {
           scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
@@ -1142,7 +1143,7 @@ async function handleToday(chatId, log = console) {
         log.log(`[telegram] live today scrape error: ${fetchErr.message}`);
         if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
           await db.markSessionExpired(user.id).catch(() => {});
-          const sentMsg = await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.\n\n⏳ _This message will automatically delete in 1 hour._', log);
+          const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
           const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
           if (messageId) {
             scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
@@ -1171,7 +1172,7 @@ async function handleToday(chatId, log = console) {
     }
 
     let text = formatTodayAttendanceStatus(rows, undefined, user.studentName);
-    text += '\n\n⏳ _This message will automatically delete in 1 hour._';
+    text += AUTO_DELETE_FOOTNOTE;
 
     const sentMsg = await reply(chatId, text, log);
     const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
@@ -1180,7 +1181,7 @@ async function handleToday(chatId, log = console) {
     }
   } catch (err) {
     log.error(`[telegram] /today failed: ${err.message}`);
-    const sentMsg = await reply(chatId, `⚠️ Could not load today's attendance: ${err.message}\n\n⏳ _This message will automatically delete in 1 hour._`, log);
+    const sentMsg = await reply(chatId, `⚠️ Could not load today's attendance: ${err.message}${AUTO_DELETE_FOOTNOTE}`, log);
     const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
     if (messageId) {
       scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);

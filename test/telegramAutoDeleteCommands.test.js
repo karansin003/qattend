@@ -1,5 +1,5 @@
 /**
- * Test suite for /attendance & /today commands with 1-hour auto-delete.
+ * Test suite for /attendance & /today commands with 2-minute auto-delete.
  *
  *   node test/telegramAutoDeleteCommands.test.js
  */
@@ -133,16 +133,16 @@ async function run() {
   assert(sentMessages.length === 1, 'Should send exactly 1 response for /today');
   const todayMsg = sentMessages[0];
   assert(todayMsg.text.includes("Today's Classes & Attendance"), 'Must contain today attendance header');
-  assert(todayMsg.text.includes('This message will automatically delete in 1 hour'), 'Must contain 1 hour auto-delete note');
-  console.log('PASS  5. /today sends today attendance with 1-hour auto-delete notification');
+  assert(todayMsg.text.includes('This message will automatically delete in 2 minutes'), 'Must contain 2 minutes auto-delete note');
+  console.log('PASS  5. /today sends today attendance with 2-minute auto-delete notification');
 
   // 6. Test /attendence (typo support) and /attendance command dispatch
   sentMessages.length = 0;
   await telegram.handleUserMessage({ chat: { id: 123456789 }, text: '/attendence', message_id: 2002 });
   assert(sentMessages.length === 1, 'Should handle /attendence typo');
   const attendenceMsg = sentMessages[0];
-  assert(attendenceMsg.text.includes('This message will automatically delete in 1 hour') || attendenceMsg.text.includes('Offline Cache'), 'Must notify about auto-delete');
-  console.log('PASS  6. /attendence (and /attendance) sends attendance summary with 1-hour auto-delete');
+  assert(attendenceMsg.text.includes('This message will automatically delete in 2 minutes') || attendenceMsg.text.includes('Offline Cache'), 'Must notify about auto-delete');
+  console.log('PASS  6. /attendence (and /attendance) sends attendance summary with 2-minute auto-delete');
 
   // 7. Test /start <linkCode> deep link handling
   const userToLink = await db.createUser({ email: 'linktest@example.com', passwordHash: 'hash', emailVerified: true });
