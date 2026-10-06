@@ -1,5 +1,5 @@
 /**
- * Test suite for /attendance & /today commands with 2-minute auto-delete.
+ * Test suite for Telegram commands with 1-minute auto-delete and assignment exemption.
  *
  *   node test/telegramAutoDeleteCommands.test.js
  */
@@ -133,18 +133,51 @@ async function run() {
   assert(sentMessages.length === 1, 'Should send exactly 1 response for /today');
   const todayMsg = sentMessages[0];
   assert(todayMsg.text.includes("Today's Classes & Attendance"), 'Must contain today attendance header');
-  assert(todayMsg.text.includes('This message will automatically delete in 2 minutes'), 'Must contain 2 minutes auto-delete note');
-  console.log('PASS  5. /today sends today attendance with 2-minute auto-delete notification');
+  assert(todayMsg.text.includes('This message will automatically delete in 1 minute'), 'Must contain 1 minute auto-delete note');
+  console.log('PASS  5. /today sends today attendance with 1-minute auto-delete notification');
 
   // 6. Test /attendence (typo support) and /attendance command dispatch
   sentMessages.length = 0;
   await telegram.handleUserMessage({ chat: { id: 123456789 }, text: '/attendence', message_id: 2002 });
   assert(sentMessages.length === 1, 'Should handle /attendence typo');
   const attendenceMsg = sentMessages[0];
-  assert(attendenceMsg.text.includes('This message will automatically delete in 2 minutes') || attendenceMsg.text.includes('Offline Cache'), 'Must notify about auto-delete');
-  console.log('PASS  6. /attendence (and /attendance) sends attendance summary with 2-minute auto-delete');
+  assert(attendenceMsg.text.includes('This message will automatically delete in 1 minute') || attendenceMsg.text.includes('Offline Cache'), 'Must notify about auto-delete');
+  console.log('PASS  6. /attendence (and /attendance) sends attendance summary with 1-minute auto-delete');
 
-  // 7. Test /start <linkCode> deep link handling
+  // 7. Test /help command dispatch with 1-minute notes
+  sentMessages.length = 0;
+  await telegram.handleUserMessage({ chat: { id: 123456789 }, text: '/help', message_id: 2003 });
+  assert(sentMessages.length === 1, 'Should send help response');
+  const helpMsg = sentMessages[0];
+  assert(helpMsg.text.includes('auto-deletes in 1 minute'), 'Help text must mention 1 minute auto-delete');
+  assert(helpMsg.text.includes('This message will automatically delete in 1 minute'), 'Help text must have footnote');
+  console.log('PASS  7. /help mentions 1-minute auto-delete and includes auto-delete footnote');
+
+  // 8. Test /status command dispatch with 1-minute note
+  sentMessages.length = 0;
+  await telegram.handleUserMessage({ chat: { id: 123456789 }, text: '/status', message_id: 2004 });
+  assert(sentMessages.length === 1, 'Should send status response');
+  const statusMsg = sentMessages[0];
+  assert(statusMsg.text.includes('Account Status'), 'Status must include header');
+  assert(statusMsg.text.includes('This message will automatically delete in 1 minute'), 'Status text must have footnote');
+  console.log('PASS  8. /status includes 1-minute auto-delete footnote');
+
+  // 9. Test /assignments command is NOT auto-deleted
+  sentMessages.length = 0;
+  const pendingBeforeAssignments = await db.listPendingDeletions();
+  await telegram.handleUserMessage({ chat: { id: 123456789 }, text: '/assignments', message_id: 2005 });
+  assert(sentMessages.length === 1, 'Should send assignments response');
+  const assignmentsMsg = sentMessages[0];
+  assert(assignmentsMsg.text.includes('Assignments'), 'Must contain assignments header');
+  assert(!assignmentsMsg.text.includes('This message will automatically delete'), 'Must NOT have auto-delete note');
+  const pendingAfterAssignments = await db.listPendingDeletions();
+  assert(
+    !pendingAfterAssignments.some((p) => p.messageId === assignmentsMsg.message_id),
+    'Assignments message must NOT be in pending deletions'
+  );
+  console.log('PASS  9. /assignments response is EXEMPT from auto-deletion (kept permanent)');
+
+  // 10. Test /start <linkCode> deep link handling
   const userToLink = await db.createUser({ email: 'linktest@example.com', passwordHash: 'hash', emailVerified: true });
   await db.updateUser(userToLink.id, { studentName: 'Deep Link Student' });
   const code = await db.telegramLinkCodeFor(userToLink.id);
@@ -156,9 +189,9 @@ async function run() {
   assert(startMsg.text.includes('Connected') || startMsg.text.includes('Deep Link Student'), 'Must confirm connection');
   const linkedUser = await db.getUserById(userToLink.id);
   assert.strictEqual(linkedUser.telegramChatId, '99887766', 'User should be linked to chat');
-  console.log('PASS  7. /start <linkCode> properly links user without "Unknown command" error');
+  console.log('PASS  10. /start <linkCode> properly links user without "Unknown command" error');
 
-  console.log('\nALL 7 TELEGRAM COMMAND & AUTO-DELETE TESTS PASSED!');
+  console.log('\nALL 10 TELEGRAM COMMAND & AUTO-DELETE TESTS PASSED!');
   process.exit(0);
 }
 

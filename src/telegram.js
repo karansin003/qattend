@@ -176,15 +176,21 @@ async function deleteMessageFromChat(chatId, messageId, log = console) {
   }
 }
 
-const AUTO_DELETE_DELAY_MS = 2 * 60 * 1000; // 2 minutes (120,000 ms)
-const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 2 minutes._';
+const AUTO_DELETE_DELAY_MS = 1 * 60 * 1000; // 1 minute (60,000 ms)
+const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 1 minute._';
+
+const scheduledTimers = new Map(); // `${chatId}:${messageId}` -> Timeout
 
 /**
- * Schedule a message to be automatically deleted after a delay (default 2 minutes).
+ * Schedule a message to be automatically deleted after a delay (default 1 minute).
  * Persists to DB so server restarts don't lose the deletion.
  */
 function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, log = console) {
   if (!chatId || !messageId) return null;
+  const key = `${chatId}:${messageId}`;
+  if (scheduledTimers.has(key)) {
+    return scheduledTimers.get(key);
+  }
   const deleteAt = Date.now() + delayMs;
 
   if (db && typeof db.addScheduledDeletion === 'function') {
@@ -194,6 +200,7 @@ function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, l
   }
 
   const timer = setTimeout(async () => {
+    scheduledTimers.delete(key);
     try {
       await deleteMessageFromChat(chatId, messageId, log);
       if (db && typeof db.removeScheduledDeletion === 'function') {
@@ -207,6 +214,7 @@ function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, l
   if (timer && typeof timer.unref === 'function') {
     timer.unref();
   }
+  scheduledTimers.set(key, timer);
   return timer;
 }
 
@@ -446,6 +454,9 @@ async function startTelegramCaptchaReconnect(userId, log = console, opts = {}) {
     const photoOpts = { replyMarkup: captchaKeyboard() };
     await sendPhoto(userId, res.captchaImage, '', log, photoOpts);
     const captchaMsgId = photoOpts.messageId || null;
+    if (captchaMsgId && user.telegramChatId) {
+      scheduleAutoDelete(user.telegramChatId, captchaMsgId, AUTO_DELETE_DELAY_MS, log);
+    }
 
     setReconnectState(userId, {
       chatId: user.telegramChatId,
@@ -476,6 +487,11 @@ async function handleUserMessage(msg, log = console) {
   if (!chatId) return;
 
   const lower = text.toLowerCase();
+
+  // Auto-delete incoming command messages after 1 minute, except for /assignments
+  if (msg.message_id && !/^\/assignments(?:@\w+)?/i.test(text) && !['assignment', 'assignments'].includes(lower)) {
+    scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+  }
 
   if (/^\/reconnect(?:@\w+)?/i.test(text) || lower === 'reconnect') {
     await handleReconnectCommand(chatId, log);
@@ -602,6 +618,9 @@ async function handleUserMessage(msg, log = console) {
       const photoOpts = { replyMarkup: captchaKeyboard() };
       await sendPhoto(user.id, result.captchaImage, '', log, photoOpts);
       rState.captchaMessageId = photoOpts.messageId || null;
+      if (rState.captchaMessageId && chatId) {
+        scheduleAutoDelete(chatId, rState.captchaMessageId, AUTO_DELETE_DELAY_MS, log);
+      }
       setReconnectState(user.id, {
         chatId,
         attempts: rState.attempts,
@@ -746,6 +765,9 @@ async function handleCallbackQuery(query, log = console) {
 
       const photoOpts = { replyMarkup: captchaKeyboard() };
       await sendPhoto(user.id, res.captchaImage, '', log, photoOpts);
+      if (photoOpts.messageId && chatId) {
+        scheduleAutoDelete(chatId, photoOpts.messageId, AUTO_DELETE_DELAY_MS, log);
+      }
 
       setReconnectState(user.id, {
         chatId,
@@ -782,13 +804,24 @@ function ensureSendOnlyBot(log = console) {
   return state.bot;
 }
 
-/** Chat reply — bot na hone par crash nahi, sirf log + skip. */
-function reply(chatId, text, log = console) {
+/**
+ * Chat reply — bot na hone par crash nahi, sirf log + skip.
+ * Automatically schedules 1-minute auto-deletion by default,
+ * UNLESS autoDelete is explicitly set to false (e.g. for assignments).
+ */
+async function reply(chatId, text, log = console, opts = {}) {
   if (!state.bot) {
     log.error('[telegram] reply skipped — bot is not initialised in this process.');
-    return Promise.resolve(false);
+    return false;
   }
-  return state.bot.sendMessage(chatId, text);
+  const sentMsg = await state.bot.sendMessage(chatId, text);
+  const shouldAutoDelete = !opts || opts.autoDelete !== false;
+  const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+  if (shouldAutoDelete && messageId) {
+    const delayMs = (opts && typeof opts.delayMs === 'number') ? opts.delayMs : AUTO_DELETE_DELAY_MS;
+    scheduleAutoDelete(chatId, messageId, delayMs, log);
+  }
+  return sentMsg;
 }
 
 // ---- exactly-once: dobara deliver hua update ignore karo ----
@@ -938,12 +971,13 @@ async function handleStart(chatId, payload, log = console) {
         `👋 Welcome back, *${name}*!`,
         '',
         'Here are the commands you can use:',
-        '📊 /attendance — Check your overall attendance & 75% margin',
-        '📅 /today — View today\'s class timetable',
+        '📊 /attendance — Check your overall attendance & 75% margin (auto-deletes in 1 min)',
+        '📅 /today — View today\'s class timetable & status (auto-deletes in 1 min)',
         '📚 /assignments — View pending assignments & deadlines',
         'ℹ️ /status — Check account connection status',
         '🔄 /reconnect — Reconnect QUMS session',
         '❓ /help — Detailed help & commands list',
+        AUTO_DELETE_FOOTNOTE.trim(),
       ].join('\n');
       await reply(chatId, text, log);
       return;
@@ -985,6 +1019,7 @@ async function handleStatus(chatId, log = console) {
       lines.push('');
       lines.push('💡 _Send /reconnect to restore your session via Telegram._');
     }
+    lines.push(AUTO_DELETE_FOOTNOTE.trim());
     await reply(chatId, lines.join('\n'), log);
   } else {
     await reply(chatId, MSG.STATUS_NONE, log);
@@ -999,8 +1034,8 @@ async function handleHelp(chatId, log = console) {
     `${name}Welcome to the *QAttend Bot*!`,
     '',
     'Available commands:',
-    '📊 /attendance — Full attendance summary (auto-deletes in 2 minutes)',
-    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 2 minutes)',
+    '📊 /attendance — Full attendance summary (auto-deletes in 1 minute)',
+    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 1 minute)',
     '📚 /assignments — View pending assignments & deadlines',
     'ℹ️ /status — Check your QUMS & Telegram account status',
     '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
@@ -1010,6 +1045,7 @@ async function handleHelp(chatId, log = console) {
     '• Daily morning schedule is sent at 8:30 AM IST with room & teacher info.',
     '• Real-time alerts when teachers enter or change attendance marks during college hours.',
     '• New assignment alerts and deadline reminders.',
+    AUTO_DELETE_FOOTNOTE.trim(),
   ].join('\n');
   await reply(chatId, text, log);
 }
@@ -1199,7 +1235,7 @@ async function handleAssignments(chatId, log = console) {
   try {
     const known = await db.listKnownAssignments(user.id);
     if (!known || !known.length) {
-      await reply(chatId, '📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.', log);
+      await reply(chatId, '📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.', log, { autoDelete: false });
       return;
     }
     const lines = ['📚 *Your Assignments*', ''];
@@ -1212,7 +1248,7 @@ async function handleAssignments(chatId, log = console) {
       lines.push('');
     });
     lines.push('🔗 Open QUMS portal to submit.');
-    await reply(chatId, lines.join('\n'), log);
+    await reply(chatId, lines.join('\n'), log, { autoDelete: false });
   } catch (err) {
     log.error(`[telegram] /assignments failed: ${err.message}`);
     await reply(chatId, `⚠️ Could not load assignments: ${err.message}`, log);

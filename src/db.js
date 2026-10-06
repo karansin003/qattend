@@ -1659,15 +1659,26 @@ async function addScheduledDeletion(chatId, messageId, deleteAt) {
   };
   if (!USE_PG) {
     if (!data.scheduledDeletions) data.scheduledDeletions = [];
-    data.scheduledDeletions.push(row);
-    persistJson();
+    const exists = data.scheduledDeletions.some(
+      (r) => String(r.chatId) === row.chatId && Number(r.messageId) === row.messageId
+    );
+    if (!exists) {
+      data.scheduledDeletions.push(row);
+      persistJson();
+    }
     return row;
   }
   await init();
-  await pool.query(
-    `INSERT INTO scheduled_message_deletions(chat_id, message_id, delete_at, created_at) VALUES($1, $2, $3, $4)`,
-    [row.chatId, row.messageId, row.deleteAt, row.createdAt]
+  const existing = await pool.query(
+    `SELECT id FROM scheduled_message_deletions WHERE chat_id=$1 AND message_id=$2 LIMIT 1`,
+    [row.chatId, row.messageId]
   );
+  if (existing.rows.length === 0) {
+    await pool.query(
+      `INSERT INTO scheduled_message_deletions(chat_id, message_id, delete_at, created_at) VALUES($1, $2, $3, $4)`,
+      [row.chatId, row.messageId, row.deleteAt, row.createdAt]
+    );
+  }
   return row;
 }
 
