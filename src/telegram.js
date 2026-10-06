@@ -391,31 +391,49 @@ async function handleUserMessage(msg, log = console) {
   const chatId = msg.chat && msg.chat.id;
   if (!chatId) return;
 
-  if (/^\/reconnect(?:@\w+)?/i.test(text)) {
-    const user = await db.getUserByTelegramChatId(chatId);
-    if (!user) {
-      await reply(chatId, MSG.STATUS_NONE, log);
-      return;
-    }
-    const started = await startTelegramCaptchaReconnect(user.id, log);
-    if (!started || !started.ok) {
-      if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
-        await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and send /reconnect again.', log);
-      } else {
-        await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
-      }
-    }
+  const lower = text.toLowerCase();
+
+  if (/^\/reconnect(?:@\w+)?/i.test(text) || lower === 'reconnect') {
+    await handleReconnectCommand(chatId, log);
     return;
   }
 
-  if (text.startsWith('/')) return; // ignore other commands
+  if (/^\/attendance(?:@\w+)?/i.test(text) || lower === 'attendance') {
+    await handleAttendance(chatId, log);
+    return;
+  }
+
+  if (/^\/today(?:@\w+)?/i.test(text) || ['today', 'timetable', 'classes', 'schedule'].includes(lower)) {
+    await handleToday(chatId, log);
+    return;
+  }
+
+  if (/^\/assignments(?:@\w+)?/i.test(text) || ['assignment', 'assignments'].includes(lower)) {
+    await handleAssignments(chatId, log);
+    return;
+  }
+
+  if (/^\/status(?:@\w+)?/i.test(text) || lower === 'status') {
+    await handleStatus(chatId, log);
+    return;
+  }
+
+  if (/^\/help(?:@\w+)?/i.test(text) || ['help', 'hi', 'hello', 'hey'].includes(lower)) {
+    await handleHelp(chatId, log);
+    return;
+  }
+
+  if (text.startsWith('/')) {
+    await reply(chatId, `❓ Unknown command: ${text}\n\nSend /help to see all available commands.`, log);
+    return;
+  }
 
   // Strict multi-user mapping: only the user who owns this chat
   const user = await db.getUserByTelegramChatId(chatId);
   if (!user) return;
 
   if (!isWaitingCaptcha(user.id)) {
-    // User is not in reconnect mode — do not interpret text as CAPTCHA
+    // User is not in reconnect mode and text was not a recognized greeting/command — ignore
     return;
   }
 
@@ -814,9 +832,26 @@ async function handleDeepLink(chatId, payload, log = console) {
   return user;
 }
 
-/** Plain "/start" -> sirf welcome. Deep-link "/start <code>" -> handleDeepLink. */
+/** Plain "/start" -> welcome or user dashboard. Deep-link "/start <code>" -> handleDeepLink. */
 async function handleStart(chatId, payload, log = console) {
   if (!payload) {
+    const user = await db.getUserByTelegramChatId(chatId);
+    if (user) {
+      const name = user.studentName || 'Student';
+      const text = [
+        `👋 Welcome back, *${name}*!`,
+        '',
+        'Here are the commands you can use:',
+        '📊 /attendance — Check your overall attendance & 75% margin',
+        '📅 /today — View today\'s class timetable',
+        '📚 /assignments — View pending assignments & deadlines',
+        'ℹ️ /status — Check account connection status',
+        '🔄 /reconnect — Reconnect QUMS session',
+        '❓ /help — Detailed help & commands list',
+      ].join('\n');
+      await reply(chatId, text, log);
+      return;
+    }
     await reply(chatId, MSG.WELCOME, log);
     return;
   }
@@ -835,12 +870,210 @@ async function handleLinkCommand(chatId, code, log = console) {
 async function handleStatus(chatId, log = console) {
   const user = await db.getUserByTelegramChatId(chatId);
   if (user) {
-    // Show the QUMS/ERP student name — the email is never shown in Telegram.
-    await reply(chatId, `🔗 Linked: ${user.studentName || 'your account'}\nQUMS: ${user.qumsSessionPath ? 'configured ✅' : 'setup pending ⚠️'}`, log);
+    const name = user.studentName || 'Student';
+    const qid = user.qumsQid || 'Not set';
+    const sessionActive = user.qumsSessionStatus === 'active' && Boolean(user.qumsSessionPath && fs.existsSync(user.qumsSessionPath));
+    const sessionStatusText = sessionActive
+      ? 'Active & Monitored ✅'
+      : (user.qumsSessionPath ? 'Expired / Needs Reconnect ⚠️ (send /reconnect)' : 'Setup pending ⚠️');
+
+    const lines = [
+      'ℹ️ *Account Status*',
+      '',
+      `👤 Student: ${name}`,
+      `🎓 QID: ${qid}`,
+      `📡 Monitoring: ${sessionActive ? 'Active ✅' : 'Paused ⚠️'}`,
+      `🔐 QUMS Session: ${sessionStatusText}`,
+    ];
+    if (!sessionActive && (user.qumsPasswordEncrypted || user.qumsQid)) {
+      lines.push('');
+      lines.push('💡 _Send /reconnect to restore your session via Telegram._');
+    }
+    await reply(chatId, lines.join('\n'), log);
   } else {
     await reply(chatId, MSG.STATUS_NONE, log);
   }
   log.log(`[telegram] /status from chat ${chatId}`);
+}
+
+async function handleHelp(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  const name = user?.studentName ? `Hello *${user.studentName}*! 👋\n\n` : '';
+  const text = [
+    `${name}Welcome to the *QAttend Bot*!`,
+    '',
+    'Available commands:',
+    '📊 /attendance — Check your overall attendance & 75% margin',
+    '📅 /today — View today\'s classes & timetable',
+    '📚 /assignments — View pending assignments & deadlines',
+    'ℹ️ /status — Check your QUMS & Telegram account status',
+    '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
+    '❓ /help — Show this help message',
+    '',
+    '💡 *Automatic Notifications:*',
+    '• Daily morning schedule is sent at 8:30 AM IST with room & teacher info.',
+    '• Real-time alerts when teachers enter or change attendance marks during college hours.',
+    '• New assignment alerts and deadline reminders.',
+  ].join('\n');
+  await reply(chatId, text, log);
+}
+
+async function handleAttendance(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  if (!user.qumsQid || !user.qumsSessionPath) {
+    await reply(chatId, '⚠️ *QUMS Setup Pending*\n\nPlease complete QUMS setup on the web dashboard first to view your attendance.', log);
+    return;
+  }
+
+  if (user.qumsSessionStatus === 'expired') {
+    await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.', log);
+    return;
+  }
+
+  await reply(chatId, '⏳ Fetching your latest attendance report...', log);
+
+  try {
+    const { resolveUserRuntime } = require('./credentials');
+    const runtime = resolveUserRuntime(user);
+    const { scrapeAttendance } = require('./scraper');
+    const { analyzeAttendance } = require('./calculator');
+    const { formatAttendanceMessage } = require('./messages');
+
+    const subjects = await scrapeAttendance({
+      sessionPath: runtime.sessionPath,
+      yearSem: user.qumsYearSem,
+      studentName: user.studentName,
+    });
+    const analysis = analyzeAttendance(subjects);
+    const text = formatAttendanceMessage(analysis);
+    await reply(chatId, text, log);
+  } catch (err) {
+    log.error(`[telegram] /attendance failed for user ${user.id}: ${err.message}`);
+    if (err.name === 'SessionExpiredError' || /session expired/i.test(err.message)) {
+      await db.markSessionExpired(user.id).catch(() => {});
+      await reply(chatId, '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.', log);
+    } else {
+      const known = await db.listKnownAttendance(user.id).catch(() => []);
+      if (known && known.length > 0) {
+        const subMap = new Map();
+        for (const k of known) {
+          const s = k.subject || k.subjectCode || 'Subject';
+          if (!subMap.has(s)) subMap.set(s, { total: 0, present: 0 });
+          const entry = subMap.get(s);
+          entry.total += 1;
+          if (k.status === 'present') entry.present += 1;
+        }
+        const lines = ['📊 *Latest Recorded Attendance (Offline Cache)*', ''];
+        for (const [sub, st] of subMap) {
+          const pct = Math.round((st.present / st.total) * 100);
+          const icon = pct >= 75 ? '✅' : '⚠️';
+          lines.push(`${icon} *${sub}*: ${st.present}/${st.total} (${pct}%)`);
+        }
+        lines.push('');
+        lines.push('_Live QUMS portal is temporarily unreachable or session expired._');
+        lines.push('Send /reconnect if your session needs refreshing.');
+        await reply(chatId, lines.join('\n'), log);
+      } else {
+        await reply(chatId, `⚠️ Could not fetch attendance: ${err.message}\nSend /reconnect to refresh your session.`, log);
+      }
+    }
+  }
+}
+
+async function handleToday(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  try {
+    const { getTodaysScheduleWithRoom } = require('./scraper');
+    const { formatMorningSchedule } = require('./messages');
+    let schedule = null;
+
+    if (user.qumsQid && user.qumsSessionPath && user.qumsSessionStatus !== 'expired') {
+      try {
+        const { resolveUserRuntime } = require('./credentials');
+        const runtime = resolveUserRuntime(user);
+        if (fs.existsSync(runtime.sessionPath)) {
+          schedule = await getTodaysScheduleWithRoom(user.id, runtime.sessionPath, log);
+        }
+      } catch (err) {
+        log.log(`[telegram] live schedule fetch failed: ${err.message}`);
+      }
+    }
+
+    if (!schedule || !schedule.length) {
+      const now = new Date();
+      const istDay = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay();
+      const dbSched = await db.getWeeklySchedule(user.id, istDay);
+      if (dbSched && dbSched.rows && dbSched.rows.length) {
+        schedule = dbSched.rows;
+      }
+    }
+
+    if (schedule && schedule.length) {
+      const text = formatMorningSchedule(schedule, undefined, user.studentName);
+      await reply(chatId, text, log);
+    } else {
+      await reply(chatId, '🌅 *Today\'s Classes*\n\n🎉 No classes found for today or Sunday/Holiday. Enjoy your day!', log);
+    }
+  } catch (err) {
+    log.error(`[telegram] /today failed: ${err.message}`);
+    await reply(chatId, `⚠️ Could not load today's schedule: ${err.message}`, log);
+  }
+}
+
+async function handleAssignments(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  try {
+    const known = await db.listKnownAssignments(user.id);
+    if (!known || !known.length) {
+      await reply(chatId, '📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.', log);
+      return;
+    }
+    const lines = ['📚 *Your Assignments*', ''];
+    known.forEach((a, idx) => {
+      lines.push(`${idx + 1}. *${a.subject || 'Subject'}*`);
+      lines.push(`    ${a.title || 'Assignment'}`);
+      if (a.deadlineYMD || a.lastDate) {
+        lines.push(`    Due: ${a.deadlineYMD || a.lastDate}`);
+      }
+      lines.push('');
+    });
+    lines.push('🔗 Open QUMS portal to submit.');
+    await reply(chatId, lines.join('\n'), log);
+  } catch (err) {
+    log.error(`[telegram] /assignments failed: ${err.message}`);
+    await reply(chatId, `⚠️ Could not load assignments: ${err.message}`, log);
+  }
+}
+
+async function handleReconnectCommand(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+  const started = await startTelegramCaptchaReconnect(user.id, log);
+  if (!started || !started.ok) {
+    if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
+      await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and send /reconnect again.', log);
+    } else {
+      await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+    }
+  }
 }
 
 /**
@@ -977,6 +1210,11 @@ module.exports = {
   handleStart,
   handleLinkCommand,
   handleStatus,
+  handleHelp,
+  handleAttendance,
+  handleToday,
+  handleAssignments,
+  handleReconnectCommand,
   toTelegramHtml,
   MSG,
   BOT_USERNAME,

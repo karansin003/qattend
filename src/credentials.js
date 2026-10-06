@@ -30,7 +30,20 @@ function resolveUserRuntime(user) {
     return { qid, sessionPath: ROOT_SESSION_FILE };
   }
 
-  const sessionPath = user.qumsSessionPath || '';
+  let sessionPath = user.qumsSessionPath || '';
+  if (user.id) {
+    try {
+      const db = require('./db');
+      if (typeof db.sessionPathFor === 'function') {
+        const canonical = db.sessionPathFor(user.id);
+        const fs = require('fs');
+        if (fs.existsSync(canonical) || !sessionPath) {
+          sessionPath = canonical;
+        }
+      }
+    } catch {}
+  }
+
   if (!sessionPath || !user.qumsQid) {
     const e = new Error('QUMS setup incomplete for this user.');
     e.name = 'QumsSetupRequired';

@@ -120,6 +120,12 @@ function pruneMorningState(state, todayYMD) {
 
 async function activeUsers() {
   const all = await db.allUsers();
+  for (const u of all) {
+    if (u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && !fs.existsSync(u.qumsSessionPath)) {
+      await db.markSessionExpired(u.id).catch(() => {});
+      await maybeNotifySessionExpired(u.id, console).catch(() => {});
+    }
+  }
   return all.filter((u) => u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath));
 }
 

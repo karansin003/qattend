@@ -184,6 +184,10 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
   const users = [];
   for (const user of allUsers) {
     if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
+      if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
+        await db.markSessionExpired(user.id).catch(() => {});
+        await maybeNotifySessionExpired(user.id, log).catch(() => {});
+      }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
     }

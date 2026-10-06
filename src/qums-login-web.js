@@ -16,6 +16,7 @@
  * Pending login 5 min me auto-expires (browser close).
  */
 require('dotenv').config();
+const fs = require('fs');
 const { chromium } = require('playwright');
 const db = require('./db');
 const { encryptSecret, decryptSecret } = require('./crypto');
@@ -392,11 +393,22 @@ async function completeQumsSetup(userId, qid, { password, confirmSwitch = false 
   const isDifferentQid = Boolean(user && user.qumsQid && user.qumsQid !== qid);
   const isFirstTime = !user || (!user.monitoringStartedDate && !user.monitoringStartedAt) || isDifferentQid;
 
+  const sessionPath = db.sessionPathFor(userId);
+  let sessionData = '';
+  try {
+    if (fs.existsSync(sessionPath)) {
+      sessionData = fs.readFileSync(sessionPath, 'utf8');
+    }
+  } catch {}
+
   const patch = {
     qumsQid: String(qid || '').trim(),
-    qumsSessionPath: db.sessionPathFor(userId),
+    qumsSessionPath: sessionPath,
     qumsSessionStatus: 'active',
   };
+  if (sessionData) {
+    patch.qumsSessionData = sessionData;
+  }
 
   if (password) {
     try {

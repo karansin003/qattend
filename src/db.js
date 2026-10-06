@@ -647,10 +647,25 @@ function fromUserRow(r) {
     mDate = getIstDateString(new Date(r.monitoring_started_at));
   }
 
+  const canonicalSession = r.id ? sessionPathFor(r.id) : (r.qums_session_path || '');
+  let resolvedSessionPath = r.qums_session_path || '';
+  if (r.id) {
+    if (r.qums_session_data && !fs.existsSync(canonicalSession)) {
+      try {
+        fs.mkdirSync(path.dirname(canonicalSession), { recursive: true });
+        fs.writeFileSync(canonicalSession, r.qums_session_data);
+        resolvedSessionPath = canonicalSession;
+      } catch {}
+    } else if (fs.existsSync(canonicalSession)) {
+      resolvedSessionPath = canonicalSession;
+    }
+  }
+
   const row = {
     id: r.id, email: r.email, passwordHash: r.password_hash,
     qumsQid: r.qums_qid || '',
-    qumsSessionPath: r.qums_session_path || '',
+    qumsSessionPath: resolvedSessionPath,
+    qumsSessionData: r.qums_session_data || '',
     telegramLinkCode: r.telegram_link_code || '',
     telegramChatId: r.telegram_chat_id || '',
     firebaseUid: r.firebase_uid || '',
@@ -743,6 +758,7 @@ const WRITABLE_USER_COLUMNS = {
   qumsQid: 'qums_qid',
   qumsPasswordEncrypted: 'qums_password_encrypted',
   qumsSessionPath: 'qums_session_path',
+  qumsSessionData: 'qums_session_data',
   telegramLinkCode: 'telegram_link_code',
   telegramChatId: 'telegram_chat_id',
   firebaseUid: 'firebase_uid',

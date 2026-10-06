@@ -231,6 +231,51 @@ if (process.argv[2] === '--second-instance') {
   check('T5d TELEGRAM_POLLING=off -> explicitly logged', /TELEGRAM_POLLING=off/.test(out3), true);
   check('T5d TELEGRAM_POLLING=off -> lock conflict nahi (env switch kaam kiya)', /polling SKIPPED — pid/.test(out3), false);
 
+  // ---- T7: linked user sends plain /start -> welcome back with name & commands ----
+  sent.length = 0;
+  deliver(CHAT_A, '/start', 1010);
+  await settle();
+  check('T7 linked /start -> 1 reply', sent.length, 1);
+  check('T7 linked /start -> includes student name', lastSent().text.includes('KARAN KUMAR'), true);
+  check('T7 linked /start -> includes /attendance command', lastSent().text.includes('/attendance'), true);
+
+  // ---- T8: /help -> shows commands ----
+  sent.length = 0;
+  await telegram.handleUserMessage({ chat: { id: CHAT_A }, text: '/help', message_id: 1011 }, quiet);
+  check('T8 /help -> 1 reply', sent.length, 1);
+  check('T8 /help -> lists /today', lastSent().text.includes('/today'), true);
+
+  // ---- T9: /status on linked chat -> shows status details ----
+  sent.length = 0;
+  deliver(CHAT_A, '/status', 1012);
+  await settle();
+  check('T9 /status -> 1 reply', sent.length, 1);
+  check('T9 /status -> shows Account Status', lastSent().text.includes('Account Status') || lastSent().text.includes('Linked'), true);
+
+  // ---- T10: text "hi" -> friendly greeting & commands ----
+  sent.length = 0;
+  await telegram.handleUserMessage({ chat: { id: CHAT_A }, text: 'hi', message_id: 1013 }, quiet);
+  check('T10 text "hi" -> 1 reply', sent.length, 1);
+  check('T10 text "hi" -> contains commands', lastSent().text.includes('/attendance'), true);
+
+  // ---- T11: /assignments -> lists assignments ----
+  sent.length = 0;
+  await telegram.handleUserMessage({ chat: { id: CHAT_A }, text: '/assignments', message_id: 1014 }, quiet);
+  check('T11 /assignments -> 1 reply', sent.length, 1);
+  check('T11 /assignments -> mentions assignments', lastSent().text.includes('Assignments'), true);
+
+  // ---- T12: /today -> returns schedule message ----
+  sent.length = 0;
+  await telegram.handleUserMessage({ chat: { id: CHAT_A }, text: '/today', message_id: 1015 }, quiet);
+  check('T12 /today -> 1 reply', sent.length, 1);
+  check('T12 /today -> mentions today classes', lastSent().text.includes('Today\'s Classes'), true);
+
+  // ---- T13: unknown command -> shows hint ----
+  sent.length = 0;
+  await telegram.handleUserMessage({ chat: { id: CHAT_A }, text: '/unknowncmd', message_id: 1016 }, quiet);
+  check('T13 unknown command -> 1 reply', sent.length, 1);
+  check('T13 unknown command -> hints /help', lastSent().text.includes('/help'), true);
+
   console.log(failures === 0 ? '\nALL TELEGRAM /start TESTS PASSED' : `\n${failures} TELEGRAM /start TEST(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch((err) => {

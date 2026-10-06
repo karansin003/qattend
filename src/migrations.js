@@ -238,6 +238,12 @@ const MIGRATIONS = [
       `ALTER TABLE session_expiry_state ADD COLUMN IF NOT EXISTS telegram_message_id TEXT DEFAULT ''`,
     ],
   },
+  {
+    id: '017_qums_session_data',
+    statements: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS qums_session_data TEXT DEFAULT ''`,
+    ],
+  },
 ];
 
 /**
