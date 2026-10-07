@@ -166,7 +166,7 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       if (isNew) {
         const text = formatBackdatedUpdate(rec, prev);
         if (user.telegramChatId) {
-          await sendMessage(userId, text, log).catch(() => {});
+          await sendMessage(userId, text, log, { category: 'ATTENDANCE' }).catch(() => {});
           attendanceAlertsSent++;
         }
         await db.upsertKnownAttendance(userId, [rec]);
@@ -215,7 +215,7 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       if (isNew) {
         const text = formatNewAssignment(a);
         if (user.telegramChatId) {
-          await sendMessage(userId, text, log).catch(() => {});
+          await sendMessage(userId, text, log, { category: 'ASSIGNMENT' }).catch(() => {});
           assignmentAlertsSent++;
         }
         await db.addKnownAssignments(userId, [a]);

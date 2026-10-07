@@ -178,7 +178,7 @@ async function runMorningScheduleJob(log = console, opts = {}) {
   const force = Boolean(opts.force);
   const stateFile = opts.stateFile || MORNING_STATE_FILE;
   const sleepMs = opts.sleepMs === undefined ? 500 : Number(opts.sleepMs);
-  const sendFn = opts.sendFn || ((user, text) => sendMessage(user.id, text));
+  const sendFn = opts.sendFn || ((user, text) => sendMessage(user.id, text, log, { category: 'MORNING_SCHEDULE', timetableDate: at.ymd }));
 
   if (isMorningJobRunning && !force) {
     log.log(`[scheduler] morning schedule already running — skip duplicate concurrent execution.`);

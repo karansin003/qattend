@@ -85,6 +85,272 @@ function toTelegramHtml(text) {
     .replace(/_(?=\S)(.+?)(?<=\S)_/gs, '<i>$1</i>');
 }
 
+const AUTO_DELETE_DELAY_MS = 1 * 60 * 1000; // 1 minute (60,000 ms)
+const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 1 minute._';
+
+const MESSAGE_CATEGORIES = {
+  ATTENDANCE: 'ATTENDANCE',
+  ASSIGNMENT: 'ASSIGNMENT',
+  MORNING_SCHEDULE: 'MORNING_SCHEDULE',
+  TEMPORARY: 'TEMPORARY',
+};
+
+const MONTH_NAMES = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function getIstYmd(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+function extractTimetableDate(text) {
+  if (!text || typeof text !== 'string') return null;
+  const m = text.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+  if (m) {
+    const day = String(m[1]).padStart(2, '0');
+    const mon = MONTH_NAMES[m[2].toLowerCase()];
+    const yr = m[3];
+    if (mon) {
+      const monStr = String(mon).padStart(2, '0');
+      return `${yr}-${monStr}-${day}`;
+    }
+  }
+  const mIso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (mIso) {
+    return `${mIso[1]}-${mIso[2]}-${mIso[3]}`;
+  }
+  return null;
+}
+
+/**
+ * Calculate dynamic delete time for morning timetable:
+ * NEXT DAY 08:00:00 AM IST (Asia/Kolkata).
+ * E.g. timetable_date = '2026-10-08' -> delete_at = '2026-10-09 08:00:00 Asia/Kolkata'.
+ * In UTC: 08:00 IST is exactly 02:30 UTC on the next calendar day.
+ */
+function calculateMorningTimetableDeleteAt(timetableDate) {
+  let y, m, d;
+  if (typeof timetableDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(timetableDate)) {
+    const parts = timetableDate.split('-').map(Number);
+    y = parts[0];
+    m = parts[1];
+    d = parts[2];
+  } else if (timetableDate instanceof Date && !isNaN(timetableDate.getTime())) {
+    const parts = getIstYmd(timetableDate).split('-').map(Number);
+    y = parts[0];
+    m = parts[1];
+    d = parts[2];
+  } else {
+    const parts = getIstYmd(new Date()).split('-').map(Number);
+    y = parts[0];
+    m = parts[1];
+    d = parts[2];
+  }
+  const nextDay = new Date(Date.UTC(y, m - 1, d + 1));
+  const nextY = nextDay.getUTCFullYear();
+  const nextM = nextDay.getUTCMonth();
+  const nextD = nextDay.getUTCDate();
+  return Date.UTC(nextY, nextM, nextD, 2, 30, 0, 0);
+}
+
+/**
+ * Classify a Telegram message into explicit categories:
+ * - ATTENDANCE: Permanent (DO NOT auto-delete)
+ * - ASSIGNMENT: Permanent (DO NOT auto-delete)
+ * - MORNING_SCHEDULE: Auto-delete next day at 08:00 AM IST
+ * - TEMPORARY: Auto-delete after 1 minute (default)
+ */
+function classifyMessage(opts, text) {
+  if (opts && opts.category) {
+    const cat = String(opts.category).toUpperCase().trim();
+    if (cat === 'ATTENDANCE') return MESSAGE_CATEGORIES.ATTENDANCE;
+    if (cat === 'ASSIGNMENT') return MESSAGE_CATEGORIES.ASSIGNMENT;
+    if (cat === 'MORNING_SCHEDULE') return MESSAGE_CATEGORIES.MORNING_SCHEDULE;
+    if (cat === 'TEMPORARY') return MESSAGE_CATEGORIES.TEMPORARY;
+  }
+
+  const t = typeof text === 'string' ? text : '';
+
+  // Attendance patterns (real-time, backdated, status changes):
+  if (
+    t.includes('📌 Attendance Update') ||
+    t.includes('📌 *Attendance Update*') ||
+    t.includes('Attendance Update') ||
+    t.includes('Attendance Status Changed') ||
+    t.includes('Backdated Attendance Marked') ||
+    t.includes('Backdated Attendance') ||
+    t.includes('marked you as:') ||
+    /\bStatus:\s*(?:✅|❌)?\s*(?:Present|Absent)\b/i.test(t)
+  ) {
+    return MESSAGE_CATEGORIES.ATTENDANCE;
+  }
+
+  // Assignment patterns (new assignments, reminders, catch-up):
+  if (
+    t.includes('📚 New Assignment') ||
+    t.includes('📚 *New Assignment*') ||
+    t.includes('New Assignment') ||
+    t.includes('Assignment Deadline Reminder') ||
+    t.includes('⚠️ Assignment Deadline Reminder') ||
+    t.includes('Assignment Reminder') ||
+    t.includes('Deadline: Today') ||
+    /\bAssignment\s+Deadline\s+Reminder\b/i.test(t)
+  ) {
+    return MESSAGE_CATEGORIES.ASSIGNMENT;
+  }
+
+  // Morning schedule patterns:
+  if (
+    t.includes("Today's Classes") ||
+    t.includes("🌅 *Today's Classes*") ||
+    t.includes("🌅 Today's Classes") ||
+    t.includes('Here is your schedule for today') ||
+    t.includes('Morning Timetable')
+  ) {
+    return MESSAGE_CATEGORIES.MORNING_SCHEDULE;
+  }
+
+  return MESSAGE_CATEGORIES.TEMPORARY;
+}
+
+const scheduledTimers = new Map(); // `${chatId}:${messageId}` -> Timeout
+
+/**
+ * Cancel and unregister a scheduled deletion in-memory and in DB.
+ */
+function cancelScheduledDeletion(chatId, messageId) {
+  if (!chatId || !messageId) return;
+  const key = `${chatId}:${messageId}`;
+  if (scheduledTimers.has(key)) {
+    const timer = scheduledTimers.get(key);
+    clearTimeout(timer);
+    scheduledTimers.delete(key);
+  }
+  if (db && typeof db.removeScheduledDeletion === 'function') {
+    db.removeScheduledDeletion(chatId, messageId).catch(() => {});
+  }
+}
+
+/**
+ * Schedule a message to be automatically deleted after a delay (default 1 minute)
+ * or at an explicit timestamp (explicitDeleteAt).
+ * Persists to PostgreSQL so server restarts don't lose the deletion.
+ */
+function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, log = console, explicitDeleteAt = null) {
+  if (!chatId || !messageId) return null;
+  const key = `${chatId}:${messageId}`;
+  if (scheduledTimers.has(key)) {
+    return scheduledTimers.get(key);
+  }
+  const deleteAt = explicitDeleteAt !== null ? Number(explicitDeleteAt) : (Date.now() + delayMs);
+  const effectiveDelayMs = Math.max(0, deleteAt - Date.now());
+
+  if (db && typeof db.addScheduledDeletion === 'function') {
+    db.addScheduledDeletion(chatId, messageId, deleteAt).catch((err) => {
+      log.log(`[telegram] addScheduledDeletion error: ${err.message}`);
+    });
+  }
+
+  const timer = setTimeout(async () => {
+    scheduledTimers.delete(key);
+    try {
+      await deleteMessageFromChat(chatId, messageId, log);
+      if (db && typeof db.removeScheduledDeletion === 'function') {
+        await db.removeScheduledDeletion(chatId, messageId).catch(() => {});
+      }
+    } catch (err) {
+      log.log(`[telegram] scheduleAutoDelete execution error: ${err.message}`);
+    }
+  }, effectiveDelayMs);
+
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  scheduledTimers.set(key, timer);
+  return timer;
+}
+
+/**
+ * Restore pending message auto-deletions on startup.
+ */
+async function restoreScheduledDeletions(log = console) {
+  try {
+    if (!db || typeof db.listPendingDeletions !== 'function') return;
+    const pending = await db.listPendingDeletions();
+    if (!pending || !pending.length) return;
+    const now = Date.now();
+    for (const item of pending) {
+      const remainingMs = Math.max(0, item.deleteAt - now);
+      if (remainingMs <= 0) {
+        await deleteMessageFromChat(item.chatId, item.messageId, log).catch(() => {});
+        await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
+      } else {
+        const key = `${item.chatId}:${item.messageId}`;
+        if (scheduledTimers.has(key)) continue;
+        const timer = setTimeout(async () => {
+          scheduledTimers.delete(key);
+          try {
+            await deleteMessageFromChat(item.chatId, item.messageId, log);
+            await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
+          } catch (err) {
+            log.log(`[telegram] restored auto-delete error: ${err.message}`);
+          }
+        }, remainingMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+        scheduledTimers.set(key, timer);
+      }
+    }
+    log.log(`[telegram] Restored ${pending.length} scheduled message deletion(s).`);
+  } catch (err) {
+    log.log(`[telegram] restoreScheduledDeletions error: ${err.message}`);
+  }
+}
+
+/**
+ * Route message auto-delete according to classification:
+ * - ATTENDANCE: permanent (no auto-delete)
+ * - ASSIGNMENT: permanent (no auto-delete)
+ * - MORNING_SCHEDULE: next day 08:00 AM IST
+ * - TEMPORARY: 1 minute (60,000 ms)
+ */
+function handleSendMessageAutoDelete(chatId, sentMsg, opts, text, log = console) {
+  if (!chatId || !sentMsg || !sentMsg.message_id) return;
+  const messageId = sentMsg.message_id;
+  const category = classifyMessage(opts, text);
+
+  if (category === MESSAGE_CATEGORIES.ATTENDANCE) {
+    log.log(`[Telegram] Message ${messageId} classified as ATTENDANCE: permanent (no auto-delete).`);
+    return;
+  }
+
+  if (category === MESSAGE_CATEGORIES.ASSIGNMENT) {
+    log.log(`[Telegram] Message ${messageId} classified as ASSIGNMENT: permanent (no auto-delete).`);
+    return;
+  }
+
+  if (category === MESSAGE_CATEGORIES.MORNING_SCHEDULE) {
+    const timetableDate = (opts && opts.timetableDate) || extractTimetableDate(text) || getIstYmd();
+    const deleteAt = calculateMorningTimetableDeleteAt(timetableDate);
+    const delayMs = Math.max(0, deleteAt - Date.now());
+    log.log(`[Telegram] Message ${messageId} classified as MORNING_SCHEDULE (${timetableDate}): scheduled deletion at ${new Date(deleteAt).toISOString()}`);
+    scheduleAutoDelete(chatId, messageId, delayMs, log, deleteAt);
+    return;
+  }
+
+  // TEMPORARY / other:
+  if (opts && opts.autoDelete === false) {
+    return;
+  }
+  const delayMs = (opts && typeof opts.delayMs === 'number') ? opts.delayMs : AUTO_DELETE_DELAY_MS;
+  scheduleAutoDelete(chatId, messageId, delayMs, log);
+}
+
 /**
  * Per-user send: user ka saved telegramChatId nikal ke message bhejo.
  * Not linked / not configured -> silently skip (false), koi crash nahi.
@@ -118,6 +384,7 @@ async function sendMessage(userId, text, log = console, opts = {}) {
     if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
       opts.messageId = sentMsg.message_id;
     }
+    handleSendMessageAutoDelete(user.telegramChatId, sentMsg, opts, text, log);
     log.log(`[Telegram] Notification sent successfully for user: ${userId}`);
     return true;
   } catch (err) {
@@ -128,6 +395,7 @@ async function sendMessage(userId, text, log = console, opts = {}) {
       if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
         opts.messageId = sentMsg.message_id;
       }
+      handleSendMessageAutoDelete(user.telegramChatId, sentMsg, opts, text, log);
       log.log(`[Telegram] Notification sent successfully for user: ${userId} (plain-text fallback)`);
       return true;
     } catch (err2) {
@@ -145,18 +413,7 @@ async function deleteMessage(userId, messageId, log = console) {
   if (!userId || !messageId) return false;
   const user = await db.getUserById(userId);
   if (!user || !user.telegramChatId) return false;
-  if (!isConfigured()) return false;
-  if (!state.bot) ensureSendOnlyBot(log);
-  try {
-    log.log(`[Telegram] Deleting message ${messageId} for user: ${userId}`);
-    await state.bot.deleteMessage(user.telegramChatId, Number(messageId));
-    log.log(`[Telegram] Message ${messageId} deleted successfully for user: ${userId}`);
-    return true;
-  } catch (err) {
-    // If message is already deleted or expired (>48h), silently ignore
-    log.log(`[Telegram] deleteMessage failed for user ${userId} msg=${messageId}: ${err.message}`);
-    return false;
-  }
+  return deleteMessageFromChat(user.telegramChatId, messageId, log);
 }
 
 /**
@@ -166,6 +423,7 @@ async function deleteMessageFromChat(chatId, messageId, log = console) {
   if (!chatId || !messageId) return false;
   if (!isConfigured()) return false;
   if (!state.bot) ensureSendOnlyBot(log);
+  cancelScheduledDeletion(chatId, messageId);
   try {
     await state.bot.deleteMessage(chatId, Number(messageId));
     log.log(`[telegram] Deleted message ${messageId} from chat ${chatId}`);
@@ -173,80 +431,6 @@ async function deleteMessageFromChat(chatId, messageId, log = console) {
   } catch (err) {
     log.log(`[telegram] deleteMessageFromChat failed for chat ${chatId} msg=${messageId}: ${err.message}`);
     return false;
-  }
-}
-
-const AUTO_DELETE_DELAY_MS = 1 * 60 * 1000; // 1 minute (60,000 ms)
-const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 1 minute._';
-
-const scheduledTimers = new Map(); // `${chatId}:${messageId}` -> Timeout
-
-/**
- * Schedule a message to be automatically deleted after a delay (default 1 minute).
- * Persists to DB so server restarts don't lose the deletion.
- */
-function scheduleAutoDelete(chatId, messageId, delayMs = AUTO_DELETE_DELAY_MS, log = console) {
-  if (!chatId || !messageId) return null;
-  const key = `${chatId}:${messageId}`;
-  if (scheduledTimers.has(key)) {
-    return scheduledTimers.get(key);
-  }
-  const deleteAt = Date.now() + delayMs;
-
-  if (db && typeof db.addScheduledDeletion === 'function') {
-    db.addScheduledDeletion(chatId, messageId, deleteAt).catch((err) => {
-      log.log(`[telegram] addScheduledDeletion error: ${err.message}`);
-    });
-  }
-
-  const timer = setTimeout(async () => {
-    scheduledTimers.delete(key);
-    try {
-      await deleteMessageFromChat(chatId, messageId, log);
-      if (db && typeof db.removeScheduledDeletion === 'function') {
-        await db.removeScheduledDeletion(chatId, messageId).catch(() => {});
-      }
-    } catch (err) {
-      log.log(`[telegram] scheduleAutoDelete execution error: ${err.message}`);
-    }
-  }, delayMs);
-
-  if (timer && typeof timer.unref === 'function') {
-    timer.unref();
-  }
-  scheduledTimers.set(key, timer);
-  return timer;
-}
-
-/**
- * Restore pending message auto-deletions on startup.
- */
-async function restoreScheduledDeletions(log = console) {
-  try {
-    if (!db || typeof db.listPendingDeletions !== 'function') return;
-    const pending = await db.listPendingDeletions();
-    if (!pending || !pending.length) return;
-    const now = Date.now();
-    for (const item of pending) {
-      const remainingMs = Math.max(0, item.deleteAt - now);
-      if (remainingMs <= 0) {
-        await deleteMessageFromChat(item.chatId, item.messageId, log).catch(() => {});
-        await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
-      } else {
-        const timer = setTimeout(async () => {
-          try {
-            await deleteMessageFromChat(item.chatId, item.messageId, log);
-            await db.removeScheduledDeletion(item.chatId, item.messageId).catch(() => {});
-          } catch (err) {
-            log.log(`[telegram] restored auto-delete error: ${err.message}`);
-          }
-        }, remainingMs);
-        if (timer && typeof timer.unref === 'function') timer.unref();
-      }
-    }
-    log.log(`[telegram] Restored ${pending.length} scheduled message deletion(s).`);
-  } catch (err) {
-    log.log(`[telegram] restoreScheduledDeletions error: ${err.message}`);
   }
 }
 
@@ -291,6 +475,9 @@ async function sendPhotoToChat(chatId, photo, caption = '', log = console, opts 
     if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
       opts.messageId = sentMsg.message_id;
     }
+    if (sentMsg && sentMsg.message_id && (!opts || opts.autoDelete !== false)) {
+      scheduleAutoDelete(chatId, sentMsg.message_id, AUTO_DELETE_DELAY_MS, log);
+    }
     return sentMsg;
   } catch (err) {
     log.error(`[Telegram] sendPhotoToChat FAILED for chat ${chatId}: ${err.message}`);
@@ -301,6 +488,9 @@ async function sendPhotoToChat(chatId, photo, caption = '', log = console, opts 
       const sentMsg = await state.bot.sendPhoto(chatId, photoBuf, fbPayload);
       if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
         opts.messageId = sentMsg.message_id;
+      }
+      if (sentMsg && sentMsg.message_id && (!opts || opts.autoDelete !== false)) {
+        scheduleAutoDelete(chatId, sentMsg.message_id, AUTO_DELETE_DELAY_MS, log);
       }
       return sentMsg;
     } catch (err2) {
@@ -1418,6 +1608,10 @@ module.exports = {
   toTelegramHtml,
   MSG,
   BOT_USERNAME,
+  MESSAGE_CATEGORIES,
+  calculateMorningTimetableDeleteAt,
+  cancelScheduledDeletion,
+  classifyMessage,
 };
 
 // Standalone: token validity + linked users check (koi send nahi, koi polling nahi)

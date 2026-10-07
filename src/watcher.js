@@ -201,7 +201,7 @@ function buildUpdateMessage(row, dateLabel = dateLabelIST()) {
 async function runWatcherCycle(opts = {}) {
   const log = opts.log || console;
   const fetchFn = opts.fetchFn || scrapeTodaysAttendance;
-  const sendFn = opts.sendFn || ((text) => sendMessage(opts.userId, text));
+  const sendFn = opts.sendFn || ((text) => sendMessage(opts.userId, text, log, { category: 'ATTENDANCE' }));
   const stateFile = opts.stateFile || LEGACY_STATE_FILE;
   const force = !!opts.force;
 
@@ -326,7 +326,7 @@ async function runWatcherPass(log = console) {
         log,
         userId: user.id,
         fetchFn: () => scrapeTodaysAttendance({ sessionPath: user.qumsSessionPath }),
-        sendFn: (text) => sendMessage(user.id, text),
+        sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
         stateFile: stateFileFor(user.id),
         roomByCode,
         userEmail: user.email,
@@ -508,7 +508,7 @@ function buildBackdatedMessage(rec, prev = null) {
  */
 async function runMonthRegisterCycle(opts = {}) {
   const log = opts.log || console;
-  const sendFn = opts.sendFn || ((text) => sendMessage(opts.userId, text));
+  const sendFn = opts.sendFn || ((text) => sendMessage(opts.userId, text, log, { category: 'ATTENDANCE' }));
   const userId = opts.userId;
   if (!userId) throw new Error('runMonthRegisterCycle: userId required');
 
@@ -792,7 +792,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
         dryRun: !!opts.dryRun,
         fetchFn: () => scrapeMonthRegisterRange({ sessionPath: user.qumsSessionPath, months }),
         timetableFn: () => getTimetableCached(user.id, user.qumsSessionPath, log),
-        sendFn: (text) => sendMessage(user.id, text),
+        sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
       });
       await db.touchUserSync(user.id, { attendance: true, error: '' });
       log.log(`[attendance] user=${user.id} checked month register [${monthKeys.join(',')}]`);
@@ -957,7 +957,7 @@ if (require.main === module) {
         const realUser = linked[0] || (await db.allUsers())[0];
         if (!realUser) throw new Error('Koi registered user nahi — pehle /register karo.');
         console.log(`[watcher] (TEST) simulated alert -> test target user: ${realUser.email} (test-only, real loop me aisa nahi)`);
-        return sendMessage(realUser.id, text);
+        return sendMessage(realUser.id, text, console, { category: 'ATTENDANCE' });
       };
 
       console.log(`=== WATCHER TEST (3 simulated cycles, ${realSend ? 'REAL Telegram send' : 'DRY-RUN'}) ===`);
@@ -1019,7 +1019,7 @@ if (require.main === module) {
         if (!user.telegramChatId) {
           throw new Error('Is user ka Telegram linked nahi hai — dashboard se Connect Telegram karo, ya --send ke bina dry-run chalao.');
         }
-        return sendMessage(user.id, text);
+        return sendMessage(user.id, text, console, { category: 'ATTENDANCE' });
       };
       const cycleOpts = {
         log: console,

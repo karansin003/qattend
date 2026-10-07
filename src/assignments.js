@@ -142,7 +142,7 @@ async function runAssignmentCycle(opts = {}) {
   if (!userId) throw new Error('runAssignmentCycle: userId required');
   const mode = opts.mode || 'new';
   const fetchFn = opts.fetchFn || ((u) => scrapeAssignments({ sessionPath: u.qumsSessionPath }));
-  const sendFn = opts.sendFn || ((text) => sendMessage(userId, text));
+  const sendFn = opts.sendFn || ((text) => sendMessage(userId, text, log, { category: 'ASSIGNMENT' }));
   const todayYMD = opts.todayYMD || istNow().date;
 
   const knownRecords = await db.listKnownAssignments(userId);
