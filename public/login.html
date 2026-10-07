@@ -19,15 +19,17 @@
       <p class="auth-tagline">Track. Alert. Stay Updated.</p>
       <h1>Welcome back</h1>
       <div class="sub">Login to your QAttend account.</div>
-      <label class="form-label" for="email">Email</label>
-      <input class="form-input" id="email" type="email" placeholder="you@example.com" autocomplete="username" required />
-      <label class="form-label" for="password">Password</label>
-      <div class="pw-wrap">
-        <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="current-password" required />
-        <button type="button" class="pw-toggle" data-target="password" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
-      </div>
-      <div id="error" class="form-error hidden" role="alert" aria-live="polite"></div>
-      <div style="margin-top: 18px;"><button id="btn" type="button" style="width: 100%;">Login</button></div>
+      <form id="login-form" novalidate>
+        <label class="form-label" for="email">Email</label>
+        <input class="form-input" id="email" type="email" placeholder="you@example.com" autocomplete="username" required />
+        <label class="form-label" for="password">Password</label>
+        <div class="pw-wrap">
+          <input class="form-input" id="password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+          <button type="button" class="pw-toggle" data-target="password" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <div id="error" class="form-error hidden" role="alert" aria-live="polite"></div>
+        <div style="margin-top: 18px;"><button id="btn" type="submit" style="width: 100%;">Login</button></div>
+      </form>
       <div class="auth-foot" style="margin-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 12px; font-size: 0.875rem;">
         <div>Don't have an account? <a href="/register">Register</a></div>
         <div><a href="/forgot">Forgot Password?</a></div>
@@ -39,21 +41,36 @@
     const $ = (id) => document.getElementById(id);
 
     /*
-     * FIREBASE AUTHENTICATION (Web SDK) — see register.html for the same loader.
-     * Firebase authenticates the user in the browser; the backend verifies the
-     * resulting ID token before opening the Express session.
+     * FIREBASE AUTHENTICATION (Web SDK)
+     * Pre-warmed immediately in parallel so by the time credentials are typed,
+     * the SDK is already loaded and ready in memory with 0 network latency.
      */
-    let firebaseSdk = null;
+    let firebaseSdkPromise = null;
 
-    async function loadFirebase() {
-      if (firebaseSdk) return firebaseSdk;
-      const { firebaseConfig } = await import('/firebase-config.js');
-      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
-      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
-      const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
-      firebaseSdk = { auth: authMod.getAuth(app), signInWithEmailAndPassword: authMod.signInWithEmailAndPassword };
-      return firebaseSdk;
+    function loadFirebase() {
+      if (!firebaseSdkPromise) {
+        firebaseSdkPromise = (async () => {
+          const { firebaseConfig } = await import('/firebase-config.js');
+          const [appMod, authMod] = await Promise.all([
+            import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+            import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'),
+          ]);
+          const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
+          return {
+            auth: authMod.getAuth(app),
+            signInWithEmailAndPassword: authMod.signInWithEmailAndPassword,
+          };
+        })().catch((err) => {
+          console.warn('Firebase init error:', err);
+          firebaseSdkPromise = null;
+          throw err;
+        });
+      }
+      return firebaseSdkPromise;
     }
+
+    // Warm up Firebase in background immediately
+    loadFirebase().catch(() => {});
 
     function firebaseLoginErrorMessage(error) {
       switch ((error && error.code) || '') {
@@ -74,12 +91,33 @@
       }
     }
 
+    let isSubmitting = false;
+
     async function submit() {
-      const btn = $('btn'); btn.disabled = true;
-      $('error').classList.add('hidden');
+      if (isSubmitting) return;
 
       const email = $('email').value.trim().toLowerCase();
       const password = $('password').value;
+
+      if (!email) {
+        $('error').textContent = 'Please enter your email.';
+        $('error').classList.remove('hidden');
+        $('email').focus();
+        return;
+      }
+      if (!password) {
+        $('error').textContent = 'Please enter your password.';
+        $('error').classList.remove('hidden');
+        $('password').focus();
+        return;
+      }
+
+      isSubmitting = true;
+      const btn = $('btn');
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Logging in...';
+      $('error').classList.add('hidden');
 
       /*
        * STEP 1 — Authenticate with Firebase (password stays in the browser).
@@ -101,6 +139,8 @@
             $('error').textContent = firebaseLoginErrorMessage(fbError);
             $('error').classList.remove('hidden');
             btn.disabled = false;
+            btn.textContent = originalText;
+            isSubmitting = false;
             return;
           }
         } else {
@@ -122,17 +162,56 @@
           body: JSON.stringify(idToken ? { email, idToken, password } : { email, password }),
         });
         const data = await res.json();
-        if (!res.ok) { $('error').textContent = data.error || 'Login fail'; $('error').classList.remove('hidden'); return; }
+        if (!res.ok) {
+          $('error').textContent = data.error || 'Login fail';
+          $('error').classList.remove('hidden');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          isSubmitting = false;
+          return;
+        }
         const target = data.redirect || (credential && credential.user && !credential.user.emailVerified ? '/verify-email' : '/dashboard');
-        location.href = target;
+        window.location.replace(target);
       } catch (err) {
-        $('error').textContent = err.message; $('error').classList.remove('hidden');
-      } finally { btn.disabled = false; }
+        $('error').textContent = err.message || 'Login failed. Please try again.';
+        $('error').classList.remove('hidden');
+        btn.disabled = false;
+        btn.textContent = originalText;
+        isSubmitting = false;
+      }
     }
-    $('btn').addEventListener('click', submit);
-    $('password').addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+
+    // Form submit listener (captures Enter key and submit button)
+    $('login-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      submit();
+    });
+
+    // Enter key handling on input fields for instant response
+    $('email').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!$('password').value) {
+          $('password').focus();
+        } else {
+          submit();
+        }
+      }
+    });
+
+    $('password').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    });
+
+    // Clear error message when user modifies inputs
+    $('email').addEventListener('input', () => $('error').classList.add('hidden'));
+    $('password').addEventListener('input', () => $('error').classList.add('hidden'));
+
     // password show/hide toggle with clean SVG icons (no weird emoji)
-    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
     const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
     document.querySelectorAll('.pw-toggle').forEach((b) =>
       b.addEventListener('click', () => {
@@ -144,9 +223,6 @@
         b.setAttribute('aria-label', isPw ? 'Hide password' : 'Show password');
       })
     );
-
-    // Warm up Firebase in background while user types credentials
-    loadFirebase().catch(() => {});
   </script>
 </body>
 </html>

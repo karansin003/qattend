@@ -13,11 +13,13 @@
     <div class="auth-card">
       <h1>🔑 Forgot Password</h1>
       <div class="sub">Enter your registered email to receive a password reset link.</div>
-      <label class="form-label" for="email">Email</label>
-      <input class="form-input" id="email" type="email" placeholder="tum@example.com" />
-      <div id="msg" class="form-ok hidden"></div>
-      <div id="error" class="form-error hidden"></div>
-      <div style="margin-top: 18px;"><button id="btn" style="width: 100%;">Send Reset Email</button></div>
+      <form id="forgot-form" novalidate>
+        <label class="form-label" for="email">Email</label>
+        <input class="form-input" id="email" type="email" placeholder="tum@example.com" required />
+        <div id="msg" class="form-ok hidden"></div>
+        <div id="error" class="form-error hidden"></div>
+        <div style="margin-top: 18px;"><button id="btn" type="submit" style="width: 100%;">Send Reset Email</button></div>
+      </form>
       <div class="auth-foot"><a href="/login">← back to login</a> · <a href="/register">create a new account</a></div>
     </div>
   </div>
@@ -31,17 +33,34 @@
      */
     async function sendFirebaseResetEmail(email) {
       const { firebaseConfig } = await import('/firebase-config.js');
-      const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
-      const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
+      const [appMod, authMod] = await Promise.all([
+        import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'),
+      ]);
       const app = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(firebaseConfig);
       const auth = authMod.getAuth(app);
       await authMod.sendPasswordResetEmail(auth, email);
     }
 
-    $('btn').addEventListener('click', async () => {
-      const btn = $('btn'); btn.disabled = true;
+    async function handleForgot(e) {
+      if (e && e.preventDefault) e.preventDefault();
+      const btn = $('btn');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Sending...';
       $('error').classList.add('hidden'); $('msg').classList.add('hidden');
+
       const email = $('email').value.trim().toLowerCase();
+      if (!email) {
+        $('error').textContent = 'Please enter your email address.';
+        $('error').classList.remove('hidden');
+        $('email').focus();
+        btn.disabled = false;
+        btn.textContent = originalText;
+        return;
+      }
+
       let backendRegistered = false;
       try {
         /*
@@ -88,7 +107,19 @@
         }
         $('error').classList.remove('hidden');
         console.error('forgot-password error:', code || err.message);
-      } finally { btn.disabled = false; }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }
+
+    $('forgot-form').addEventListener('submit', handleForgot);
+    $('email').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleForgot(e);
+    });
+    $('email').addEventListener('input', () => {
+      $('error').classList.add('hidden');
+      $('msg').classList.add('hidden');
     });
   </script>
 </body>

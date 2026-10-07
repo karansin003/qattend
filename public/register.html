@@ -640,8 +640,38 @@
 
 
     /*
-     * Enter key in the confirm field also submits
+     * Enter key on fields triggers next field or submits
      */
+    emailInput.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (!passwordInput.value) {
+            passwordInput.focus();
+          } else if (!confirmPasswordInput.value) {
+            confirmPasswordInput.focus();
+          } else {
+            submitRegistration();
+          }
+        }
+      }
+    );
+
+    passwordInput.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (!confirmPasswordInput.value) {
+            confirmPasswordInput.focus();
+          } else {
+            submitRegistration();
+          }
+        }
+      }
+    );
+
     confirmPasswordInput.addEventListener(
       "keydown",
       (event) => {
