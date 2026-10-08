@@ -1133,7 +1133,10 @@ async function scrapeMonthRegister(opts = {}) {
  * stop and the user must be asked to reconnect); any other month failure is
  * skipped so one bad month cannot stop the whole scan.
  */
-async function scrapeMonthRegisterRange(opts = {}) {
+async function scrapeMonthRegisterRange(optsOrSessionPath = {}, maybeMonths, maybeOpts = {}) {
+  const opts = (typeof optsOrSessionPath === 'string')
+    ? { sessionPath: optsOrSessionPath, months: maybeMonths, ...(maybeOpts || {}) }
+    : (optsOrSessionPath || {});
   const sessionPath = opts.sessionPath || SESSION_FILE;
   const monthsBack = Math.max(0, Number(opts.monthsBack ?? 1) || 0);
   const delayMs = Number(opts.delayMs ?? 400);
