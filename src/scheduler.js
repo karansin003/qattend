@@ -123,7 +123,8 @@ async function activeUsers() {
   for (const u of all) {
     if (u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && !fs.existsSync(u.qumsSessionPath)) {
       await db.markSessionExpired(u.id).catch(() => {});
-      await maybeNotifySessionExpired(u.id, console).catch(() => {});
+      await db.updateUser(u.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+      await maybeNotifySessionExpired(console, u.id, { evidence: true }).catch(() => {});
     }
   }
   return all.filter((u) => u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath));
@@ -259,8 +260,9 @@ async function runMorningScheduleJob(log = console, opts = {}) {
       } catch (err) {
         log.error(`[scheduler] morning schedule FAILED for ${user.email}: ${err.message}`);
         if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+          await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
           // eslint-disable-next-line no-await-in-loop
-          await maybeNotifySessionExpired(log, user.id);
+          await maybeNotifySessionExpired(log, user.id, { evidence: true });
         }
       }
       // eslint-disable-next-line no-await-in-loop

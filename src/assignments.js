@@ -186,7 +186,8 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
     if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
       if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
         await db.markSessionExpired(user.id).catch(() => {});
-        await maybeNotifySessionExpired(user.id, log).catch(() => {});
+        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+        await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
@@ -221,6 +222,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
     } catch (err) {
       log.error(`[assignment] user=${user.id} pass FAILED: ${err.name || 'Error'}: ${err.message}`);
       if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
         // eslint-disable-next-line no-await-in-loop
         await maybeNotifySessionExpired(log, user.id, { evidence: true });
       } else {

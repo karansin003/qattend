@@ -1557,6 +1557,7 @@ async function refreshQumsProfile(userId, log = console, { force = false } = {})
   } catch (err) {
     if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
       await db.markSessionExpired(userId, 'profile-sync');
+      await db.updateUser(userId, { qumsSessionStatus: 'expired' }).catch(() => {});
       await db.touchUserSync(userId, { error: 'session-expired' });
       throw err; // caller (setup/watch) decides the user-facing message
     }

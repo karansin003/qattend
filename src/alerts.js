@@ -109,11 +109,18 @@ async function deleteSessionExpiredAlert(userId, log = console) {
  */
 async function maybeNotifySessionExpired(log = console, userId, { evidence = true } = {}) {
   try {
-    if (!userId) return false;
+    const logger = (log && typeof log.log === 'function') ? log : console;
+    if (!userId || typeof userId !== 'string' || !userId.trim()) {
+      const diag = typeof userId === 'object' && userId !== null ? JSON.stringify(userId) : String(userId);
+      const errMsg = `[alerts] maybeNotifySessionExpired rejected invalid userId (${typeof userId}): ${diag}`;
+      if (typeof logger.error === 'function') logger.error(errMsg);
+      else logger.log(errMsg);
+      return false;
+    }
     if (!evidence) {
       // Temporary QUMS outage: record it, never alert (avoids Telegram spam).
       await db.touchUserSync(userId, { error: 'qums-unreachable' }).catch(() => {});
-      log.log(`[alerts] user=${userId} QUMS unreachable — not treated as expiry, no alert sent.`);
+      logger.log(`[alerts] user=${userId} QUMS unreachable — not treated as expiry, no alert sent.`);
       return false;
     }
 

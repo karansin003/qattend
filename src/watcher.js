@@ -182,6 +182,7 @@ function pendingNotifications(rows, notifiedKeys) {
  */
 async function handleCycleError(log, userId, err) {
   if (err && (err.name === 'SessionExpiredError' || err.name === 'NoSessionError')) {
+    await db.updateUser(userId, { qumsSessionStatus: 'expired' }).catch(() => {});
     await maybeNotifySessionExpired(log, userId, { evidence: true });
     return;
   }
@@ -300,7 +301,8 @@ async function runWatcherPass(log = console) {
     if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
       if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
         await db.markSessionExpired(user.id).catch(() => {});
-        await maybeNotifySessionExpired(user.id, log).catch(() => {});
+        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+        await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
@@ -745,7 +747,8 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
       if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
         await db.markSessionExpired(user.id).catch(() => {});
-        await maybeNotifySessionExpired(user.id, log).catch(() => {});
+        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+        await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;

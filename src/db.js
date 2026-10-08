@@ -1060,6 +1060,7 @@ async function clearWeeklySchedule(userId, dayOfWeek) {
 const SESSION_ALERT_COOLDOWN_MS = Number(process.env.SESSION_ALERT_COOLDOWN_MS || 12 * 60 * 60 * 1000);
 
 async function getSessionExpiryState(userId) {
+  if (!userId || typeof userId !== 'string' || !userId.trim()) return null;
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
     return e ? { ...e, telegramMessageId: e.telegramMessageId || null } : null;
@@ -1081,6 +1082,10 @@ async function getSessionExpiryState(userId) {
 
 /** Record that this user's session expired (evidence-based — see scraper). */
 async function markSessionExpired(userId, note = '') {
+  if (!userId || typeof userId !== 'string' || !userId.trim()) {
+    console.error(`[db] markSessionExpired rejected invalid userId: ${typeof userId}`);
+    return null;
+  }
   const now = Date.now();
   if (!USE_PG) {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
@@ -1100,6 +1105,10 @@ async function markSessionExpired(userId, note = '') {
 
 /** Persist that an expiry alert went out (dedupe across restarts). */
 async function recordSessionExpiryAlert(userId, messageId = null) {
+  if (!userId || typeof userId !== 'string' || !userId.trim()) {
+    console.error(`[db] recordSessionExpiryAlert rejected invalid userId: ${typeof userId}`);
+    return null;
+  }
   const now = Date.now();
   const msgIdStr = messageId ? String(messageId) : null;
   if (!USE_PG) {
@@ -1122,7 +1131,7 @@ async function recordSessionExpiryAlert(userId, messageId = null) {
 
 /** Clear the recorded Telegram message ID for session expiry (e.g. after deletion). */
 async function clearSessionExpiryTelegramMessage(userId) {
-  if (!userId) return;
+  if (!userId || typeof userId !== 'string' || !userId.trim()) return;
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
     if (e) { e.telegramMessageId = null; persistJson(); }
@@ -1134,6 +1143,7 @@ async function clearSessionExpiryTelegramMessage(userId) {
 
 /** Reconnect succeeded -> clear expiry state so a future expiry alerts again. */
 async function clearSessionExpiry(userId) {
+  if (!userId || typeof userId !== 'string' || !userId.trim()) return;
   const now = Date.now();
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
