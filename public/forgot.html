@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Forgot Password — QUMS Attendance Bot</title>
+  <title>Forgot Password — QAttend</title>
+  <meta name="theme-color" content="#1e3a8a" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="shortcut icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="modulepreload" href="/firebase-config.js" />
   <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js" />
@@ -11,6 +17,7 @@
 <body>
   <div class="auth-bg">
     <div class="auth-card">
+      <div class="auth-brand"><img src="/logo.svg" alt="QAttend Logo" class="brand-logo" width="28" height="28" /> QAttend</div>
       <h1>🔑 Forgot Password</h1>
       <div class="sub">Enter your registered email to receive a password reset link.</div>
       <form id="forgot-form" novalidate>

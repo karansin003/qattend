@@ -74,6 +74,33 @@ body {
   box-shadow: 0 0 0 3px rgba(56, 189, 248, .25);
 }
 
+.brand-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  box-shadow: 0 1px 4px rgba(56, 189, 248, 0.35);
+  transition: transform 0.2s ease;
+}
+
+.nav .brand:hover .brand-logo,
+.brand-link:hover .brand-logo {
+  transform: scale(1.06);
+}
+
+.auth-brand .brand-logo {
+  width: 28px;
+  height: 28px;
+}
+
+.drawer-head .brand-logo {
+  width: 24px;
+  height: 24px;
+}
+
 .nav-links {
   display: flex;
   align-items: center;

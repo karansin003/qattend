@@ -303,6 +303,11 @@ async function runWatcherPass(log = console) {
         await db.markSessionExpired(user.id).catch(() => {});
         await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+      } else if (user.qumsSessionStatus === 'expired') {
+        const state = await db.getSessionExpiryState(user.id).catch(() => null);
+        if (!state || !state.lastAlertAt) {
+          await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+        }
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
@@ -749,6 +754,11 @@ async function runMonthRegisterPass(log = console, opts = {}) {
         await db.markSessionExpired(user.id).catch(() => {});
         await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+      } else if (user.qumsSessionStatus === 'expired') {
+        const state = await db.getSessionExpiryState(user.id).catch(() => null);
+        if (!state || !state.lastAlertAt) {
+          await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+        }
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;

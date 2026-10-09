@@ -57,6 +57,15 @@ Module.prototype.require = function (id) {
       getBotUsername: () => 'test_bot',
     };
   }
+  if (id === './scraper' || id === '../src/scraper' || id.endsWith('/scraper') || id.endsWith('/scraper.js')) {
+    const realScraper = origRequire.apply(this, arguments);
+    return {
+      ...realScraper,
+      scrapeTodaysAttendance: async () => [],
+      scrapeTimetable: async () => null,
+      scrapeMonthRegister: async () => ({ records: [] }),
+    };
+  }
   return origRequire.apply(this, arguments);
 };
 

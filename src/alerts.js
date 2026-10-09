@@ -21,17 +21,20 @@ const COOLDOWN_MS = db.SESSION_ALERT_COOLDOWN_MS;
 // In-flight mutex per user to prevent concurrent duplicate session-expiry alerts
 const alertInFlight = new Set();
 
-/** Public base URL (same resolution order as server.js — Render-safe). */
+/** Public base URL (same resolution order as server.js — Render-safe, HTTPS compliant). */
 function baseUrl() {
   const explicit = String(process.env.APP_BASE_URL || '').trim();
   const render = String(process.env.RENDER_EXTERNAL_URL || '').trim();
-  const fallback = `http://localhost:${Number(process.env.PORT) || 10000}`;
+  const fallback = 'https://qattend.onrender.com';
   return (explicit || render || fallback).replace(/\/+$/, '');
 }
 
 /** Reconnect page (GET) — the existing authenticated QUMS setup page. */
 function reconnectUrl() {
-  return `${baseUrl()}/qums-setup?reconnect=1`;
+  const base = baseUrl();
+  // Telegram Bot API strictly requires HTTPS URLs for inline keyboard buttons
+  const secureBase = /^https:\/\//i.test(base) ? base : 'https://qattend.onrender.com';
+  return `${secureBase}/qums-setup?reconnect=1`;
 }
 
 // ---- exact user-facing copy (English only; single source of truth) ----
@@ -51,18 +54,19 @@ const RECONNECTED_TEXT = [
 
 /** Inline keyboard with the Reconnect button. */
 function reconnectButton(canTelegramReconnect = false) {
+  const url = reconnectUrl();
   if (canTelegramReconnect) {
     return {
       inline_keyboard: [
         [
           { text: '🔄 Reconnect QUMS', callback_data: 'qums_start_reconnect' },
-          { text: '🔐 Dashboard', url: reconnectUrl() },
+          { text: '🔐 Dashboard', url },
         ],
       ],
     };
   }
   return {
-    inline_keyboard: [[{ text: '🔐 Reconnect QUMS', url: reconnectUrl() }]],
+    inline_keyboard: [[{ text: '🔐 Reconnect QUMS', url }]],
   };
 }
 

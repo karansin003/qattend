@@ -399,6 +399,21 @@ async function sendMessage(userId, text, log = console, opts = {}) {
       log.log(`[Telegram] Notification sent successfully for user: ${userId} (plain-text fallback)`);
       return true;
     } catch (err2) {
+      // If error was caused by invalid inline keyboard button URL or reply_markup, retry without markup
+      if (replyMarkup && /inline keyboard|button URL|wrong http url|reply_markup/i.test(err2.message || err.message)) {
+        try {
+          const sentMsg = await state.bot.sendMessage(user.telegramChatId, text);
+          if (opts && typeof opts === 'object' && sentMsg && sentMsg.message_id) {
+            opts.messageId = sentMsg.message_id;
+          }
+          handleSendMessageAutoDelete(user.telegramChatId, sentMsg, opts, text, log);
+          log.log(`[Telegram] Notification sent successfully for user: ${userId} (markup-stripped fallback)`);
+          return true;
+        } catch (err3) {
+          log.error(`[Telegram] Notification FAILED for user: ${userId}: ${err3.message}`);
+          throw err3;
+        }
+      }
       log.error(`[Telegram] Notification FAILED for user: ${userId}: ${err.message}`);
       throw err; // watcher/scheduler rollback-retry kar sake
     }
@@ -1280,13 +1295,17 @@ async function handleAttendance(chatId, log = console) {
     }
   } catch (err) {
     log.error(`[telegram] /attendance failed for user ${user.id}: ${err.message}`);
-    if (err.name === 'SessionExpiredError' || /session expired/i.test(err.message)) {
+    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError' || /session expired|no qums session|session file does not exist/i.test(err.message)) {
       await db.markSessionExpired(user.id).catch(() => {});
       await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
-      const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
-      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-      if (messageId) {
-        scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+      const { maybeNotifySessionExpired } = require('./alerts');
+      const sent = await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => false);
+      if (!sent) {
+        const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
+        const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+        if (messageId) {
+          scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+        }
       }
     } else {
       const known = await db.listKnownAttendance(user.id).catch(() => []);
@@ -1368,13 +1387,17 @@ async function handleToday(chatId, log = console) {
         }
       } catch (fetchErr) {
         log.log(`[telegram] live today scrape error: ${fetchErr.message}`);
-        if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
+        if (fetchErr.name === 'SessionExpiredError' || fetchErr.name === 'NoSessionError' || /session expired|no qums session|session file does not exist/i.test(fetchErr.message)) {
           await db.markSessionExpired(user.id).catch(() => {});
           await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
-          const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
-          const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-          if (messageId) {
-            scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+          const { maybeNotifySessionExpired } = require('./alerts');
+          const sent = await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => false);
+          if (!sent) {
+            const sentMsg = await reply(chatId, `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`, log);
+            const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+            if (messageId) {
+              scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+            }
           }
           return;
         }

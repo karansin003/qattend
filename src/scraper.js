@@ -1562,6 +1562,8 @@ async function refreshQumsProfile(userId, log = console, { force = false } = {})
       await db.markSessionExpired(userId, 'profile-sync');
       await db.updateUser(userId, { qumsSessionStatus: 'expired' }).catch(() => {});
       await db.touchUserSync(userId, { error: 'session-expired' });
+      const { maybeNotifySessionExpired } = require('./alerts');
+      await maybeNotifySessionExpired(log, userId, { evidence: true }).catch(() => {});
       throw err; // caller (setup/watch) decides the user-facing message
     }
     // Temporary failure: remember it, but never claim the session expired.
