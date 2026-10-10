@@ -241,7 +241,7 @@ async function run() {
   console.log('PASS  5. Morning timetable deletion survives process restart through PostgreSQL');
 
   // ----------------------------------------------------
-  // TEST 6: Session expired message deletes after 1 minute
+  // TEST 6: Session expired message is retained (NOT auto-deleted after 1 min)
   // ----------------------------------------------------
   sentMessages.length = 0;
   deletedMessages.length = 0;
@@ -252,12 +252,8 @@ async function run() {
 
   const pendingAfterSession = await db.listPendingDeletions();
   const sessionEntry = pendingAfterSession.find((p) => p.messageId === sessionMsg.message_id);
-  assert(sessionEntry, 'Session expired message MUST be scheduled for deletion in DB');
-  assert(
-    sessionEntry.deleteAt <= Date.now() + 61000 && sessionEntry.deleteAt >= Date.now() + 58000,
-    'Session expired message deletion must be ~1 minute'
-  );
-  console.log('PASS  6. Session expired message deletes after 1 minute');
+  assert(!sessionEntry, 'Session expired message must NOT be scheduled for 1-minute auto-deletion');
+  console.log('PASS  6. Session expired message is retained (NOT auto-deleted after 1 min)');
 
   // ----------------------------------------------------
   // TEST 7: Reconnected message deletes after 1 minute

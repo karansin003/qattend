@@ -150,8 +150,8 @@ async function run() {
   ok('8. Multi-user isolation works: User 2 remains active', u2After.qumsSessionStatus === 'active');
   ok('8. User 2 received no expiry notification', !capturedSends.some((s) => s.userId === user2.id));
 
-  // 9. Auto-delete: verify TEMPORARY category and 1 minute auto-delete config
-  ok('9. Session Expired message has category TEMPORARY', expiryMsg?.opts?.category === 'TEMPORARY');
+  // 9. Retention: verify ALERT category and autoDelete false (retained until reconnection)
+  ok('9. Session Expired message is retained (category ALERT, autoDelete false)', expiryMsg?.opts?.category === 'ALERT' && expiryMsg?.opts?.autoDelete === false);
   ok('9. Reconnect auto-delete delay constant is 60000ms (1 min)', alerts.RECONNECT_DELETE_DELAY_MS === 60000);
 
   // 10 & 11: Successful reconnect restores active state & deletes stale alert

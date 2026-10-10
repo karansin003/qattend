@@ -94,6 +94,7 @@ const MESSAGE_CATEGORIES = {
   ATTENDANCE: 'ATTENDANCE',
   ASSIGNMENT: 'ASSIGNMENT',
   MORNING_SCHEDULE: 'MORNING_SCHEDULE',
+  ALERT: 'ALERT',
   TEMPORARY: 'TEMPORARY',
 };
 
@@ -174,6 +175,7 @@ function classifyMessage(opts, text) {
     if (cat === 'ATTENDANCE') return MESSAGE_CATEGORIES.ATTENDANCE;
     if (cat === 'ASSIGNMENT') return MESSAGE_CATEGORIES.ASSIGNMENT;
     if (cat === 'MORNING_SCHEDULE') return MESSAGE_CATEGORIES.MORNING_SCHEDULE;
+    if (cat === 'ALERT') return MESSAGE_CATEGORIES.ALERT;
     if (cat === 'TEMPORARY') return MESSAGE_CATEGORIES.TEMPORARY;
   }
 
@@ -216,6 +218,17 @@ function classifyMessage(opts, text) {
     t.includes('Morning Timetable')
   ) {
     return MESSAGE_CATEGORIES.MORNING_SCHEDULE;
+  }
+
+  // Expiry alert patterns -> ALERT (never auto-deleted after 60s)
+  if (
+    t.includes('⚠️ QUMS Session Expired') ||
+    t.includes('QUMS Session Expired') ||
+    t.includes('Your QUMS session has expired') ||
+    t.includes('Please reconnect your session') ||
+    t.includes('QUMS Reconnect Notice')
+  ) {
+    return MESSAGE_CATEGORIES.ALERT;
   }
 
   return MESSAGE_CATEGORIES.TEMPORARY;
@@ -345,6 +358,11 @@ function handleSendMessageAutoDelete(chatId, sentMsg, opts, text, log = console)
     return;
   }
 
+  if (category === MESSAGE_CATEGORIES.ALERT) {
+    log.log(`[Telegram] Message ${messageId} classified as ALERT: retained until resolution (no auto-delete).`);
+    return;
+  }
+
   // TEMPORARY / other:
   if (opts && opts.autoDelete === false) {
     return;
@@ -446,6 +464,13 @@ async function deleteMessageFromChat(chatId, messageId, log = console) {
     log.log(`[telegram] Deleted message ${messageId} from chat ${chatId}`);
     return true;
   } catch (err) {
+    if (err && (
+      /message to delete not found/i.test(err.message) ||
+      /message can't be deleted/i.test(err.message)
+    )) {
+      log.log(`[telegram] Message ${messageId} in chat ${chatId} already deleted or not found: ${err.message}`);
+      return true;
+    }
     log.log(`[telegram] deleteMessageFromChat failed for chat ${chatId} msg=${messageId}: ${err.message}`);
     return false;
   }

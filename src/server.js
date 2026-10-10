@@ -698,14 +698,32 @@ app.get('/api/me', requireAuth, async (req, res) => {
       ensureStudentName(user.id).catch(() => {});
     });
   }
+
+  await db.ensureSessionOnDisk(user).catch(() => {});
+
+  const hasSession = Boolean(
+    (user.qumsSessionPath && (fs.existsSync(user.qumsSessionPath) || user.qumsSessionData)) ||
+    user.qumsSessionData
+  );
+
+  const expiry = await db.getSessionExpiryState(user.id).catch(() => null);
+  const isExpired = Boolean(
+    user.qumsSessionStatus === 'expired' ||
+    (expiry && expiry.expiredAt && !expiry.resolvedAt)
+  );
+
+  const qumsSessionStatus = isExpired
+    ? 'expired'
+    : (hasSession ? (user.qumsSessionStatus === 'expired' ? 'active' : (user.qumsSessionStatus || 'active')) : 'not_setup');
+
   const hasSavedCreds = Boolean(user && user.qumsQid && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(user.id))));
   res.json({
     email: user.email,
     studentName: user.studentName || '',
     qumsYearSem: user.qumsYearSem || '',
     qumsQid: user.qumsQid || '',
-    qumsConfigured: Boolean(user.qumsSessionPath && fs.existsSync(user.qumsSessionPath)),
-    qumsSessionStatus: user.qumsSessionStatus || 'unknown',
+    qumsConfigured: hasSession,
+    qumsSessionStatus,
     qumsCredentialsSaved: hasSavedCreds,
     telegramConnected: Boolean(user.telegramChatId),
     telegramConfigured: telegram.isConfigured(),
@@ -725,11 +743,14 @@ app.get('/api/attendance', requireAuth, async (req, res) => {
       return res.json({ ...cached.data, _cached: true, _cachedAt: new Date(cached.timestamp).toISOString() });
     }
 
+    const fetchStart = Date.now();
     const subjects = await scrapeAttendance({
       sessionPath: runtime.sessionPath,
       yearSem: req.appUser.qumsYearSem,
       studentName: req.appUser.studentName,
     });
+    // Successful authenticated scrape clears any stale expiry state
+    await db.clearSessionExpiry(userId, { maxExpiredAt: fetchStart }).catch(() => {});
     const analysis = analyzeAttendance(
       subjects,
       Number.isFinite(overrideTotal) && overrideTotal > 0 ? overrideTotal : undefined
@@ -759,7 +780,10 @@ app.get('/api/today', requireAuth, async (req, res) => {
       return res.json({ ...cached.data, _cached: true });
     }
 
+    const fetchStart = Date.now();
     const periods = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+    // Successful authenticated scrape clears any stale expiry state
+    await db.clearSessionExpiry(userId, { maxExpiredAt: fetchStart }).catch(() => {});
     const payload = { date: new Date().toISOString(), periods };
     todayCache.set(userId, { data: payload, timestamp: Date.now() });
     res.json(payload);
@@ -1072,7 +1096,7 @@ app.post('/api/admin/users/bulk-reconnect-notify', requireAdmin, async (req, res
             user.id,
             '⚠️ <b>QUMS Reconnect Notice (Admin Alert)</b>\n\nYour QUMS portal session requires updating. Send /reconnect or use the action below to restore live monitoring.',
             console,
-            { category: 'TEMPORARY', replyMarkup }
+            { category: 'ALERT', autoDelete: false, replyMarkup }
           );
           if (msgSent) {
             sent.push({ id: user.id, email: user.email });

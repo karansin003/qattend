@@ -250,6 +250,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
   let notified = 0;
   for (const user of users) {
     try {
+      const startedAt = Date.now();
       // eslint-disable-next-line no-await-in-loop
       const r = await runAssignmentCycle({
         log,
@@ -261,6 +262,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
         fetchFn: (u) => scrapeAssignments({ sessionPath: u.qumsSessionPath }),
       });
       notified += (r.notified || []).length;
+      await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
       // eslint-disable-next-line no-await-in-loop
       await db.touchUserSync(user.id, { assignment: true, error: '' });
       log.log(`[assignment] user=${user.id} checked assignments (mode=${mode}, found=${(r.notified || []).length})`);

@@ -1184,6 +1184,8 @@ async function markSessionExpired(userId, note = '') {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
     if (!e) { e = { userId, expiredAt: now, lastAlertAt: null, alertCount: 0, resolvedAt: null, note, telegramMessageId: null }; data.sessionExpiry.push(e); }
     else { e.expiredAt = now; e.resolvedAt = null; if (note) e.note = note; }
+    const u = data.users.find((x) => x.id === userId);
+    if (u) { u.qumsSessionStatus = 'expired'; }
     persistJson();
     return e;
   }
@@ -1193,6 +1195,10 @@ async function markSessionExpired(userId, note = '') {
      ON CONFLICT(user_id) DO UPDATE SET expired_at=EXCLUDED.expired_at, resolved_at=NULL, note=EXCLUDED.note`,
     [userId, now, String(note || '')]
   );
+  await pool.query(
+    `UPDATE users SET qums_session_status='expired', updated_at=NOW() WHERE id=$1`,
+    [userId]
+  ).catch(() => {});
   return getSessionExpiryState(userId);
 }
 
@@ -1234,29 +1240,83 @@ async function clearSessionExpiryTelegramMessage(userId) {
   await pool.query('UPDATE session_expiry_state SET telegram_message_id=NULL WHERE user_id=$1', [userId]).catch(() => {});
 }
 
-/** Reconnect succeeded -> clear expiry state so a future expiry alerts again. */
-async function clearSessionExpiry(userId) {
-  if (!userId || typeof userId !== 'string' || !userId.trim()) return;
+/** Reconnect succeeded or verified authenticated scrape -> clear expiry state so a future expiry alerts again. */
+async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
+  if (!userId || typeof userId !== 'string' || !userId.trim()) return false;
   const now = Date.now();
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
-    if (e) { e.resolvedAt = now; e.lastAlertAt = null; e.expiredAt = null; persistJson(); }
-    return;
+    if (e) {
+      if (maxExpiredAt && e.expiredAt && Number(e.expiredAt) > Number(maxExpiredAt)) {
+        return false; // Newer expiry event occurred concurrently — do not clear
+      }
+      e.resolvedAt = now;
+      e.lastAlertAt = null;
+      e.expiredAt = null;
+      e.note = '';
+      persistJson();
+    }
+    const u = data.users.find((x) => x.id === userId);
+    if (u) {
+      if (!maxExpiredAt || !e || !e.expiredAt || Number(e.expiredAt) <= Number(maxExpiredAt)) {
+        u.qumsSessionStatus = 'active';
+        persistJson();
+      }
+    }
+    return true;
   }
   await init();
+  if (maxExpiredAt) {
+    const maxTs = Number(maxExpiredAt);
+    const r = await pool.query(
+      `UPDATE session_expiry_state 
+       SET resolved_at=$2, expired_at=NULL, last_alert_at=NULL, note=''
+       WHERE user_id=$1 AND (expired_at IS NULL OR expired_at <= $3)`,
+      [userId, now, maxTs]
+    );
+    if (r.rowCount > 0) {
+      await pool.query(
+        `UPDATE users SET qums_session_status='active', updated_at=NOW() 
+         WHERE id=$1 AND qums_session_status='expired'
+           AND NOT EXISTS (
+             SELECT 1 FROM session_expiry_state 
+             WHERE user_id=$1 AND expired_at > $2 AND resolved_at IS NULL
+           )`,
+        [userId, maxTs]
+      ).catch(() => {});
+      return true;
+    }
+    return false;
+  }
+
   await pool.query(
     `INSERT INTO session_expiry_state(user_id,resolved_at) VALUES($1,$2)
      ON CONFLICT(user_id) DO UPDATE SET resolved_at=EXCLUDED.resolved_at, expired_at=NULL, last_alert_at=NULL, note=''`,
     [userId, now]
   );
+  await pool.query(
+    `UPDATE users SET qums_session_status='active', updated_at=NOW() WHERE id=$1`,
+    [userId]
+  ).catch(() => {});
+  return true;
 }
 
 /** Users whose session is currently expired (real signal for the admin panel). */
 async function listSessionExpiredUsers() {
-  if (!USE_PG) return data.sessionExpiry.filter((s) => s.expiredAt && !s.resolvedAt).map((s) => s.userId);
+  if (!USE_PG) {
+    const fromExpiry = data.sessionExpiry.filter((s) => s.expiredAt && !s.resolvedAt).map((s) => s.userId);
+    const fromUsers = data.users.filter((u) => u.qumsSessionStatus === 'expired').map((u) => u.id);
+    return Array.from(new Set([...fromExpiry, ...fromUsers]));
+  }
   await init();
-  const r = await pool.query('SELECT user_id FROM session_expiry_state WHERE expired_at IS NOT NULL AND resolved_at IS NULL');
-  return r.rows.map((x) => x.user_id);
+  const r = await pool.query(`
+    SELECT DISTINCT u.id 
+    FROM users u
+    LEFT JOIN session_expiry_state s ON s.user_id = u.id
+    WHERE (s.expired_at IS NOT NULL AND s.resolved_at IS NULL)
+       OR u.qums_session_status = 'expired'
+  `);
+  return r.rows.map((x) => x.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1333,8 +1393,12 @@ async function recentNotifications(limit = 20) {
 
 /** Public per-user shape for /admin — never includes hashes/secrets. */
 function safeAdminUser(u, expiredUserIds = []) {
-  const hasSession = Boolean(u.qumsSessionPath);
-  const onDisk = hasSession ? fs.existsSync(u.qumsSessionPath) : false;
+  const hasSession = Boolean(
+    (u.qumsSessionPath && (fs.existsSync(u.qumsSessionPath) || u.qumsSessionData)) ||
+    u.qumsSessionData
+  );
+  const onDisk = Boolean(u.qumsSessionPath && fs.existsSync(u.qumsSessionPath));
+  const isExpired = Boolean(expiredUserIds.includes(u.id) || u.qumsSessionStatus === 'expired');
   return {
     id: u.id,
     email: u.email,
@@ -1343,7 +1407,8 @@ function safeAdminUser(u, expiredUserIds = []) {
     qumsQid: u.qumsQid || '',
     qumsConnected: hasSession,
     qumsSessionOnDisk: onDisk,
-    sessionExpired: expiredUserIds.includes(u.id),
+    sessionExpired: isExpired,
+    qumsSessionStatus: isExpired ? 'expired' : (hasSession ? 'active' : 'not_setup'),
     telegramConnected: Boolean(u.telegramChatId),
     isAdmin: Boolean(u.isAdmin),
     emailVerified: Boolean(u.emailVerified),

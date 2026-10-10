@@ -85,12 +85,18 @@ async function deleteSessionExpiredAlert(userId, log = console) {
       if (match) messageId = match.meta.messageId;
     }
     if (messageId) {
+      let deleted = false;
       if (typeof deleteMessage === 'function') {
-        await deleteMessage(userId, messageId, log).catch(() => {});
+        const res = await deleteMessage(userId, messageId, log).catch(() => false);
+        deleted = Boolean(res);
       }
-      await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
-      log.log(`[alerts] 🗑️ Session-expired message ${messageId} deleted for user=${userId}.`);
-      return true;
+      if (deleted) {
+        await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
+        log.log(`[alerts] 🗑️ Session-expired message ${messageId} deleted for user=${userId}.`);
+        return true;
+      }
+      log.log(`[alerts] ⚠️ Session-expired message ${messageId} deletion failed or skipped for user=${userId}.`);
+      return false;
     }
     return false;
   } catch (err) {
@@ -158,7 +164,8 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
       // Instead, we attach an interactive reconnect action/button and wait for the USER to explicitly initiate reconnect.
       const sendOpts = {
         replyMarkup: reconnectButton(canTelegramReconnect),
-        category: 'TEMPORARY',
+        category: 'ALERT',
+        autoDelete: false,
       };
       const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, sendOpts);
       if (!sent) {

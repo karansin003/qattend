@@ -324,7 +324,7 @@ async function runWatcherPass(log = console) {
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
     try {
-      // eslint-disable-next-line no-await-in-loop
+      const startedAt = Date.now();
       // eslint-disable-next-line no-await-in-loop
       const timetable = await getTimetableCached(user.id, user.qumsSessionPath, log);
       const roomByCode = timetable ? roomMapFromPeriods(getTimetableForDate(timetable, new Date())) : null;
@@ -337,6 +337,9 @@ async function runWatcherPass(log = console) {
         roomByCode,
         userEmail: user.email,
       });
+      if (!r || !r.skipped) {
+        await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
+      }
       await db.touchUserSync(user.id, { attendance: true, error: '' });
       log.log(`[attendance] user=${user.id} checked today's attendance`);
       results.push({ email: user.email, ...r });
@@ -795,6 +798,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
     try {
+      const startedAt = Date.now();
       // eslint-disable-next-line no-await-in-loop
       const r = await runMonthRegisterCycle({
         log,
@@ -805,6 +809,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
         timetableFn: () => getTimetableCached(user.id, user.qumsSessionPath, log),
         sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
       });
+      await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
       await db.touchUserSync(user.id, { attendance: true, error: '' });
       log.log(`[attendance] user=${user.id} checked month register [${monthKeys.join(',')}]`);
       results.push({ email: user.email, ...r });
