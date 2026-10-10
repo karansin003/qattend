@@ -299,7 +299,8 @@ async function run() {
   console.log('PASS  8. CAPTCHA message deletes after 1 minute');
 
   // ----------------------------------------------------
-  // TEST 9: /status temporary response deletes after 1 minute
+  // ----------------------------------------------------
+  // TEST 9: /status temporary response and command message delete after 120 seconds (2 minutes)
   // ----------------------------------------------------
   sentMessages.length = 0;
   await telegram.handleUserMessage({ chat: { id: 100001 }, text: '/status', message_id: 3001 });
@@ -308,7 +309,17 @@ async function run() {
   const pendingAfterStatus = await db.listPendingDeletions();
   const statusEntry = pendingAfterStatus.find((p) => p.messageId === statusMsg.message_id);
   assert(statusEntry, '/status response MUST be scheduled for deletion in DB');
-  console.log('PASS  9. /status temporary response deletes after 1 minute');
+  assert(
+    statusEntry.deleteAt <= Date.now() + 121000 && statusEntry.deleteAt >= Date.now() + 118000,
+    '/status response deletion must be 120 seconds (2 minutes)'
+  );
+  const statusCmdEntry = pendingAfterStatus.find((p) => p.messageId === 3001);
+  assert(statusCmdEntry, '/status user command message MUST be scheduled for deletion in DB');
+  assert(
+    statusCmdEntry.deleteAt <= Date.now() + 121000 && statusCmdEntry.deleteAt >= Date.now() + 118000,
+    '/status user command deletion must be 120 seconds (2 minutes)'
+  );
+  console.log('PASS  9. /status command message and bot response delete after 120 seconds');
 
   // ----------------------------------------------------
   // TEST 10: /help temporary response deletes after 1 minute
@@ -332,7 +343,13 @@ async function run() {
   const pendingAfterAttendance = await db.listPendingDeletions();
   const attendanceCmdEntry = pendingAfterAttendance.find((p) => p.messageId === attendanceMsg.message_id);
   assert(attendanceCmdEntry, '/attendance command response MUST be scheduled for deletion in DB');
-  console.log('PASS  11. /attendance command response deletes after 1 minute');
+  assert(
+    attendanceCmdEntry.deleteAt <= Date.now() + 61000 && attendanceCmdEntry.deleteAt >= Date.now() + 58000,
+    '/attendance response deletion must be 60 seconds'
+  );
+  const userCmdAttendance = pendingAfterAttendance.find((p) => p.messageId === 3003);
+  assert(userCmdAttendance, '/attendance user command MUST be scheduled for deletion in DB');
+  console.log('PASS  11. /attendance command and bot response delete after 1 minute');
 
   // ----------------------------------------------------
   // TEST 12: /today command response deletes after 1 minute
@@ -344,7 +361,13 @@ async function run() {
   const pendingAfterToday = await db.listPendingDeletions();
   const todayEntry = pendingAfterToday.find((p) => p.messageId === todayMsg.message_id);
   assert(todayEntry, '/today command response MUST be scheduled for deletion in DB');
-  console.log('PASS  12. /today command response deletes after 1 minute');
+  assert(
+    todayEntry.deleteAt <= Date.now() + 61000 && todayEntry.deleteAt >= Date.now() + 58000,
+    '/today response deletion must be 60 seconds'
+  );
+  const userCmdToday = pendingAfterToday.find((p) => p.messageId === 3004);
+  assert(userCmdToday, '/today user command MUST be scheduled for deletion in DB');
+  console.log('PASS  12. /today command and bot response delete after 1 minute');
 
   // ----------------------------------------------------
   // TEST 13: Multi-user deletion scheduling remains isolated
@@ -372,7 +395,84 @@ async function run() {
   );
   console.log('PASS  13. Multi-user deletion scheduling remains isolated');
 
-  console.log('\nALL 13 TELEGRAM AUTO-DELETE POLICY TESTS PASSED SUCCESSFULLY!');
+  // ----------------------------------------------------
+  // TEST 14: /assignment command and bot response delete after 60 seconds
+  // ----------------------------------------------------
+  sentMessages.length = 0;
+  await telegram.handleUserMessage({ chat: { id: 100001 }, text: '/assignment', message_id: 3005 });
+  const assignCmdMsg = sentMessages[0];
+  assert(assignCmdMsg, '/assignment response must be sent');
+  const pendingAfterAssignCmd = await db.listPendingDeletions();
+  const assignCmdEntry = pendingAfterAssignCmd.find((p) => p.messageId === assignCmdMsg.message_id);
+  assert(assignCmdEntry, '/assignment response MUST be scheduled for deletion in DB');
+  assert(
+    assignCmdEntry.deleteAt <= Date.now() + 61000 && assignCmdEntry.deleteAt >= Date.now() + 58000,
+    '/assignment response deletion must be 60 seconds'
+  );
+  const userCmdAssign = pendingAfterAssignCmd.find((p) => p.messageId === 3005);
+  assert(userCmdAssign, '/assignment user command MUST be scheduled for deletion in DB');
+  console.log('PASS  14. /assignment command and bot response delete after 60 seconds');
+
+  // ----------------------------------------------------
+  // TEST 15: Automatic assignment notification stays while pending, deletes upon upload
+  // ----------------------------------------------------
+  const assignmentsMod = require('../src/assignments');
+  const assignRowsPending = [{
+    id: 'A-DEL-1',
+    title: 'Operating Systems Lab',
+    subject: 'OS',
+    teacher: 'Prof. Roy',
+    type: 'Assignment',
+    assignedYMD: '2026-10-01',
+    deadlineYMD: '2026-10-20',
+    uploadFlag: 0,
+    source: 'state',
+  }];
+  const capturedAssignMsgId = 4444;
+  const deletedAssignMsgIds = [];
+  await assignmentsMod.runAssignmentCycle({
+    log: console,
+    userId: user1.id,
+    mode: 'new',
+    rows: assignRowsPending,
+    sendFn: async (text, sOpts) => {
+      sOpts.messageId = capturedAssignMsgId;
+      return { ok: true, messageId: capturedAssignMsgId };
+    },
+    deleteFn: async (msgId) => {
+      deletedAssignMsgIds.push(msgId);
+      return true;
+    },
+  });
+
+  const knownRecs = await db.listKnownAssignments(user1.id);
+  const rec = knownRecs.find((r) => r.key === 'new:A-DEL-1');
+  assert(rec && rec.telegramMessageId === capturedAssignMsgId, 'Pending assignment must persist telegramMessageId');
+  assert.strictEqual(deletedAssignMsgIds.length, 0, 'Pending assignment must not be deleted');
+
+  // Now assignment gets uploaded (uploadFlag === 1)
+  const assignRowsUploaded = [{
+    ...assignRowsPending[0],
+    uploadFlag: 1,
+  }];
+  await assignmentsMod.runAssignmentCycle({
+    log: console,
+    userId: user1.id,
+    mode: 'new',
+    rows: assignRowsUploaded,
+    sendFn: async () => true,
+    deleteFn: async (msgId) => {
+      deletedAssignMsgIds.push(msgId);
+      return true;
+    },
+  });
+  assert(deletedAssignMsgIds.includes(capturedAssignMsgId), 'Uploaded assignment notification must be deleted');
+  const knownRecsAfter = await db.listKnownAssignments(user1.id);
+  const recAfter = knownRecsAfter.find((r) => r.key === 'new:A-DEL-1');
+  assert(recAfter && !recAfter.telegramMessageId, 'telegramMessageId must be cleared after deletion');
+  console.log('PASS  15. Automatic assignment notification preserved while pending and deleted upon confirmed upload');
+
+  console.log('\nALL 15 TELEGRAM AUTO-DELETE POLICY TESTS PASSED SUCCESSFULLY!');
   process.exit(0);
 }
 

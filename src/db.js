@@ -1036,6 +1036,27 @@ async function removeKnownAssignment(userId, keys) {
   await init(); await pool.query('UPDATE known_assignments SET records=$2 WHERE user_id=$1', [userId, JSON.stringify(next)]); return removed;
 }
 
+async function updateKnownAssignmentMessageId(userId, key, telegramMessageId) {
+  if (!userId || !key) return false;
+  const current = await listKnownAssignments(userId);
+  let updated = false;
+  for (const item of current) {
+    if (item.key === key) {
+      item.telegramMessageId = telegramMessageId || null;
+      updated = true;
+    }
+  }
+  if (!updated) return false;
+  if (!USE_PG) {
+    let e = assignmentEntry(userId);
+    if (e) { e.records = current; persistJson(); }
+    return true;
+  }
+  await init();
+  await pool.query('UPDATE known_assignments SET records=$2 WHERE user_id=$1', [userId, JSON.stringify(current)]);
+  return true;
+}
+
 async function upsertWeeklySchedule(userId, dayOfWeek, rows) {
   if (!USE_PG) {
     for(const row of rows||[]){if(!row||!row.period)continue;const hit=data.weeklySchedule.find(r=>r.userId===userId&&r.dayOfWeek===dayOfWeek&&r.period===row.period);const patch={duration:row.duration||'',subject:row.subject||'',subjectCode:row.subjectCode||'',teacher:row.teacher||'',room:row.room||'',lastUpdated:new Date().toISOString()};if(hit)Object.assign(hit,patch);else data.weeklySchedule.push({userId,dayOfWeek,period:row.period,...patch});} persistJson(); return (rows||[]).length;
@@ -1727,7 +1748,7 @@ module.exports={
   DB_FILE,QUMS_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,
   storeResetToken,consumeResetToken,listKnownAttendance,addKnownAttendance,upsertKnownAttendance,removeKnownAttendance,upsertWeeklySchedule,getWeeklySchedule,clearWeeklySchedule,
   telegramLinkCodeFor,getUserByTelegramLinkCode,getUserByTelegramChatId,setTelegramChatId,clearTelegramChatForChat,clearTelegramChatId,
-  listKnownAssignments,addKnownAssignments,removeKnownAssignment,
+  listKnownAssignments,addKnownAssignments,removeKnownAssignment,updateKnownAssignmentMessageId,
   // structured identity & monitoring (Migration 011/012)
   getQumsIdentities, getActiveQumsIdentity, switchQumsIdentity,
   saveAttendanceRecord, listAttendanceRecords,

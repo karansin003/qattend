@@ -86,7 +86,9 @@ function toTelegramHtml(text) {
 }
 
 const AUTO_DELETE_DELAY_MS = 1 * 60 * 1000; // 1 minute (60,000 ms)
+const STATUS_DELETE_DELAY_MS = 2 * 60 * 1000; // 2 minutes (120,000 ms) for /status
 const AUTO_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 1 minute._';
+const STATUS_DELETE_FOOTNOTE = '\n\n⏳ _This message will automatically delete in 2 minutes._';
 
 const MESSAGE_CATEGORIES = {
   ATTENDANCE: 'ATTENDANCE',
@@ -693,9 +695,15 @@ async function handleUserMessage(msg, log = console) {
 
   const lower = text.toLowerCase();
 
-  // Auto-delete incoming command messages after 1 minute, except for /assignments
-  if (msg.message_id && !/^\/assignments(?:@\w+)?/i.test(text) && !['assignment', 'assignments'].includes(lower)) {
-    scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+  // Auto-delete incoming command messages with exact delays:
+  // - /status -> 120 seconds (120,000 ms)
+  // - /assignment, /assignments, /attendance, /today, /reconnect, /help -> 60 seconds (60,000 ms)
+  if (msg.message_id) {
+    if (/^\/status(?:@\w+)?/i.test(text) || lower === 'status') {
+      scheduleAutoDelete(chatId, msg.message_id, STATUS_DELETE_DELAY_MS, log);
+    } else {
+      scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+    }
   }
 
   if (/^\/reconnect(?:@\w+)?/i.test(text) || lower === 'reconnect') {
@@ -713,7 +721,7 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
-  if (/^\/assignments(?:@\w+)?/i.test(text) || ['assignment', 'assignments'].includes(lower)) {
+  if (/^\/assignments?(?:@\w+)?/i.test(text) || ['assignment', 'assignments'].includes(lower)) {
     await handleAssignments(chatId, log);
     return;
   }
@@ -1224,10 +1232,10 @@ async function handleStatus(chatId, log = console) {
       lines.push('');
       lines.push('💡 _Send /reconnect to restore your session via Telegram._');
     }
-    lines.push(AUTO_DELETE_FOOTNOTE.trim());
-    await reply(chatId, lines.join('\n'), log);
+    lines.push(STATUS_DELETE_FOOTNOTE.trim());
+    await reply(chatId, lines.join('\n'), log, { delayMs: STATUS_DELETE_DELAY_MS });
   } else {
-    await reply(chatId, MSG.STATUS_NONE, log);
+    await reply(chatId, MSG.STATUS_NONE, log, { delayMs: STATUS_DELETE_DELAY_MS });
   }
   log.log(`[telegram] /status from chat ${chatId}`);
 }
@@ -1450,7 +1458,7 @@ async function handleAssignments(chatId, log = console) {
   try {
     const known = await db.listKnownAssignments(user.id);
     if (!known || !known.length) {
-      await reply(chatId, '📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.', log, { autoDelete: false });
+      await reply(chatId, `📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.${AUTO_DELETE_FOOTNOTE}`, log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
       return;
     }
     const lines = ['📚 *Your Assignments*', ''];
@@ -1463,7 +1471,8 @@ async function handleAssignments(chatId, log = console) {
       lines.push('');
     });
     lines.push('🔗 Open QUMS portal to submit.');
-    await reply(chatId, lines.join('\n'), log, { autoDelete: false });
+    lines.push(AUTO_DELETE_FOOTNOTE.trim());
+    await reply(chatId, lines.join('\n'), log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
   } catch (err) {
     log.error(`[telegram] /assignments failed: ${err.message}`);
     await reply(chatId, `⚠️ Could not load assignments: ${err.message}`, log);
@@ -1594,6 +1603,7 @@ process.on('exit', releasePollingLock);
 
 module.exports = {
   initTelegram,
+  ensureSendOnlyBot,
   isConfigured,
   isReady,
   getBotUsername,
@@ -1603,6 +1613,7 @@ module.exports = {
   deleteMessageFromChat,
   scheduleAutoDelete,
   AUTO_DELETE_DELAY_MS,
+  STATUS_DELETE_DELAY_MS,
   restoreScheduledDeletions,
   sendPhoto,
   sendPhotoToChat,

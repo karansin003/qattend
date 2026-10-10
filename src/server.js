@@ -705,6 +705,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
     qumsYearSem: user.qumsYearSem || '',
     qumsQid: user.qumsQid || '',
     qumsConfigured: Boolean(user.qumsSessionPath && fs.existsSync(user.qumsSessionPath)),
+    qumsSessionStatus: user.qumsSessionStatus || 'unknown',
     qumsCredentialsSaved: hasSavedCreds,
     telegramConnected: Boolean(user.telegramChatId),
     telegramConfigured: telegram.isConfigured(),
@@ -1027,6 +1028,79 @@ async function handleAdminDeleteUser(req, res) {
 
 app.post('/api/admin/users/:id/delete', requireAdmin, handleAdminDeleteUser);
 app.delete('/api/admin/users/:id', requireAdmin, handleAdminDeleteUser);
+
+app.post('/api/admin/users/bulk-reconnect-notify', requireAdmin, async (req, res) => {
+  try {
+    const rawIds = req.body && Array.isArray(req.body.userIds) ? req.body.userIds : [];
+    if (!rawIds.length) {
+      return res.status(400).json({ error: 'No user IDs provided for notification.' });
+    }
+    if (rawIds.length > 100) {
+      return res.status(400).json({ error: 'Exceeded maximum batch limit of 100 recipients per request.' });
+    }
+
+    const uniqueIds = Array.from(new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean)));
+    const adminEmail = req.appUser ? req.appUser.email : 'admin';
+    console.log(`[admin] bulk reconnect notification triggered by ${adminEmail} for ${uniqueIds.length} user(s).`);
+
+    const sent = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const targetId of uniqueIds) {
+      const user = await db.getUserById(targetId);
+      if (!user) {
+        skipped.push({ id: targetId, email: '', reason: 'User not found' });
+        continue;
+      }
+      if (!user.telegramChatId) {
+        skipped.push({ id: user.id, email: user.email, reason: 'Telegram account not linked' });
+        continue;
+      }
+
+      try {
+        // Send existing secure QUMS session expiry alert & reconnect flow
+        const didNotify = await maybeNotifySessionExpired(console, user.id, { evidence: true, isManualAdminAlert: true });
+        if (didNotify) {
+          sent.push({ id: user.id, email: user.email });
+        } else {
+          // If in cooldown or already sent for this event, attempt direct reconnect instruction message
+          const savedEncrypted = user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(user.id));
+          const canTelegramReconnect = Boolean(user.telegramChatId && user.qumsQid && savedEncrypted);
+          const replyMarkup = typeof telegram.reconnectKeyboard === 'function' ? telegram.reconnectKeyboard(canTelegramReconnect) : null;
+          const msgSent = await sendMessage(
+            user.id,
+            '⚠️ <b>QUMS Reconnect Notice (Admin Alert)</b>\n\nYour QUMS portal session requires updating. Send /reconnect or use the action below to restore live monitoring.',
+            console,
+            { category: 'TEMPORARY', replyMarkup }
+          );
+          if (msgSent) {
+            sent.push({ id: user.id, email: user.email });
+          } else {
+            failed.push({ id: user.id, email: user.email, reason: 'Telegram delivery rejected' });
+          }
+        }
+      } catch (sendErr) {
+        console.error(`[admin] reconnect dispatch failed for user ${user.id}:`, sendErr.message);
+        failed.push({ id: user.id, email: user.email, reason: sendErr.message });
+      }
+
+      // Safe rate-limiting pace: 100ms delay between consecutive Telegram sends
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    console.log(`[admin] bulk reconnect dispatch finished: sent=${sent.length}, skipped=${skipped.length}, failed=${failed.length}`);
+    res.json({
+      ok: true,
+      sent,
+      skipped,
+      failed,
+      totalRequested: uniqueIds.length,
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
 
 // ---- misc ----
 // Health check — simple, secret-free: user counts / telegram state / internals

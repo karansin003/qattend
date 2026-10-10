@@ -208,6 +208,128 @@
     .btn-delete:hover:not(:disabled) {
       background: #fee2e2;
     }
+
+    /* Bulk Action Toolbar & Modals */
+    .bulk-toolbar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      color: #1e40af;
+      flex-wrap: wrap;
+    }
+    .bulk-toolbar.visible {
+      display: flex;
+    }
+    .btn-bulk {
+      background: #2563eb;
+      color: #ffffff;
+      border: none;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .btn-bulk:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+    .btn-bulk:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .btn-bulk-secondary {
+      background: #ffffff;
+      color: #475569;
+      border: 1px solid #cbd5e1;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-bulk-secondary:hover:not(:disabled) {
+      background: #f8fafc;
+    }
+
+    /* Modal dialog */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-overlay.open {
+      display: flex;
+    }
+    .modal-box {
+      background: #ffffff;
+      border-radius: 12px;
+      max-width: 540px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      padding: 24px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .modal-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 0;
+    }
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      color: #64748b;
+      line-height: 1;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .admin-alert {
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      display: none;
+    }
+    .admin-alert.error {
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      display: block;
+    }
+    .admin-alert.success {
+      background: #dcfce7;
+      border: 1px solid #bbf7d0;
+      color: #166534;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -239,6 +361,9 @@
         <button id="refreshAllBtn" type="button" class="btn" style="padding: 8px 14px; font-size: 13px;">↻ Refresh Data</button>
       </div>
     </div>
+
+    <!-- Live alert notification banner -->
+    <div id="adminNotificationBar" class="admin-alert" role="alert" aria-live="polite"></div>
 
     <!-- Summary Metrics -->
     <div class="metric-grid">
@@ -325,10 +450,22 @@
         <span id="userCountBadge" style="font-size: 13px; color: var(--muted); margin-left: auto;">Showing 0 users</span>
       </div>
 
+      <!-- Bulk Actions Bar -->
+      <div id="bulkToolbar" class="bulk-toolbar" role="region" aria-label="Bulk actions">
+        <span id="bulkSelectedCount" style="font-weight: 600;">0 user(s) selected</span>
+        <button id="sendBulkReconnectBtn" type="button" class="btn-bulk">
+          <span>📨</span> Send QUMS Reconnect Notification
+        </button>
+        <button id="clearSelectionBtn" type="button" class="btn-bulk-secondary">Clear Selection</button>
+      </div>
+
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
+              <th style="width: 40px; text-align: center;">
+                <input type="checkbox" id="selectAllCheckbox" title="Select all on current page" aria-label="Select all on current page" />
+              </th>
               <th>Student Name</th>
               <th>Email</th>
               <th>Status</th>
@@ -342,7 +479,7 @@
             </tr>
           </thead>
           <tbody id="userTableBody">
-            <tr><td colspan="10" style="text-align:center; padding: 24px; color: var(--muted);">Loading users…</td></tr>
+            <tr><td colspan="11" style="text-align:center; padding: 24px; color: var(--muted);">Loading users…</td></tr>
           </tbody>
         </table>
       </div>
@@ -353,12 +490,91 @@
         <button id="nextPageBtn" type="button" class="btn" style="padding: 6px 12px; font-size: 13px;" disabled>Next &rarr;</button>
       </div>
     </div>
+
+    <!-- Review & Confirm Bulk Send Modal -->
+    <div id="bulkConfirmModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="bulkConfirmTitle">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h2 id="bulkConfirmTitle" class="modal-title">Confirm Telegram Reconnect Notification</h2>
+          <button type="button" class="modal-close-btn" id="bulkConfirmCloseBtn">&times;</button>
+        </div>
+        <div style="font-size: 14px; color: #334155; line-height: 1.6;">
+          <p>You are about to send official <strong>QUMS Reconnect Instructions</strong> via Telegram to the selected users.</p>
+          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 12px 0;">
+            <div style="font-weight: 600; margin-bottom: 6px;">Recipients Summary:</div>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px;">
+              <li>Total Selected: <strong id="modalSelectedTotal">0</strong></li>
+              <li>With Telegram Linked: <strong id="modalSelectedLinked" style="color: #166534;">0</strong></li>
+              <li>Without Telegram (will be skipped): <strong id="modalSelectedUnlinked" style="color: #b45309;">0</strong></li>
+            </ul>
+          </div>
+          <div id="modalRecipientsPreview" style="max-height: 120px; overflow-y: auto; font-size: 12px; color: #64748b; margin-top: 8px; background: #fff; border: 1px solid #e2e8f0; padding: 8px; border-radius: 6px;">
+          </div>
+          <p style="font-size: 12px; color: #64748b; margin-top: 10px;">
+            Notifications include the secure 1-tap Telegram /reconnect action. Deliveries will be safely paced to respect Telegram rate limits.
+          </p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-bulk-secondary" id="bulkConfirmCancelBtn">Cancel</button>
+          <button type="button" class="btn-bulk" id="bulkConfirmProceedBtn">Confirm &amp; Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results Modal -->
+    <div id="bulkResultsModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="bulkResultsTitle">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h2 id="bulkResultsTitle" class="modal-title">Bulk Reconnect Dispatch Report</h2>
+          <button type="button" class="modal-close-btn" id="bulkResultsCloseBtn">&times;</button>
+        </div>
+        <div style="font-size: 14px; color: #334155;">
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; text-align: center;">
+            <div style="background: #dcfce7; padding: 10px; border-radius: 8px;">
+              <div style="font-size: 20px; font-weight: 700; color: #166534;" id="resSentCount">0</div>
+              <div style="font-size: 11px; font-weight: 600; color: #166534; text-transform: uppercase;">Sent</div>
+            </div>
+            <div style="background: #fef3c7; padding: 10px; border-radius: 8px;">
+              <div style="font-size: 20px; font-weight: 700; color: #92400e;" id="resSkippedCount">0</div>
+              <div style="font-size: 11px; font-weight: 600; color: #92400e; text-transform: uppercase;">Skipped</div>
+            </div>
+            <div style="background: #fee2e2; padding: 10px; border-radius: 8px;">
+              <div style="font-size: 20px; font-weight: 700; color: #991b1b;" id="resFailedCount">0</div>
+              <div style="font-size: 11px; font-weight: 600; color: #991b1b; text-transform: uppercase;">Failed</div>
+            </div>
+          </div>
+          <div id="bulkResultsDetail" style="max-height: 150px; overflow-y: auto; font-size: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px;">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-bulk-secondary" id="bulkResultsCloseActionBtn">Close</button>
+          <button type="button" class="btn-bulk" id="bulkRetryFailedBtn" style="display: none; background: #dc2626;">Retry Failed Only</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script>
     let currentPage = 1;
     let totalPages = 1;
     let searchDebounce = null;
+    let isRefreshing = false;
+    let currentUsersOnPage = [];
+    const selectedUserIds = new Set();
+    let failedUserIdsFromLastRun = [];
+
+    function showNotification(msg, type = 'success') {
+      const bar = document.getElementById('adminNotificationBar');
+      if (!bar) return;
+      bar.textContent = msg;
+      bar.className = `admin-alert ${type}`;
+      setTimeout(() => {
+        if (bar.textContent === msg) {
+          bar.className = 'admin-alert';
+          bar.textContent = '';
+        }
+      }, 6000);
+    }
 
     function formatTime(iso) {
       if (!iso) return 'Not synced yet';
@@ -377,93 +593,116 @@
       }
     }
 
-    async function loadHealth() {
-      try {
-        const res = await fetch('/api/admin/health');
-        if (res.status === 401 || res.status === 403) {
-          location.href = '/login?next=/admin';
-          return;
-        }
-        const data = await res.json();
-        if (!data.ok) return;
-
-        // Stats
-        const s = data.stats || {};
-        document.getElementById('statTotalUsers').textContent = s.totalUsers != null ? s.totalUsers : '0';
-        document.getElementById('statQumsConnected').textContent = s.qumsConnected != null ? s.qumsConnected : '0';
-        document.getElementById('statSessionExpired').textContent = s.sessionExpired != null ? s.sessionExpired : '0';
-        document.getElementById('statTelegramConnected').textContent = s.telegramConnected != null ? s.telegramConnected : '0';
-        document.getElementById('statSuspended').textContent = s.suspended != null ? s.suspended : '0';
-        const notifCount = (s.notificationsSent && s.notificationsSent.total != null) ? s.notificationsSent.total : '0';
-        document.getElementById('statNotificationsSent').textContent = notifCount;
-
-        // Database health
-        const db = data.database || {};
-        const dbBadge = document.getElementById('healthDbBadge');
-        if (db.ping && db.ping.ok) {
-          dbBadge.className = 'badge-ok';
-          dbBadge.textContent = 'ONLINE';
-          document.getElementById('healthDbDetail').textContent = `Mode: ${db.mode || 'postgres'} (${db.ping.latencyMs}ms latency)`;
-        } else {
-          dbBadge.className = 'badge-err';
-          dbBadge.textContent = 'ERROR';
-          document.getElementById('healthDbDetail').textContent = db.ping ? (db.ping.error || 'Connection failed') : 'Unavailable';
-        }
-
-        // Telegram health
-        const tg = data.telegram || {};
-        const tgBadge = document.getElementById('healthTgBadge');
-        if (tg.configured && tg.ready) {
-          tgBadge.className = 'badge-ok';
-          tgBadge.textContent = 'POLLING';
-          document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (ready)`;
-        } else if (tg.configured) {
-          tgBadge.className = 'badge-warn';
-          tgBadge.textContent = 'SEND-ONLY';
-          document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (configured)`;
-        } else {
-          tgBadge.className = 'badge-off';
-          tgBadge.textContent = 'DISABLED';
-          document.getElementById('healthTgDetail').textContent = 'TELEGRAM_BOT_TOKEN missing';
-        }
-
-        // Attendance Watcher health
-        const w = data.watcher || {};
-        const wBadge = document.getElementById('healthWatcherBadge');
-        if (w.armed) {
-          wBadge.className = 'badge-ok';
-          wBadge.textContent = 'ACTIVE';
-          const fastRun = w.fastLastRunAt ? formatTime(w.fastLastRunAt) : 'Waiting for college hours';
-          document.getElementById('healthWatcherDetail').textContent = `Fast loop: ${fastRun}`;
-        } else {
-          wBadge.className = 'badge-off';
-          wBadge.textContent = 'STANDBY';
-          document.getElementById('healthWatcherDetail').textContent = 'Watcher idle';
-        }
-
-        // Assignment Watcher health
-        const as = data.assignments || {};
-        const asBadge = document.getElementById('healthAssignmentBadge');
-        if (as.armed) {
-          asBadge.className = 'badge-ok';
-          asBadge.textContent = 'ACTIVE';
-          const lastCheck = as.lastNewAt ? formatTime(as.lastNewAt) : 'Periodic 30m check';
-          document.getElementById('healthAssignmentDetail').textContent = `Last check: ${lastCheck}`;
-        } else {
-          asBadge.className = 'badge-off';
-          asBadge.textContent = 'STANDBY';
-          document.getElementById('healthAssignmentDetail').textContent = 'Assignment loop idle';
-        }
-
-        // Scheduler health
-        const sc = data.scheduler || {};
-        const scBadge = document.getElementById('healthSchedulerBadge');
-        scBadge.className = 'badge-ok';
-        scBadge.textContent = 'SCHEDULED';
-        document.getElementById('healthSchedulerDetail').textContent = '08:30 IST morning classes (Asia/Kolkata)';
-      } catch (err) {
-        console.error('Failed to load health:', err);
+    function updateBulkToolbar() {
+      const bar = document.getElementById('bulkToolbar');
+      const countEl = document.getElementById('bulkSelectedCount');
+      const count = selectedUserIds.size;
+      countEl.textContent = `${count} user(s) selected`;
+      if (count > 0) {
+        bar.classList.add('visible');
+      } else {
+        bar.classList.remove('visible');
       }
+
+      // Update selectAll checkbox state
+      const selectAll = document.getElementById('selectAllCheckbox');
+      if (selectAll && currentUsersOnPage.length > 0) {
+        const allOnPageSelected = currentUsersOnPage.every((u) => selectedUserIds.has(u.id));
+        const someOnPageSelected = currentUsersOnPage.some((u) => selectedUserIds.has(u.id));
+        selectAll.checked = allOnPageSelected;
+        selectAll.indeterminate = !allOnPageSelected && someOnPageSelected;
+      } else if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+      }
+    }
+
+    async function loadHealth() {
+      const res = await fetch('/api/admin/health', { cache: 'no-store' });
+      if (res.status === 401 || res.status === 403) {
+        location.href = '/login?next=/admin';
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`Failed to load health metrics (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      if (!data.ok) return;
+
+      // Stats
+      const s = data.stats || {};
+      document.getElementById('statTotalUsers').textContent = s.totalUsers != null ? s.totalUsers : '0';
+      document.getElementById('statQumsConnected').textContent = s.qumsConnected != null ? s.qumsConnected : '0';
+      document.getElementById('statSessionExpired').textContent = s.sessionExpired != null ? s.sessionExpired : '0';
+      document.getElementById('statTelegramConnected').textContent = s.telegramConnected != null ? s.telegramConnected : '0';
+      document.getElementById('statSuspended').textContent = s.suspended != null ? s.suspended : '0';
+      const notifCount = (s.notificationsSent && s.notificationsSent.total != null) ? s.notificationsSent.total : '0';
+      document.getElementById('statNotificationsSent').textContent = notifCount;
+
+      // Database health
+      const db = data.database || {};
+      const dbBadge = document.getElementById('healthDbBadge');
+      if (db.ping && db.ping.ok) {
+        dbBadge.className = 'badge-ok';
+        dbBadge.textContent = 'ONLINE';
+        document.getElementById('healthDbDetail').textContent = `Mode: ${db.mode || 'postgres'} (${db.ping.latencyMs}ms latency)`;
+      } else {
+        dbBadge.className = 'badge-err';
+        dbBadge.textContent = 'ERROR';
+        document.getElementById('healthDbDetail').textContent = db.ping ? (db.ping.error || 'Connection failed') : 'Unavailable';
+      }
+
+      // Telegram health
+      const tg = data.telegram || {};
+      const tgBadge = document.getElementById('healthTgBadge');
+      if (tg.configured && tg.ready) {
+        tgBadge.className = 'badge-ok';
+        tgBadge.textContent = 'POLLING';
+        document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (ready)`;
+      } else if (tg.configured) {
+        tgBadge.className = 'badge-warn';
+        tgBadge.textContent = 'SEND-ONLY';
+        document.getElementById('healthTgDetail').textContent = `@${tg.username || 'bot'} (configured)`;
+      } else {
+        tgBadge.className = 'badge-off';
+        tgBadge.textContent = 'DISABLED';
+        document.getElementById('healthTgDetail').textContent = 'TELEGRAM_BOT_TOKEN missing';
+      }
+
+      // Attendance Watcher health
+      const w = data.watcher || {};
+      const wBadge = document.getElementById('healthWatcherBadge');
+      if (w.armed) {
+        wBadge.className = 'badge-ok';
+        wBadge.textContent = 'ACTIVE';
+        const fastRun = w.fastLastRunAt ? formatTime(w.fastLastRunAt) : 'Waiting for college hours';
+        document.getElementById('healthWatcherDetail').textContent = `Fast loop: ${fastRun}`;
+      } else {
+        wBadge.className = 'badge-off';
+        wBadge.textContent = 'STANDBY';
+        document.getElementById('healthWatcherDetail').textContent = 'Watcher idle';
+      }
+
+      // Assignment Watcher health
+      const as = data.assignments || {};
+      const asBadge = document.getElementById('healthAssignmentBadge');
+      if (as.armed) {
+        asBadge.className = 'badge-ok';
+        asBadge.textContent = 'ACTIVE';
+        const lastCheck = as.lastNewAt ? formatTime(as.lastNewAt) : 'Periodic 30m check';
+        document.getElementById('healthAssignmentDetail').textContent = `Last check: ${lastCheck}`;
+      } else {
+        asBadge.className = 'badge-off';
+        asBadge.textContent = 'STANDBY';
+        document.getElementById('healthAssignmentDetail').textContent = 'Assignment loop idle';
+      }
+
+      // Scheduler health
+      const sc = data.scheduler || {};
+      const scBadge = document.getElementById('healthSchedulerBadge');
+      scBadge.className = 'badge-ok';
+      scBadge.textContent = 'SCHEDULED';
+      document.getElementById('healthSchedulerDetail').textContent = '08:30 IST morning classes (Asia/Kolkata)';
     }
 
     async function loadUsers() {
@@ -471,166 +710,207 @@
       const filter = document.getElementById('filterSelect').value;
       const tbody = document.getElementById('userTableBody');
 
-      try {
-        const query = new URLSearchParams({
-          search,
-          filter,
-          page: String(currentPage),
-          limit: '25'
+      const query = new URLSearchParams({
+        search,
+        filter,
+        page: String(currentPage),
+        limit: '25'
+      });
+      const res = await fetch(`/api/admin/users?${query.toString()}`, { cache: 'no-store' });
+      if (res.status === 401 || res.status === 403) {
+        location.href = '/login?next=/admin';
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`Failed to load users (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      const users = data.users || [];
+      currentUsersOnPage = users;
+      totalPages = data.pages || 1;
+      currentPage = data.page || 1;
+
+      document.getElementById('userCountBadge').textContent = `Showing ${users.length} of ${data.total || 0} user(s)`;
+      document.getElementById('pageIndicator').textContent = `Page ${currentPage} of ${totalPages}`;
+      document.getElementById('prevPageBtn').disabled = currentPage <= 1;
+      document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
+
+      tbody.innerHTML = '';
+      if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 24px; color: var(--muted);">No users found matching current filters.</td></tr>';
+        updateBulkToolbar();
+        return;
+      }
+
+      for (const u of users) {
+        const tr = document.createElement('tr');
+
+        // Checkbox column
+        const tdCheck = document.createElement('td');
+        tdCheck.style.textAlign = 'center';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'user-row-checkbox';
+        cb.dataset.id = u.id;
+        cb.checked = selectedUserIds.has(u.id);
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            selectedUserIds.add(u.id);
+          } else {
+            selectedUserIds.delete(u.id);
+          }
+          updateBulkToolbar();
         });
-        const res = await fetch(`/api/admin/users?${query.toString()}`);
-        if (res.status === 401 || res.status === 403) {
-          location.href = '/login?next=/admin';
-          return;
+        tdCheck.appendChild(cb);
+        tr.appendChild(tdCheck);
+
+        // Student Name + YearSem
+        const tdName = document.createElement('td');
+        const nameSpan = document.createElement('div');
+        nameSpan.style.fontWeight = '600';
+        nameSpan.textContent = u.studentName || '—';
+        tdName.appendChild(nameSpan);
+        if (u.qumsYearSem) {
+          const semBadge = document.createElement('span');
+          semBadge.className = 'badge-off';
+          semBadge.style.fontSize = '10px';
+          semBadge.style.marginTop = '2px';
+          semBadge.textContent = u.qumsYearSem;
+          tdName.appendChild(semBadge);
         }
-        const data = await res.json();
-        const users = data.users || [];
-        totalPages = data.pages || 1;
-        currentPage = data.page || 1;
+        tr.appendChild(tdName);
 
-        document.getElementById('userCountBadge').textContent = `Showing ${users.length} of ${data.total || 0} user(s)`;
-        document.getElementById('pageIndicator').textContent = `Page ${currentPage} of ${totalPages}`;
-        document.getElementById('prevPageBtn').disabled = currentPage <= 1;
-        document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
-
-        tbody.innerHTML = '';
-        if (users.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 24px; color: var(--muted);">No users found matching current filters.</td></tr>';
-          return;
+        // Email
+        const tdEmail = document.createElement('td');
+        tdEmail.textContent = u.email || '—';
+        if (u.isAdmin) {
+          const adminTag = document.createElement('span');
+          adminTag.className = 'badge-warn';
+          adminTag.style.marginLeft = '6px';
+          adminTag.style.fontSize = '10px';
+          adminTag.textContent = 'ADMIN';
+          tdEmail.appendChild(adminTag);
         }
+        tr.appendChild(tdEmail);
 
-        for (const u of users) {
-          const tr = document.createElement('tr');
-
-          // Student Name + YearSem
-          const tdName = document.createElement('td');
-          const nameSpan = document.createElement('div');
-          nameSpan.style.fontWeight = '600';
-          nameSpan.textContent = u.studentName || '—';
-          tdName.appendChild(nameSpan);
-          if (u.qumsYearSem) {
-            const semBadge = document.createElement('span');
-            semBadge.className = 'badge-off';
-            semBadge.style.fontSize = '10px';
-            semBadge.style.marginTop = '2px';
-            semBadge.textContent = u.qumsYearSem;
-            tdName.appendChild(semBadge);
-          }
-          tr.appendChild(tdName);
-
-          // Email
-          const tdEmail = document.createElement('td');
-          tdEmail.textContent = u.email || '—';
-          if (u.isAdmin) {
-            const adminTag = document.createElement('span');
-            adminTag.className = 'badge-warn';
-            adminTag.style.marginLeft = '6px';
-            adminTag.style.fontSize = '10px';
-            adminTag.textContent = 'ADMIN';
-            tdEmail.appendChild(adminTag);
-          }
-          tr.appendChild(tdEmail);
-
-          // Status (Suspended / Unverified / Active)
-          const tdStatus = document.createElement('td');
-          const statusBadge = document.createElement('span');
-          if (u.isSuspended) {
-            statusBadge.className = 'badge-err';
-            statusBadge.textContent = 'SUSPENDED';
-          } else if (!u.emailVerified) {
-            statusBadge.className = 'badge-warn';
-            statusBadge.textContent = 'UNVERIFIED';
-          } else {
-            statusBadge.className = 'badge-ok';
-            statusBadge.textContent = 'ACTIVE';
-          }
-          tdStatus.appendChild(statusBadge);
-          tr.appendChild(tdStatus);
-
-          // QID
-          const tdQid = document.createElement('td');
-          tdQid.textContent = u.qumsQid || '—';
-          tr.appendChild(tdQid);
-
-          // QUMS Session
-          const tdQums = document.createElement('td');
-          const qumsBadge = document.createElement('span');
-          if (u.sessionExpired) {
-            qumsBadge.className = 'badge-warn';
-            qumsBadge.textContent = '⚠️ EXPIRED';
-          } else if (u.qumsConnected) {
-            qumsBadge.className = 'badge-ok';
-            qumsBadge.textContent = 'CONNECTED';
-          } else {
-            qumsBadge.className = 'badge-off';
-            qumsBadge.textContent = 'NOT SETUP';
-          }
-          tdQums.appendChild(qumsBadge);
-          tr.appendChild(tdQums);
-
-          // Telegram
-          const tdTg = document.createElement('td');
-          const tgBadge = document.createElement('span');
-          if (u.telegramConnected) {
-            tgBadge.className = 'badge-ok';
-            tgBadge.textContent = 'LINKED';
-          } else {
-            tgBadge.className = 'badge-off';
-            tgBadge.textContent = 'NOT LINKED';
-          }
-          tdTg.appendChild(tgBadge);
-          tr.appendChild(tdTg);
-
-          // Attendance Last Checked
-          const tdAtt = document.createElement('td');
-          tdAtt.textContent = formatTime(u.attendanceLastCheckedAt);
-          tr.appendChild(tdAtt);
-
-          // Assignment Last Checked
-          const tdAsn = document.createElement('td');
-          tdAsn.textContent = formatTime(u.assignmentLastCheckedAt);
-          tr.appendChild(tdAsn);
-
-          // Created At
-          const tdCreated = document.createElement('td');
-          tdCreated.textContent = formatTime(u.createdAt);
-          tr.appendChild(tdCreated);
-
-          // Actions
-          const tdActions = document.createElement('td');
-          tdActions.style.whiteSpace = 'nowrap';
-
-          const suspendBtn = document.createElement('button');
-          suspendBtn.type = 'button';
-          if (u.isSuspended) {
-            suspendBtn.className = 'btn-action btn-unsuspend';
-            suspendBtn.textContent = 'Unsuspend';
-            suspendBtn.dataset.action = 'unsuspend';
-          } else {
-            suspendBtn.className = 'btn-action btn-suspend';
-            suspendBtn.textContent = 'Suspend';
-            suspendBtn.dataset.action = 'suspend';
-          }
-          suspendBtn.dataset.id = u.id;
-          suspendBtn.dataset.email = u.email || '';
-
-          const deleteBtn = document.createElement('button');
-          deleteBtn.type = 'button';
-          deleteBtn.className = 'btn-action btn-delete';
-          deleteBtn.textContent = 'Delete';
-          deleteBtn.dataset.action = 'delete';
-          deleteBtn.dataset.id = u.id;
-          deleteBtn.dataset.email = u.email || '';
-
-          tdActions.appendChild(suspendBtn);
-          tdActions.appendChild(deleteBtn);
-          tr.appendChild(tdActions);
-
-          tbody.appendChild(tr);
+        // Status (Suspended / Unverified / Active)
+        const tdStatus = document.createElement('td');
+        const statusBadge = document.createElement('span');
+        if (u.isSuspended) {
+          statusBadge.className = 'badge-err';
+          statusBadge.textContent = 'SUSPENDED';
+        } else if (!u.emailVerified) {
+          statusBadge.className = 'badge-warn';
+          statusBadge.textContent = 'UNVERIFIED';
+        } else {
+          statusBadge.className = 'badge-ok';
+          statusBadge.textContent = 'ACTIVE';
         }
+        tdStatus.appendChild(statusBadge);
+        tr.appendChild(tdStatus);
+
+        // QID
+        const tdQid = document.createElement('td');
+        tdQid.textContent = u.qumsQid || '—';
+        tr.appendChild(tdQid);
+
+        // QUMS Session
+        const tdQums = document.createElement('td');
+        const qumsBadge = document.createElement('span');
+        if (u.sessionExpired) {
+          qumsBadge.className = 'badge-warn';
+          qumsBadge.textContent = '⚠️ EXPIRED';
+        } else if (u.qumsConnected) {
+          qumsBadge.className = 'badge-ok';
+          qumsBadge.textContent = 'CONNECTED';
+        } else {
+          qumsBadge.className = 'badge-off';
+          qumsBadge.textContent = 'NOT SETUP';
+        }
+        tdQums.appendChild(qumsBadge);
+        tr.appendChild(tdQums);
+
+        // Telegram
+        const tdTg = document.createElement('td');
+        const tgBadge = document.createElement('span');
+        if (u.telegramConnected) {
+          tgBadge.className = 'badge-ok';
+          tgBadge.textContent = 'LINKED';
+        } else {
+          tgBadge.className = 'badge-off';
+          tgBadge.textContent = 'NOT LINKED';
+        }
+        tdTg.appendChild(tgBadge);
+        tr.appendChild(tdTg);
+
+        // Attendance Last Checked
+        const tdAtt = document.createElement('td');
+        tdAtt.textContent = formatTime(u.attendanceLastCheckedAt);
+        tr.appendChild(tdAtt);
+
+        // Assignment Last Checked
+        const tdAsn = document.createElement('td');
+        tdAsn.textContent = formatTime(u.assignmentLastCheckedAt);
+        tr.appendChild(tdAsn);
+
+        // Created At
+        const tdCreated = document.createElement('td');
+        tdCreated.textContent = formatTime(u.createdAt);
+        tr.appendChild(tdCreated);
+
+        // Actions
+        const tdActions = document.createElement('td');
+        tdActions.style.whiteSpace = 'nowrap';
+
+        const suspendBtn = document.createElement('button');
+        suspendBtn.type = 'button';
+        if (u.isSuspended) {
+          suspendBtn.className = 'btn-action btn-unsuspend';
+          suspendBtn.textContent = 'Unsuspend';
+          suspendBtn.dataset.action = 'unsuspend';
+        } else {
+          suspendBtn.className = 'btn-action btn-suspend';
+          suspendBtn.textContent = 'Suspend';
+          suspendBtn.dataset.action = 'suspend';
+        }
+        suspendBtn.dataset.id = u.id;
+        suspendBtn.dataset.email = u.email || '';
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn-action btn-delete';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.dataset.action = 'delete';
+        deleteBtn.dataset.id = u.id;
+        deleteBtn.dataset.email = u.email || '';
+
+        tdActions.appendChild(suspendBtn);
+        tdActions.appendChild(deleteBtn);
+        tr.appendChild(tdActions);
+
+        tbody.appendChild(tr);
+      }
+      updateBulkToolbar();
+    }
+
+    async function handleRefreshAll() {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      const btn = document.getElementById('refreshAllBtn');
+      const originalText = btn.textContent;
+      btn.textContent = '↻ Refreshing...';
+      btn.disabled = true;
+
+      try {
+        await Promise.all([loadHealth(), loadUsers()]);
+        showNotification('System health and user data refreshed successfully.', 'success');
       } catch (err) {
-        console.error('Failed to load users:', err);
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color: #dc2626; padding: 24px;">Failed to load users: ${err.message}</td></tr>`;
+        console.error('Refresh failed:', err);
+        showNotification(`Refresh failed: ${err.message}`, 'error');
+      } finally {
+        isRefreshing = false;
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
     }
 
@@ -654,6 +934,7 @@
           if (!res.ok) throw new Error(data.error || 'Failed to suspend user');
           await loadHealth();
           await loadUsers();
+          showNotification(`User ${email} suspended.`, 'success');
         } catch (err) {
           alert(`Error: ${err.message}`);
           btn.disabled = false;
@@ -673,6 +954,7 @@
           if (!res.ok) throw new Error(data.error || 'Failed to lift suspension');
           await loadHealth();
           await loadUsers();
+          showNotification(`Suspension lifted for ${email}.`, 'success');
         } catch (err) {
           alert(`Error: ${err.message}`);
           btn.disabled = false;
@@ -689,14 +971,146 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+          selectedUserIds.delete(id);
           await loadHealth();
           await loadUsers();
+          showNotification(`User ${email} deleted permanently.`, 'success');
         } catch (err) {
           alert(`Error: ${err.message}`);
           btn.disabled = false;
         }
       }
     }
+
+    // Modal helpers
+    function openConfirmModal() {
+      if (selectedUserIds.size === 0) return;
+      const selected = Array.from(selectedUserIds);
+      const userMap = new Map();
+      currentUsersOnPage.forEach((u) => userMap.set(u.id, u));
+
+      let linked = 0;
+      let unlinked = 0;
+      const previewList = [];
+
+      selected.forEach((id) => {
+        const u = userMap.get(id);
+        const name = u ? (u.studentName || u.email || id) : id;
+        const isLinked = u ? Boolean(u.telegramConnected) : true;
+        if (isLinked) linked++;
+        else unlinked++;
+        previewList.push(`${name} ${isLinked ? '✅' : '⚠️ (No TG)'}`);
+      });
+
+      document.getElementById('modalSelectedTotal').textContent = String(selected.length);
+      document.getElementById('modalSelectedLinked').textContent = String(linked);
+      document.getElementById('modalSelectedUnlinked').textContent = String(unlinked);
+      document.getElementById('modalRecipientsPreview').innerHTML = previewList.map((p) => `<div>• ${p}</div>`).join('');
+
+      document.getElementById('bulkConfirmModal').classList.add('open');
+    }
+
+    function closeConfirmModal() {
+      document.getElementById('bulkConfirmModal').classList.remove('open');
+    }
+
+    function openResultsModal(data) {
+      document.getElementById('resSentCount').textContent = String((data.sent || []).length);
+      document.getElementById('resSkippedCount').textContent = String((data.skipped || []).length);
+      document.getElementById('resFailedCount').textContent = String((data.failed || []).length);
+
+      failedUserIdsFromLastRun = (data.failed || []).map((f) => f.id).filter(Boolean);
+      const retryBtn = document.getElementById('bulkRetryFailedBtn');
+      if (failedUserIdsFromLastRun.length > 0) {
+        retryBtn.style.display = 'inline-block';
+        retryBtn.textContent = `Retry ${failedUserIdsFromLastRun.length} Failed`;
+      } else {
+        retryBtn.style.display = 'none';
+      }
+
+      const lines = [];
+      (data.sent || []).forEach((s) => lines.push(`<div style="color: #166534;">✅ Sent to ${s.email || s.id}</div>`));
+      (data.skipped || []).forEach((s) => lines.push(`<div style="color: #b45309;">⚠️ Skipped ${s.email || s.id} (${s.reason})</div>`));
+      (data.failed || []).forEach((f) => lines.push(`<div style="color: #dc2626;">❌ Failed for ${f.email || f.id}: ${f.reason}</div>`));
+
+      document.getElementById('bulkResultsDetail').innerHTML = lines.join('') || '<div>No recipient activity recorded.</div>';
+      document.getElementById('bulkResultsModal').classList.add('open');
+    }
+
+    function closeResultsModal() {
+      document.getElementById('bulkResultsModal').classList.remove('open');
+    }
+
+    async function dispatchBulkReconnect(userIdsToSend) {
+      const proceedBtn = document.getElementById('bulkConfirmProceedBtn');
+      const originalText = proceedBtn.textContent;
+      proceedBtn.disabled = true;
+      proceedBtn.textContent = 'Sending...';
+
+      try {
+        const res = await fetch('/api/admin/users/bulk-reconnect-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userIds: userIdsToSend }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to dispatch reconnect notifications');
+        }
+        closeConfirmModal();
+        openResultsModal(data);
+        // Clear successfully sent users from selection
+        (data.sent || []).forEach((s) => selectedUserIds.delete(s.id));
+        updateBulkToolbar();
+        await loadHealth();
+      } catch (err) {
+        alert(`Bulk dispatch error: ${err.message}`);
+      } finally {
+        proceedBtn.disabled = false;
+        proceedBtn.textContent = originalText;
+      }
+    }
+
+    // Event Listeners
+    document.getElementById('selectAllCheckbox').addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      currentUsersOnPage.forEach((u) => {
+        if (checked) selectedUserIds.add(u.id);
+        else selectedUserIds.delete(u.id);
+      });
+      document.querySelectorAll('.user-row-checkbox').forEach((cb) => {
+        cb.checked = checked;
+      });
+      updateBulkToolbar();
+    });
+
+    document.getElementById('clearSelectionBtn').addEventListener('click', () => {
+      selectedUserIds.clear();
+      document.querySelectorAll('.user-row-checkbox').forEach((cb) => {
+        cb.checked = false;
+      });
+      updateBulkToolbar();
+    });
+
+    document.getElementById('sendBulkReconnectBtn').addEventListener('click', () => {
+      openConfirmModal();
+    });
+
+    document.getElementById('bulkConfirmCloseBtn').addEventListener('click', closeConfirmModal);
+    document.getElementById('bulkConfirmCancelBtn').addEventListener('click', closeConfirmModal);
+
+    document.getElementById('bulkConfirmProceedBtn').addEventListener('click', () => {
+      dispatchBulkReconnect(Array.from(selectedUserIds));
+    });
+
+    document.getElementById('bulkResultsCloseBtn').addEventListener('click', closeResultsModal);
+    document.getElementById('bulkResultsCloseActionBtn').addEventListener('click', closeResultsModal);
+
+    document.getElementById('bulkRetryFailedBtn').addEventListener('click', async () => {
+      if (failedUserIdsFromLastRun.length === 0) return;
+      closeResultsModal();
+      await dispatchBulkReconnect(failedUserIdsFromLastRun);
+    });
 
     document.getElementById('userTableBody').addEventListener('click', (e) => {
       const btn = e.target.closest('.btn-action');
@@ -707,36 +1121,33 @@
       clearTimeout(searchDebounce);
       searchDebounce = setTimeout(() => {
         currentPage = 1;
-        loadUsers();
+        loadUsers().catch((err) => showNotification(`Search failed: ${err.message}`, 'error'));
       }, 300);
     });
 
     document.getElementById('filterSelect').addEventListener('change', () => {
       currentPage = 1;
-      loadUsers();
+      loadUsers().catch((err) => showNotification(`Filter update failed: ${err.message}`, 'error'));
     });
 
     document.getElementById('prevPageBtn').addEventListener('click', () => {
       if (currentPage > 1) {
         currentPage--;
-        loadUsers();
+        loadUsers().catch((err) => showNotification(`Pagination failed: ${err.message}`, 'error'));
       }
     });
 
     document.getElementById('nextPageBtn').addEventListener('click', () => {
       if (currentPage < totalPages) {
         currentPage++;
-        loadUsers();
+        loadUsers().catch((err) => showNotification(`Pagination failed: ${err.message}`, 'error'));
       }
     });
 
-    document.getElementById('refreshAllBtn').addEventListener('click', () => {
-      loadHealth();
-      loadUsers();
-    });
+    document.getElementById('refreshAllBtn').addEventListener('click', handleRefreshAll);
 
-    loadHealth();
-    loadUsers();
+    // Initial load
+    handleRefreshAll();
   </script>
 </body>
 </html>

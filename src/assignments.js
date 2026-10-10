@@ -34,7 +34,7 @@ const fs = require('fs');
 const cron = require('node-cron');
 const db = require('./db');
 const { scrapeAssignments, qumsDateToYMD } = require('./scraper');
-const { sendMessage } = require('./telegram');
+const { sendMessage, deleteMessage } = require('./telegram');
 const { formatNewAssignment, formatAssignmentDeadlineReminder } = require('./messages');
 const { maybeNotifySessionExpired } = require('./alerts');
 
@@ -142,12 +142,48 @@ async function runAssignmentCycle(opts = {}) {
   if (!userId) throw new Error('runAssignmentCycle: userId required');
   const mode = opts.mode || 'new';
   const fetchFn = opts.fetchFn || ((u) => scrapeAssignments({ sessionPath: u.qumsSessionPath }));
-  const sendFn = opts.sendFn || ((text) => sendMessage(userId, text, log, { category: 'ASSIGNMENT' }));
+  const defaultSendFn = async (text, sendOptions = {}) => {
+    const sOpts = { category: 'ASSIGNMENT', ...sendOptions };
+    const ok = await sendMessage(userId, text, log, sOpts);
+    if (sendOptions && sOpts.messageId) {
+      sendOptions.messageId = sOpts.messageId;
+    }
+    return { ok, messageId: sOpts.messageId };
+  };
+  const sendFn = opts.sendFn || defaultSendFn;
+  const deleteFn = opts.deleteFn || ((msgId) => deleteMessage(userId, msgId, log));
   const todayYMD = opts.todayYMD || istNow().date;
 
   const knownRecords = await db.listKnownAssignments(userId);
   const knownKeys = knownRecords.map((r) => r.key).filter(Boolean);
   const rows = opts.rows || (await fetchFn(opts.user));
+
+  // Issue 5, Rule E: Check for resolved / uploaded assignments to delete their Telegram notification
+  // Keep notifications visible while pending/unuploaded; when confirmed upload (uploadFlag === 1),
+  // delete only corresponding notification message(s).
+  if (rows && rows.length && knownRecords && knownRecords.length) {
+    for (const rec of knownRecords) {
+      if (!rec.telegramMessageId) continue;
+      const matchingRow = rows.find((r) => {
+        if (!r) return false;
+        if (rec.assignmentId && r.id && String(rec.assignmentId) === String(r.id)) return true;
+        if (rec.key === assignmentKey(r)) return true;
+        if (rec.title && r.title && rec.title.toLowerCase() === r.title.toLowerCase() && (!rec.subject || !r.subject || rec.subject.toLowerCase() === r.subject.toLowerCase())) return true;
+        return false;
+      });
+
+      if (matchingRow && (matchingRow.uploadFlag === 1 || matchingRow.isUploaded === true)) {
+        try {
+          await deleteFn(rec.telegramMessageId);
+          log.log(`[assignment] user=${userId} deleted notification for uploaded assignment ${rec.key} (msgId=${rec.telegramMessageId})`);
+          await db.updateKnownAssignmentMessageId(userId, rec.key, null);
+          rec.telegramMessageId = null;
+        } catch (delErr) {
+          log.error(`[assignment] failed to delete notification for uploaded assignment ${rec.key}: ${delErr.message}`);
+        }
+      }
+    }
+  }
 
   const pending =
     mode === 'reminders'
@@ -164,7 +200,12 @@ async function runAssignmentCycle(opts = {}) {
       if (opts.dryRun) {
         log.log(`[assignments] (dry-run) would send to ${opts.userEmail || 'user'}:\n${text}\n`);
       } else {
-        await sendFn(text);
+        const sendOptions = {};
+        const sendRes = await sendFn(text, sendOptions);
+        const sentMsgId = (sendRes && typeof sendRes === 'object' && sendRes.messageId) || sendOptions.messageId;
+        if (sentMsgId) {
+          await db.updateKnownAssignmentMessageId(userId, a.key, sentMsgId);
+        }
         log.log(`[telegram] user=${userId} notification sent kind=${mode === 'reminders' ? 'assignment_deadline' : 'assignment_new'}`);
         log.log(`[assignment] user=${userId} sent ${mode}: ${a.key} — ${a.title}`);
         await db.recordNotification(userId, mode === 'reminders' ? 'assignment_deadline' : 'assignment_new', { subject: a.subject }, log);

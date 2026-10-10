@@ -296,6 +296,102 @@ async function run() {
     const studentAfterDelete = await db.getUserById(studentUser.id);
     assert.strictEqual(studentAfterDelete, null, 'Deleted student no longer exists in DB');
     console.log('PASS  6. Admin suspend, unsuspend, delete endpoints enforce authorization and persist in database');
+
+    // Test 7: Admin bulk reconnect notifications (authorization, validation, skipped unlinked, sent linked)
+    // 7a. Unauthorized (no cookie) -> 401 or 403
+    const unauthBulk = await apiRequest('POST', '/api/admin/users/bulk-reconnect-notify', { userIds: ['any-id'] });
+    assert(unauthBulk.status === 401 || unauthBulk.status === 403, 'Unauthorized request rejected');
+
+    // 7b. Non-admin student -> 403
+    const normalStudent = await db.createUser({
+      email: 'student-regular@example.com',
+      passwordHash: await bcrypt.hash('secret123', 10),
+      emailVerified: true,
+      isAdmin: false,
+    });
+    const regularLogin = await apiRequest('POST', '/api/login', {
+      email: 'student-regular@example.com',
+      password: 'secret123',
+    });
+    const regularCookie = regularLogin.cookie;
+    const forbiddenBulk = await apiRequest('POST', '/api/admin/users/bulk-reconnect-notify', { userIds: [normalStudent.id] }, regularCookie);
+    assert.strictEqual(forbiddenBulk.status, 403, 'Non-admin request rejected with 403');
+
+    // 7c. Validation: empty or non-array userIds
+    const invalidBulk = await apiRequest('POST', '/api/admin/users/bulk-reconnect-notify', { userIds: [] }, adminCookie);
+    assert.strictEqual(invalidBulk.status, 400, 'Empty userIds array rejected');
+
+    // 7d. Linked vs unlinked users
+    const linkedUser = await db.createUser({
+      email: 'student-linked@example.com',
+      passwordHash: await bcrypt.hash('secret123', 10),
+      emailVerified: true,
+      isAdmin: false,
+    });
+    await db.setTelegramChatId(linkedUser.id, 999999);
+
+    const unlinkedUser = await db.createUser({
+      email: 'student-unlinked@example.com',
+      passwordHash: await bcrypt.hash('secret123', 10),
+      emailVerified: true,
+      isAdmin: false,
+    });
+
+    const telegram = require('../src/telegram');
+    const tgState = globalThis.__qumsTelegramState__;
+    if (!tgState || !tgState.bot) {
+      telegram.ensureSendOnlyBot();
+    }
+    const bot = globalThis.__qumsTelegramState__.bot;
+    const origBotSendMessage = bot.sendMessage;
+    bot.sendMessage = async (chatId, text) => ({
+      message_id: 8888,
+      chat: { id: chatId },
+      text,
+    });
+
+    const bulkRes = await apiRequest(
+      'POST',
+      '/api/admin/users/bulk-reconnect-notify',
+      { userIds: [linkedUser.id, unlinkedUser.id] },
+      adminCookie
+    );
+    assert.strictEqual(bulkRes.status, 200, 'Bulk reconnect notify succeeded');
+    assert.strictEqual(bulkRes.json.ok, true);
+    assert.strictEqual(bulkRes.json.skipped.length, 1, 'Unlinked user must be skipped');
+    assert.strictEqual(bulkRes.json.sent.length, 1, 'Linked user must receive notification');
+    assert.strictEqual(bulkRes.json.failed.length, 0, 'No failures expected');
+
+    // 7e. Retrying failed recipients
+    bot.sendMessage = async () => { throw new Error('Simulated Telegram outage'); };
+    const failRes = await apiRequest(
+      'POST',
+      '/api/admin/users/bulk-reconnect-notify',
+      { userIds: [linkedUser.id] },
+      adminCookie
+    );
+    assert.strictEqual(failRes.status, 200);
+    assert.strictEqual(failRes.json.failed.length, 1, 'Failed recipient recorded');
+    assert.strictEqual(failRes.json.sent.length, 0);
+
+    // Retry only failed recipient after recovering
+    bot.sendMessage = async (chatId, text) => ({
+      message_id: 8889,
+      chat: { id: chatId },
+      text,
+    });
+    const retryRes = await apiRequest(
+      'POST',
+      '/api/admin/users/bulk-reconnect-notify',
+      { userIds: [failRes.json.failed[0].id] },
+      adminCookie
+    );
+    assert.strictEqual(retryRes.status, 200);
+    assert.strictEqual(retryRes.json.sent.length, 1, 'Retry successfully sent to previously failed recipient');
+    assert.strictEqual(retryRes.json.failed.length, 0);
+
+    bot.sendMessage = origBotSendMessage;
+    console.log('PASS  7. Admin bulk reconnect notifications enforce authorization, validate input, correctly skip unlinked accounts, and support retrying failed recipients');
   } finally {
     await stopServer();
     try {

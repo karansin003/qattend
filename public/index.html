@@ -53,6 +53,10 @@
   </aside>
 
   <div class="container">
+    <div id="sessionExpiredBanner" class="banner warn hidden" style="background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
+      <span>⚠️ <strong>QUMS Session Expired</strong> — Your login session has expired. Automatic tracking is paused until reconnection.</span>
+      <a href="/qums-setup" class="btn" style="background: #dc2626; color: #fff; text-decoration: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; margin-left: 10px;">🔐 Reconnect QUMS</a>
+    </div>
     <div id="setupBanner" class="banner warn hidden">
       <span>⚠️ QUMS setup is incomplete — complete the QID + captcha login so alerts can start.</span>
       <a href="/qums-setup">Complete it →</a>
@@ -260,7 +264,14 @@
           statusEl.classList.add('hidden');
           errorBox.textContent = (data.error || 'Unknown error') + (data.hint ? '  →  ' + data.hint : '');
           errorBox.classList.remove('hidden');
-          if (data.code === 'QumsSetupRequired') $('setupBanner').classList.remove('hidden');
+          if (data.code === 'QumsSetupRequired') {
+            $('setupBanner').classList.remove('hidden');
+          } else if (data.code === 'SessionExpiredError' || data.code === 'NoSessionError' || /session expired/i.test(data.error || '')) {
+            $('sessionExpiredBanner').classList.remove('hidden');
+            $('setupBanner').classList.add('hidden');
+            $('qumsDot').className = 'status-dot off';
+            $('qumsState').textContent = 'Session expired ⚠️';
+          }
           return;
         }
         statusEl.classList.add('hidden');
@@ -295,9 +306,20 @@
         } else {
           $('welcomeYearSem').classList.add('hidden');
         }
-        if (!me.qumsConfigured) $('setupBanner').classList.remove('hidden');
-        $('qumsDot').className = 'status-dot ' + (me.qumsConfigured ? 'on' : 'off');
-        $('qumsState').textContent = me.qumsConfigured ? 'Connected ✅' : 'Setup pending';
+        if (!me.qumsConfigured) {
+          $('setupBanner').classList.remove('hidden');
+          $('sessionExpiredBanner').classList.add('hidden');
+        } else if (me.qumsSessionStatus === 'expired') {
+          $('sessionExpiredBanner').classList.remove('hidden');
+          $('setupBanner').classList.add('hidden');
+        } else {
+          $('sessionExpiredBanner').classList.add('hidden');
+          $('setupBanner').classList.add('hidden');
+        }
+        $('qumsDot').className = 'status-dot ' + (me.qumsConfigured && me.qumsSessionStatus !== 'expired' ? 'on' : 'off');
+        $('qumsState').textContent = !me.qumsConfigured
+          ? 'Setup pending'
+          : (me.qumsSessionStatus === 'expired' ? 'Session expired ⚠️' : 'Connected ✅');
         $('qumsLogoutBtn').classList.toggle('hidden', !me.qumsConfigured);
         if (me.isAdmin) {
           if ($('adminLink')) $('adminLink').classList.remove('hidden');

@@ -111,7 +111,7 @@ async function deleteSessionExpiredAlert(userId, log = console) {
  * (SessionExpiredError). Network failures must call this with evidence=false,
  * which records the error but sends nothing.
  */
-async function maybeNotifySessionExpired(log = console, userId, { evidence = true } = {}) {
+async function maybeNotifySessionExpired(log = console, userId, { evidence = true, isManualAdminAlert = false } = {}) {
   try {
     const logger = (log && typeof log.log === 'function') ? log : console;
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
@@ -140,7 +140,7 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
       const isNewEvent = !before || !before.expiredAt || before.resolvedAt;
       if (isNewEvent) await db.markSessionExpired(userId, 'session-expired');
       const state = await db.getSessionExpiryState(userId);
-      if (state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
+      if (!isManualAdminAlert && state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
         log.log(`[alerts] user=${userId} expiry alert already sent for this event — skip.`);
         return false;
       }
