@@ -44,6 +44,7 @@ const MIGRATIONS = [
          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
          day_of_week INTEGER NOT NULL,
          period TEXT NOT NULL,
+         duration TEXT DEFAULT '',
          subject TEXT DEFAULT '',
          subject_code TEXT DEFAULT '',
          teacher TEXT DEFAULT '',
@@ -255,6 +256,12 @@ const MIGRATIONS = [
          created_at BIGINT NOT NULL
        )`,
       `CREATE INDEX IF NOT EXISTS idx_sched_del_time ON scheduled_message_deletions (delete_at)`,
+    ],
+  },
+  {
+    id: '019_weekly_schedule_duration',
+    statements: [
+      `ALTER TABLE weekly_schedule ADD COLUMN IF NOT EXISTS duration TEXT DEFAULT ''`,
     ],
   },
 ];

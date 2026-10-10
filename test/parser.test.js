@@ -386,6 +386,24 @@ function extractFunction(src, name) {
     { period: '(P1)09:00 - 09:55', duration: '09:00 - 09:55', subject: 'X', subjectCode: 'XC1', room: '', teacher: 'T1', raw: 'x' },
   ]).includes('    T1'), true);
 
+  // morning schedule: empty duration auto-resolves to class time from period
+  const autoDurMorning = formatMorningSchedule([
+    { period: 'P1', duration: '', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', room: 'A-004', teacher: 'RAJ KUMAR' },
+    { period: 'P2', duration: '', subject: 'Scala for Data Science', subjectCode: 'CS35365', room: 'A-010', teacher: 'BHANU PARTAP' },
+  ]);
+  check('morning: empty duration auto-resolves P1 time', autoDurMorning.includes('🕐 *09:00 - 09:55* — Design and Analysis of Algorithm'), true);
+  check('morning: empty duration auto-resolves P2 time', autoDurMorning.includes('🕐 *09:55 - 10:50* — Scala for Data Science'), true);
+
+  // mergeScheduleWithRoom: pulls duration from timetable when live row has empty duration
+  const liveRowsWithoutDur = [
+    { period: 'P1', duration: '', subject: 'Robotics', subjectCode: 'MT3015', employee: 'ANKUR', attendance: 'N.M.', status: 'unmarked' },
+  ];
+  const ttWithDur = [
+    { period: '(P1)09:00 - 09:55', duration: '09:00 - 09:55', subjectCode: 'MT3015', room: 'A-101', teacher: 'ANKUR' },
+  ];
+  const mergedWithDur = scraperMod.mergeScheduleWithRoom(liveRowsWithoutDur, ttWithDur);
+  check('merge: duration populated from timetable match', mergedWithDur[0].duration, '09:00 - 09:55');
+
   // ---- 9b. mailer (forgot-password legacy: Resend -> console) ----
   const mailer = require(path.join(__dirname, '..', 'src', 'mailer.js'));
   {

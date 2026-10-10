@@ -1219,6 +1219,49 @@ async function getTodaysTimetable(userId) {
   return getTimetableForDate(timetable, new Date());
 }
 
+const QUMS_STANDARD_DURATIONS = {
+  P1: '09:00 - 09:55',
+  P2: '09:55 - 10:50',
+  P3: '10:50 - 11:45',
+  P4: '11:45 - 12:40',
+  P5: '12:40 - 13:35',
+  P6: '13:35 - 14:30',
+  P7: '14:30 - 15:25',
+  P8: '15:25 - 16:20',
+};
+
+function extractPeriodKey(str) {
+  if (!str) return '';
+  const m = String(str).match(/\b(P\d+|\d+)\b/i);
+  if (!m) return norm(str).toUpperCase();
+  return m[1].toUpperCase().startsWith('P') ? m[1].toUpperCase() : `P${m[1]}`;
+}
+
+function extractTimeRange(str) {
+  if (!str) return '';
+  const m = String(str).match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
+  return m ? norm(m[0]) : '';
+}
+
+function resolvePeriodDuration(duration, period) {
+  if (duration && String(duration).trim()) return norm(duration);
+  const fromP = extractTimeRange(period);
+  if (fromP) return fromP;
+  const k = extractPeriodKey(period);
+  return QUMS_STANDARD_DURATIONS[k] || '';
+}
+
+function periodMatches(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const kA = extractPeriodKey(a);
+  const kB = extractPeriodKey(b);
+  if (kA && kB && kA === kB) return true;
+  const sA = String(a).trim().toUpperCase();
+  const sB = String(b).trim().toUpperCase();
+  return sA.includes(sB) || sB.includes(sA);
+}
+
 /**
  * PURE merge (Task 1 spec): subject + teacher "Today's Attendance" se (clean/
  * reliable — QUMS isi se marking karta hai), room SIRF Timetable se.
@@ -1229,15 +1272,16 @@ function mergeScheduleWithRoom(todaysRows, timetablePeriods) {
   const tt = timetablePeriods || [];
   return (todaysRows || []).map((row) => {
     const match =
-      tt.find((t) => t.subjectCode && row.subjectCode && t.subjectCode === row.subjectCode) ||
-      tt.find((t) => t.period && row.period && t.period === row.period) ||
+      tt.find((t) => t.subjectCode && row.subjectCode && String(t.subjectCode).trim().toUpperCase() === String(row.subjectCode).trim().toUpperCase()) ||
+      tt.find((t) => periodMatches(t.period, row.period)) ||
       null;
+    const dur = row.duration || (match && match.duration) || resolvePeriodDuration(row.duration, row.period) || '';
     return {
       period: row.period,
-      duration: row.duration,
+      duration: dur,
       subject: row.subject,
       subjectCode: row.subjectCode,
-      teacher: row.employee || '', // teacherName — Today's Attendance se
+      teacher: row.employee || (match && match.teacher) || '', // teacherName — Today's Attendance se
       attendance: row.attendance,
       status: row.status,
       key: row.key,
@@ -1274,13 +1318,28 @@ async function getTodaysScheduleWithRoom(userId) {
   } catch {
     timetablePeriods = []; // timetable na mile to room null rahega (live rows theek hain)
   }
-  const merged = mergeScheduleWithRoom(todaysRows, timetablePeriods);
+  let merged = [];
+  if (todaysRows && todaysRows.length) {
+    merged = mergeScheduleWithRoom(todaysRows, timetablePeriods);
+  } else if (timetablePeriods && timetablePeriods.length) {
+    merged = timetablePeriods.map((tp) => ({
+      period: tp.period,
+      duration: tp.duration || resolvePeriodDuration(tp.duration, tp.period),
+      subject: tp.subject,
+      subjectCode: tp.subjectCode,
+      teacher: tp.teacher,
+      room: tp.room,
+      attendance: 'N.M.',
+      status: 'unmarked',
+    }));
+  }
   const dow = new Date().getDay();
   await db.upsertWeeklySchedule(
     userId,
     dow,
     merged.map((r) => ({
       period: r.period,
+      duration: r.duration || '',
       subject: r.subject,
       subjectCode: r.subjectCode,
       teacher: r.teacher,

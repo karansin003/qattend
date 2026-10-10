@@ -36,6 +36,29 @@ function formatAttendanceUpdate(row, dateLabel = dateLabelIST()) {
   return lines.join('\n');
 }
 
+const QUMS_STANDARD_PERIOD_DURATIONS = {
+  P1: '09:00 - 09:55',
+  P2: '09:55 - 10:50',
+  P3: '10:50 - 11:45',
+  P4: '11:45 - 12:40',
+  P5: '12:40 - 13:35',
+  P6: '13:35 - 14:30',
+  P7: '14:30 - 15:25',
+  P8: '15:25 - 16:20',
+};
+
+function resolveDuration(duration, period) {
+  if (duration && String(duration).trim()) return norm(duration);
+  const fromPeriod = (period || '').match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
+  if (fromPeriod) return norm(fromPeriod[0]);
+  const cp = (period || '').match(/\b(P\d+|\d+)\b/i);
+  if (cp) {
+    const key = cp[1].toUpperCase().startsWith('P') ? cp[1].toUpperCase() : `P${cp[1]}`;
+    if (QUMS_STANDARD_PERIOD_DURATIONS[key]) return QUMS_STANDARD_PERIOD_DURATIONS[key];
+  }
+  return '';
+}
+
 /**
  * Morning schedule (daily 8:30 AM IST): all of today's classes + time + room + teacher.
  */
@@ -49,7 +72,9 @@ function formatMorningSchedule(rows, dateLabel = dateLabelIST(), studentName = '
     // Timetable mode — period time + ROOM + teacher available hai
     if (studentName) lines.push(`${hi}Here is your schedule for today:`, '');
     list.forEach((r, i) => {
-      lines.push(`${i + 1}. 🕐 *${r.duration || r.period}* — ${r.subject}${r.subjectCode ? ` (${r.subjectCode})` : ''}`);
+      const dur = resolveDuration(r.duration, r.period);
+      const timeLabel = dur || r.period;
+      lines.push(`${i + 1}. 🕐 *${timeLabel}* — ${r.subject}${r.subjectCode ? ` (${r.subjectCode})` : ''}`);
       const extras = [];
       if (r.room) extras.push(`Room: ${r.room}`);
       if (r.teacher) extras.push(r.teacher);
@@ -61,7 +86,8 @@ function formatMorningSchedule(rows, dateLabel = dateLabelIST(), studentName = '
     // Attendance-rows mode (fallback — isme room nahi hota)
     if (studentName) lines.push(`${hi}Here is your schedule for today:`, '');
     list.forEach((r, i) => {
-      lines.push(`${i + 1}. *${r.period}* (${r.duration})`);
+      const dur = resolveDuration(r.duration, r.period);
+      lines.push(`${i + 1}. *${r.period}* (${dur || r.duration || 'TBA'})`);
       lines.push(`    ${r.subject} (${r.subjectCode}) — ${r.employee || 'TBA'}`);
     });
     lines.push('');
@@ -251,7 +277,8 @@ function formatTodayAttendanceStatus(rows, dateLabel = dateLabelIST(), studentNa
   let otherCount = 0;
 
   list.forEach((r, i) => {
-    const periodLabel = r.duration ? `🕐 *${r.duration}* (Period ${r.period})` : `🕐 *Period ${r.period}*`;
+    const dur = resolveDuration(r.duration, r.period);
+    const periodLabel = dur ? `🕐 *${dur}* (Period ${r.period})` : `🕐 *Period ${r.period}*`;
     lines.push(`${i + 1}. ${periodLabel}`);
     lines.push(`   📚 *${r.subject || 'Class'}*${r.subjectCode ? ` (${r.subjectCode})` : ''}`);
 
