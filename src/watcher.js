@@ -181,7 +181,7 @@ function pendingNotifications(rows, notifiedKeys) {
  * (no Telegram spam) — requirement: never treat a timeout as expiry.
  */
 async function handleCycleError(log, userId, err) {
-  if (err && (err.name === 'SessionExpiredError' || err.name === 'NoSessionError')) {
+  if (err && err.name === 'SessionExpiredError') {
     await db.updateUser(userId, { qumsSessionStatus: 'expired' }).catch(() => {});
     await maybeNotifySessionExpired(log, userId, { evidence: true });
     return;
@@ -298,17 +298,16 @@ async function runWatcherPass(log = console) {
   const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
   const users = [];
   for (const user of allUsers) {
-    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
-      if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
-        await db.markSessionExpired(user.id).catch(() => {});
-        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+    if (user.qumsSessionStatus === 'expired') {
+      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-      } else if (user.qumsSessionStatus === 'expired') {
-        const state = await db.getSessionExpiryState(user.id).catch(() => null);
-        if (!state || !state.lastAlertAt) {
-          await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-        }
       }
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    await db.ensureSessionOnDisk(user).catch(() => {});
+    if (!user.qumsSessionPath || !fs.existsSync(user.qumsSessionPath)) {
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
     }
@@ -749,17 +748,16 @@ async function runMonthRegisterPass(log = console, opts = {}) {
   const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
   const users = [];
   for (const user of allUsers) {
-    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
-      if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
-        await db.markSessionExpired(user.id).catch(() => {});
-        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+    if (user.qumsSessionStatus === 'expired') {
+      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-      } else if (user.qumsSessionStatus === 'expired') {
-        const state = await db.getSessionExpiryState(user.id).catch(() => null);
-        if (!state || !state.lastAlertAt) {
-          await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-        }
       }
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    await db.ensureSessionOnDisk(user).catch(() => {});
+    if (!user.qumsSessionPath || !fs.existsSync(user.qumsSessionPath)) {
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
     }
@@ -1099,6 +1097,7 @@ module.exports = {
   stateFileFor,
   loadState,
   saveState,
+  handleCycleError,
   COLLEGE_START_HOUR,
   COLLEGE_END_HOUR,
 };

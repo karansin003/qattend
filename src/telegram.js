@@ -1281,6 +1281,7 @@ async function handleAttendance(chatId, log = console) {
   }
 
   try {
+    await db.ensureSessionOnDisk(user).catch(() => {});
     const { resolveUserRuntime } = require('./credentials');
     const runtime = resolveUserRuntime(user);
     const { scrapeAttendance } = require('./scraper');
@@ -1303,7 +1304,7 @@ async function handleAttendance(chatId, log = console) {
     }
   } catch (err) {
     log.error(`[telegram] /attendance failed for user ${user.id}: ${err.message}`);
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError' || /session expired|no qums session|session file does not exist/i.test(err.message)) {
+    if (err.name === 'SessionExpiredError' || /session expired/i.test(err.message)) {
       await db.markSessionExpired(user.id).catch(() => {});
       await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
       const { maybeNotifySessionExpired } = require('./alerts');
@@ -1366,6 +1367,7 @@ async function handleToday(chatId, log = console) {
 
     let rows = [];
     if (user.qumsQid && user.qumsSessionPath && user.qumsSessionStatus !== 'expired') {
+      await db.ensureSessionOnDisk(user).catch(() => {});
       try {
         const runtime = resolveUserRuntime(user);
         if (fs.existsSync(runtime.sessionPath)) {
@@ -1395,7 +1397,7 @@ async function handleToday(chatId, log = console) {
         }
       } catch (fetchErr) {
         log.log(`[telegram] live today scrape error: ${fetchErr.message}`);
-        if (fetchErr.name === 'SessionExpiredError' || fetchErr.name === 'NoSessionError' || /session expired|no qums session|session file does not exist/i.test(fetchErr.message)) {
+        if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
           await db.markSessionExpired(user.id).catch(() => {});
           await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
           const { maybeNotifySessionExpired } = require('./alerts');

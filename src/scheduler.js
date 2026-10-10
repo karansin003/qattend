@@ -121,11 +121,8 @@ function pruneMorningState(state, todayYMD) {
 async function activeUsers() {
   const all = await db.allUsers();
   for (const u of all) {
-    if (u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && !fs.existsSync(u.qumsSessionPath)) {
-      await db.markSessionExpired(u.id).catch(() => {});
-      await db.updateUser(u.id, { qumsSessionStatus: 'expired' }).catch(() => {});
-      await maybeNotifySessionExpired(console, u.id, { evidence: true }).catch(() => {});
-    }
+    if (u.qumsSessionStatus === 'expired') continue;
+    await db.ensureSessionOnDisk(u).catch(() => {});
   }
   return all.filter((u) => u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath));
 }
@@ -259,7 +256,7 @@ async function runMorningScheduleJob(log = console, opts = {}) {
         log.log(`[scheduler] 📲 morning schedule sent -> ${user.email} [${mode}] at ${istParts().stamp}`);
       } catch (err) {
         log.error(`[scheduler] morning schedule FAILED for ${user.email}: ${err.message}`);
-        if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+        if (err.name === 'SessionExpiredError') {
           await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
           // eslint-disable-next-line no-await-in-loop
           await maybeNotifySessionExpired(log, user.id, { evidence: true });

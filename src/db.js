@@ -637,6 +637,77 @@ function getIstDateString(d = new Date()) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+function decodeSessionData(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('{')) {
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {}
+  }
+  try {
+    const { decryptSecret } = require('./crypto');
+    const decrypted = decryptSecret(trimmed);
+    if (decrypted && decrypted.trim().startsWith('{')) {
+      JSON.parse(decrypted.trim());
+      return decrypted.trim();
+    }
+  } catch {}
+  return null;
+}
+
+async function ensureSessionOnDisk(userOrId) {
+  if (!userOrId) return null;
+  let user = typeof userOrId === 'string' ? await getUserById(userOrId) : userOrId;
+  if (!user || !user.id) return null;
+
+  const canonical = sessionPathFor(user.id);
+  if (fs.existsSync(canonical)) {
+    user.qumsSessionPath = canonical;
+    return canonical;
+  }
+
+  let sessionData = user.qumsSessionData;
+  if (!sessionData && USE_PG) {
+    try {
+      await init();
+      const r = await pool.query('SELECT qums_session_data FROM users WHERE id=$1', [user.id]);
+      if (r.rows[0] && r.rows[0].qums_session_data) {
+        sessionData = r.rows[0].qums_session_data;
+        user.qumsSessionData = sessionData;
+      }
+    } catch {}
+  }
+
+  const plainJson = decodeSessionData(sessionData);
+  if (plainJson) {
+    try {
+      fs.mkdirSync(path.dirname(canonical), { recursive: true });
+      fs.writeFileSync(canonical, plainJson, { mode: 0o600 });
+      user.qumsSessionPath = canonical;
+      return canonical;
+    } catch (e) {
+      console.error(`[db] failed to restore session on disk for user ${user.id}:`, e.message);
+    }
+  }
+  return null;
+}
+
+async function saveUserSessionData(userId, rawJson) {
+  if (!userId || !rawJson) return false;
+  let dataToStore = rawJson;
+  try {
+    const { encryptSecret } = require('./crypto');
+    dataToStore = encryptSecret(rawJson);
+  } catch (err) {
+    dataToStore = rawJson;
+  }
+  await updateUser(userId, { qumsSessionData: dataToStore });
+  return true;
+}
+
 function fromUserRow(r) {
   let mDate = '';
   if (r.monitoring_started_date) {
@@ -651,15 +722,16 @@ function fromUserRow(r) {
 
   const canonicalSession = r.id ? sessionPathFor(r.id) : (r.qums_session_path || '');
   let resolvedSessionPath = r.qums_session_path || '';
-  if (r.id) {
+  if (r.id && (r.qums_session_path || r.qums_session_data)) {
+    resolvedSessionPath = canonicalSession;
     if (r.qums_session_data && !fs.existsSync(canonicalSession)) {
       try {
-        fs.mkdirSync(path.dirname(canonicalSession), { recursive: true });
-        fs.writeFileSync(canonicalSession, r.qums_session_data);
-        resolvedSessionPath = canonicalSession;
+        const plainJson = decodeSessionData(r.qums_session_data);
+        if (plainJson) {
+          fs.mkdirSync(path.dirname(canonicalSession), { recursive: true });
+          fs.writeFileSync(canonicalSession, plainJson, { mode: 0o600 });
+        }
       } catch {}
-    } else if (fs.existsSync(canonicalSession)) {
-      resolvedSessionPath = canonicalSession;
     }
   }
 
@@ -1746,6 +1818,7 @@ async function removeScheduledDeletion(chatId, messageId) {
 
 module.exports={
   DB_FILE,QUMS_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,
+  ensureSessionOnDisk,saveUserSessionData,decodeSessionData,
   storeResetToken,consumeResetToken,listKnownAttendance,addKnownAttendance,upsertKnownAttendance,removeKnownAttendance,upsertWeeklySchedule,getWeeklySchedule,clearWeeklySchedule,
   telegramLinkCodeFor,getUserByTelegramLinkCode,getUserByTelegramChatId,setTelegramChatId,clearTelegramChatForChat,clearTelegramChatId,
   listKnownAssignments,addKnownAssignments,removeKnownAssignment,updateKnownAssignmentMessageId,

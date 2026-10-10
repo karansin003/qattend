@@ -407,7 +407,11 @@ async function completeQumsSetup(userId, qid, { password, confirmSwitch = false 
     qumsSessionStatus: 'active',
   };
   if (sessionData) {
-    patch.qumsSessionData = sessionData;
+    try {
+      patch.qumsSessionData = encryptSecret(sessionData);
+    } catch {
+      patch.qumsSessionData = sessionData;
+    }
   }
 
   if (password) {

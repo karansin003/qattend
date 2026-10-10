@@ -123,8 +123,9 @@ async function run() {
   fs.writeFileSync(sPath1, JSON.stringify({ cookie: 'test1' }));
   fs.writeFileSync(sPath2, JSON.stringify({ cookie: 'test2' }));
 
-  // 1 & 2 & 3 & 4 & 5 & 6: Missing/expired QUMS session detection & notification
-  fs.unlinkSync(sPath1); // Remove session file to simulate expiry
+  // 1 & 2 & 3 & 4 & 5 & 6: Expired QUMS session detection & notification
+  await db.updateUser(user1.id, { qumsSessionStatus: 'expired' });
+  fs.unlinkSync(sPath1);
 
   const quiet = { log: () => {}, error: () => {} };
   await watcher.runWatcherPass(quiet);

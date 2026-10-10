@@ -739,7 +739,7 @@ app.get('/api/attendance', requireAuth, async (req, res) => {
     }
     res.json(analysis);
   } catch (err) {
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+    if (err.name === 'SessionExpiredError') {
       await db.updateUser(req.appUser.id, { qumsSessionStatus: 'expired' }).catch(() => {});
       await maybeNotifySessionExpired(console, req.appUser.id, { evidence: true }).catch(() => {});
     }
@@ -764,7 +764,7 @@ app.get('/api/today', requireAuth, async (req, res) => {
     todayCache.set(userId, { data: payload, timestamp: Date.now() });
     res.json(payload);
   } catch (err) {
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+    if (err.name === 'SessionExpiredError') {
       await db.updateUser(req.appUser.id, { qumsSessionStatus: 'expired' }).catch(() => {});
       await maybeNotifySessionExpired(console, req.appUser.id, { evidence: true }).catch(() => {});
     }
@@ -794,7 +794,7 @@ app.all('/api/trigger-telegram', requireAuth, async (req, res) => {
     if (!sent) throw await telegramSendBlockError(req.appUser.id);
     res.json({ success: true, sentTo: req.appUser.email, preview });
   } catch (err) {
-    if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+    if (err.name === 'SessionExpiredError') {
       await db.updateUser(req.appUser.id, { qumsSessionStatus: 'expired' }).catch(() => {});
       await maybeNotifySessionExpired(console, req.appUser.id, { evidence: true }).catch(() => {});
     }

@@ -37,6 +37,13 @@ function resolveUserRuntime(user) {
       if (typeof db.sessionPathFor === 'function') {
         const canonical = db.sessionPathFor(user.id);
         const fs = require('fs');
+        if (!fs.existsSync(canonical) && user.qumsSessionData) {
+          const plainJson = typeof db.decodeSessionData === 'function' ? db.decodeSessionData(user.qumsSessionData) : null;
+          if (plainJson) {
+            fs.mkdirSync(path.dirname(canonical), { recursive: true });
+            fs.writeFileSync(canonical, plainJson, { mode: 0o600 });
+          }
+        }
         if (fs.existsSync(canonical) || !sessionPath) {
           sessionPath = canonical;
         }

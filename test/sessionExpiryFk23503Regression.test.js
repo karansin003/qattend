@@ -116,8 +116,8 @@ function ok(label, condition) {
     watcherCode.includes('maybeNotifySessionExpired(log, user.id, { evidence: true })'));
   ok('Caller check: assignments.js passes (log, user.id, ...)',
     assignmentsCode.includes('maybeNotifySessionExpired(log, user.id, { evidence: true })'));
-  ok('Caller check: scheduler.js passes (console, u.id, ...)',
-    schedulerCode.includes('maybeNotifySessionExpired(console, u.id, { evidence: true })'));
+  ok('Caller check: scheduler.js passes (log, user.id, ...)',
+    schedulerCode.includes('maybeNotifySessionExpired(log, user.id, { evidence: true })'));
 
   // -------------------------------------------------------------------------
   // 2. Defensive Validation: invalid or object userIds are safely rejected
@@ -206,19 +206,19 @@ function ok(label, condition) {
   check('Multi-user: Sent to User B ID', telegramSends[0].userId, userB.id);
 
   // -------------------------------------------------------------------------
-  // 6. Missing session file handling & qumsSessionStatus='expired' persistence
+  // 6. Expired session handling & session_expiry_state persistence
   // -------------------------------------------------------------------------
   const missingSessionUser = await db.createUser({ email: 'missing@example.com', passwordHash: 'hashM' });
   const fakeSessionPath = path.join(TMP, 'nonexistent_session.json');
   await db.updateUser(missingSessionUser.id, {
     qumsSessionPath: fakeSessionPath,
-    qumsSessionStatus: 'active',
+    qumsSessionStatus: 'expired',
     telegramChatId: 'chat_3003',
   });
 
   // Verify initial status
   check('Missing session: initial status is active',
-    (await db.getUserById(missingSessionUser.id)).qumsSessionStatus, 'active');
+    (await db.getUserById(missingSessionUser.id)).qumsSessionStatus, 'expired');
 
   telegramSends.length = 0;
   // Run watcher pass (simulates background watcher tick)
@@ -236,8 +236,8 @@ function ok(label, condition) {
   ok('Missing session: Telegram alert sent to user',
     telegramSends.some((s) => s.userId === missingSessionUser.id));
 
-  // On NEXT pass, because qumsSessionStatus is already 'expired', the condition
-  // qumsSessionStatus !== 'expired' is false, so it does NOT repeat the alert logic
+  // On NEXT pass, because qumsSessionStatus is already 'expired' and alert has been sent,
+  // the deduplication condition ensures it does NOT repeat the alert logic
   telegramSends.length = 0;
   const stateBefore = await db.getSessionExpiryState(missingSessionUser.id);
   await watcher.runWatcherPass(mockLogger);

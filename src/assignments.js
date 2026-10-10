@@ -224,17 +224,16 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
   const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
   const users = [];
   for (const user of allUsers) {
-    if (!user.qumsSessionPath || user.qumsSessionStatus === 'expired' || !fs.existsSync(user.qumsSessionPath)) {
-      if (user.qumsSessionPath && user.qumsSessionStatus !== 'expired' && !fs.existsSync(user.qumsSessionPath)) {
-        await db.markSessionExpired(user.id).catch(() => {});
-        await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+    if (user.qumsSessionStatus === 'expired') {
+      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-      } else if (user.qumsSessionStatus === 'expired') {
-        const state = await db.getSessionExpiryState(user.id).catch(() => null);
-        if (!state || !state.lastAlertAt) {
-          await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
-        }
       }
+      log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
+      continue;
+    }
+    await db.ensureSessionOnDisk(user).catch(() => {});
+    if (!user.qumsSessionPath || !fs.existsSync(user.qumsSessionPath)) {
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
     }
@@ -267,7 +266,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
       log.log(`[assignment] user=${user.id} checked assignments (mode=${mode}, found=${(r.notified || []).length})`);
     } catch (err) {
       log.error(`[assignment] user=${user.id} pass FAILED: ${err.name || 'Error'}: ${err.message}`);
-      if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') {
+      if (err.name === 'SessionExpiredError') {
         await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
         // eslint-disable-next-line no-await-in-loop
         await maybeNotifySessionExpired(log, user.id, { evidence: true });
