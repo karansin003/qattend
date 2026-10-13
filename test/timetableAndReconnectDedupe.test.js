@@ -192,6 +192,22 @@ async function runTests() {
   assert(!todayStatusText.includes('(Period (P1)'), 'No ugly duplicated period strings');
   pass('combineTimetableWithLiveAttendance retains all 6 classes and formats beautifully for Telegram');
 
+  // 1.7 Today's Attendance priority: when QUMS GetTodayAttendance has classes,
+  // do NOT inject un-scheduled/phantom classes (e.g. P3 Lab) from the weekly timetable
+  const actualTodayQumsRows = [
+    { period: 'P1', duration: '09:00 - 09:55', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', employee: 'RAJ KUMAR', attendance: 'P', status: 'present', key: 'P1-CS35303' },
+    { period: 'P2', duration: '09:55 - 10:50', subject: 'Scala for Data Science - Tools and Techniques', subjectCode: 'CS35305', employee: 'BHANU PARTAP', attendance: 'P', status: 'present', key: 'P2-CS35305' },
+    { period: 'P6', duration: '13:35 - 14:30', subject: 'Corporate Communication', subjectCode: 'AE35362', employee: 'RYANSHU SAINI', attendance: 'N.M.', status: 'unmarked', key: 'P6-AE35362' },
+    { period: 'P7', duration: '14:30 - 15:25', subject: 'Technical Skills Development-IV', subjectCode: 'SE35309', employee: 'GURNAM SINGH', attendance: 'N.M.', status: 'unmarked', key: 'P7-SE35309' },
+    { period: 'P8', duration: '15:25 - 16:20', subject: 'Technical Skills Development-IV', subjectCode: 'SE35309', employee: 'GURNAM SINGH', attendance: 'N.M.', status: 'unmarked', key: 'P8-SE35309' },
+  ];
+  const mergedActual = scraper.mergeScheduleWithRoom(actualTodayQumsRows, tuesdayTtPeriods);
+  assert.strictEqual(mergedActual.length, 5, 'Must have exactly 5 classes (no phantom P3 lab)');
+  assert(!mergedActual.some((r) => r.period === 'P3' || r.subjectCode === 'CS35363'), 'P3 Lab must NOT be present in today classes');
+  assert.strictEqual(mergedActual[0].room, 'A-004');
+  assert.strictEqual(mergedActual[1].room, 'A-102');
+  pass('mergeScheduleWithRoom preserves actual today QUMS rows without injecting phantom lab classes');
+
 
   // --------------------------------------------------------------------------
   // TEST GROUP 2: Reconnect Attendance Deduplication & Isolation

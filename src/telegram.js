@@ -1410,7 +1410,20 @@ async function handleToday(chatId, log = console) {
             timetablePeriods = [];
           }
 
-          rows = combineTimetableWithLiveAttendance(timetablePeriods, liveRows);
+          if (liveRows && liveRows.length) {
+            rows = mergeScheduleWithRoom(liveRows, timetablePeriods);
+          } else if (timetablePeriods && timetablePeriods.length) {
+            rows = timetablePeriods.map((tp) => ({
+              period: tp.period,
+              duration: tp.duration,
+              subject: tp.subject,
+              subjectCode: tp.subjectCode,
+              teacher: tp.teacher,
+              room: tp.room,
+              status: 'unmarked',
+              attendance: 'N.M.',
+            }));
+          }
           if (rows.length) {
             const dow = new Date().getDay();
             await db.upsertWeeklySchedule(

@@ -811,7 +811,7 @@ app.get('/api/today', requireAuth, async (req, res) => {
       }
       if (timetable) {
         const todayPeriods = getTimetableForDate(timetable, new Date());
-        periods = combineTimetableWithLiveAttendance(todayPeriods, periods);
+        periods = mergeScheduleWithRoom(periods, todayPeriods);
       }
     } catch {
       // Silently keep periods without room/teacher enrichment

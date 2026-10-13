@@ -1639,9 +1639,25 @@ async function getTodaysScheduleWithRoom(userId) {
     timetablePeriods = [];
   }
 
-  const merged = combineTimetableWithLiveAttendance(timetablePeriods, todaysRows);
+  let merged = [];
+  if (todaysRows && todaysRows.length) {
+    merged = mergeScheduleWithRoom(todaysRows, timetablePeriods);
+  } else if (timetablePeriods && timetablePeriods.length) {
+    merged = timetablePeriods.map((tp) => ({
+      period: tp.period,
+      duration: tp.duration || resolvePeriodDuration(tp.duration, tp.period),
+      subject: tp.subject,
+      subjectCode: tp.subjectCode,
+      teacher: tp.teacher,
+      room: tp.room,
+      attendance: 'N.M.',
+      status: 'unmarked',
+    }));
+  }
+
   const dow = new Date().getDay();
   if (merged.length) {
+    await db.clearWeeklySchedule(userId, dow);
     await db.upsertWeeklySchedule(
       userId,
       dow,
