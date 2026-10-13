@@ -632,7 +632,60 @@ function parseSubjectLabel(label) {
  * 1) Teacher hamesha LAST comma ke baad (subject names me comma ho sakte hain).
  * 2) Saare (...) groups: pehla = subject code, baaki join = room.
  * 3) Subject = parens hata ke jo bacha.
- */
+/** Standard weekdays in order */
+const STANDARD_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function canonicalDayTitle(name) {
+  const k = canonicalDayKey(name);
+  const match = STANDARD_WEEKDAYS.find((d) => d.toLowerCase() === k);
+  return match || norm(name);
+}
+
+function normalizeTimeTo24h(timeStr, ampm) {
+  if (!timeStr) return '';
+  const parts = timeStr.split(':').map(Number);
+  let h = parts[0];
+  const m = parts[1] || 0;
+  const p = String(ampm || '').toUpperCase().trim();
+  if (p === 'PM' && h < 12) h += 12;
+  if (p === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function parsePeriodTimeInfo(periodStr, durationStr = '') {
+  const p = norm(periodStr);
+  const d = norm(durationStr);
+  const dur = d || extractTimeRange(p) || resolvePeriodDuration('', p);
+  const m12 = dur.match(/(\d{1,2}:\d{2})\s*(AM|PM)?\s*-\s*(\d{1,2}:\d{2})\s*(AM|PM)?/i);
+  let startTime = '';
+  let endTime = '';
+  if (m12) {
+    const startRaw = m12[1];
+    const startAmPm = m12[2];
+    const endRaw = m12[3];
+    const endAmPm = m12[4];
+    startTime = normalizeTimeTo24h(startRaw, startAmPm || (endAmPm === 'PM' && Number(startRaw.split(':')[0]) < 12 ? 'PM' : ''));
+    endTime = normalizeTimeTo24h(endRaw, endAmPm);
+  }
+  const periodKey = extractPeriodKey(p);
+  const mNum = (periodKey || p).match(/\d+/);
+  const periodNumber = mNum ? Number(mNum[0]) : null;
+  const startParts = startTime.split(':').map(Number);
+  const startTimeMinutes = startParts.length >= 2 && !Number.isNaN(startParts[0]) && !Number.isNaN(startParts[1])
+    ? startParts[0] * 60 + startParts[1]
+    : null;
+
+  return {
+    period: periodKey || p,
+    periodNumber,
+    rawPeriod: p,
+    duration: dur,
+    startTime,
+    endTime,
+    startTimeMinutes,
+  };
+}
+
 function splitTimetableEntries(text) {
   const entries = [];
   let cur = '';
@@ -653,10 +706,11 @@ function splitTimetableEntries(text) {
       continue;
     }
     if (ch === '-' && phase === 'teacher') {
-      // boundary: agle '(' tak koi ',' ya '(' nahi — teacher khatam, naya subject
+      // Teacher ke baad '-' separator tabhi split hoga agar agle hisse me '(' (subject code) hai.
+      // Subject names me comma ho sakte hain (e.g. "Contracts, Taxation and Beyond"),
+      // isliye nextComma check nahi karte.
       const nextParen = text.indexOf('(', i);
-      const nextComma = text.indexOf(',', i);
-      if (nextParen !== -1 && (nextComma === -1 || nextParen < nextComma)) {
+      if (nextParen !== -1) {
         entries.push(cur);
         cur = '';
         phase = 'subject';
@@ -699,21 +753,59 @@ function parseTimetableApiState(rows) {
   const periodKeys = [];
   for (const row of rows || []) {
     for (const k of Object.keys(row || {})) {
-      if (k !== 'Days/Period' && !periodKeys.includes(k)) periodKeys.push(k);
+      if (k !== 'Days/Period' && k !== 'rn' && !k.startsWith('_') && !periodKeys.includes(k)) {
+        periodKeys.push(k);
+      }
     }
   }
+
+  // Chronological sort on periodKeys
+  periodKeys.sort((a, b) => {
+    const infoA = parsePeriodTimeInfo(a);
+    const infoB = parsePeriodTimeInfo(b);
+    if (infoA.startTime && infoB.startTime && infoA.startTime !== infoB.startTime) {
+      return infoA.startTime.localeCompare(infoB.startTime);
+    }
+    const numA = parseInt((infoA.period || '').replace(/\D/g, ''), 10);
+    const numB = parseInt((infoB.period || '').replace(/\D/g, ''), 10);
+    if (!isNaN(numA) && !isNaN(numB) && numA !== numB) return numA - numB;
+    return a.localeCompare(b);
+  });
+
   const days = (rows || [])
-    .map((row) => ({
-      day: norm(row['Days/Period']),
-      periods: periodKeys.map((pk) => ({ period: pk, text: norm(row[pk] || '') })),
-    }))
+    .map((row) => {
+      const rawDay = norm(row['Days/Period']);
+      const canonicalDay = canonicalDayTitle(rawDay);
+      return {
+        day: rawDay, // raw preserved for test compatibility
+        dayName: canonicalDay, // normalized weekday title (e.g. 'Thursday')
+        periods: periodKeys.map((pk) => {
+          const info = parsePeriodTimeInfo(pk);
+          return {
+            period: pk,
+            periodCode: info.period,
+            duration: info.duration,
+            startTime: info.startTime,
+            endTime: info.endTime,
+            text: norm(row[pk] || ''),
+          };
+        }),
+      };
+    })
     .filter((d) => d.day);
+
+  // Sort days in standard weekly order (Monday -> Sunday)
+  days.sort((a, b) => {
+    const idxA = STANDARD_WEEKDAYS.indexOf(a.dayName);
+    const idxB = STANDARD_WEEKDAYS.indexOf(b.dayName);
+    return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
+  });
+
   return { periods: periodKeys, days };
 }
 
 /** Alias — purana naam, same logic. */
 const parsePeriodCell = parseTimetableCell;
-
 
 /** 'YYYY-MM-DD' | 'DD/MM/YYYY' -> Date (civil/local, weekday TZ-safe). */
 function dateFromAny(dateLike) {
@@ -745,28 +837,132 @@ function canonicalDayKey(name) {
  */
 function getTimetableForDate(timetable, date = new Date()) {
   if (!timetable || !Array.isArray(timetable.days)) return [];
-  const wd = dateFromAny(date).getDay();
-  const want = canonicalDayKey(DAY_NAMES[wd]);
+  let want;
+  if (date instanceof Date) {
+    const wdName = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'long',
+    }).format(date);
+    want = canonicalDayKey(wdName);
+  } else {
+    const wd = dateFromAny(date).getDay();
+    want = canonicalDayKey(DAY_NAMES[wd]);
+  }
   const row = timetable.days.find(
-    (d) => canonicalDayKey(d.day) === want
+    (d) => canonicalDayKey(d.day) === want || canonicalDayKey(d.dayName) === want
   );
   if (!row) return [];
-  return row.periods
-    .filter((p) => p.text && p.text.length > 2 && !/break|lunch|^free/i.test(p.text))
+  return (row.periods || [])
+    .filter((p) => {
+      const txt = p.text || p.raw || p.subject || '';
+      return txt && !/break|lunch|^free/i.test(txt);
+    })
     .flatMap((p) => {
-      // multi-subject cell (Friday jaisa) -> har subject apni entry (own room/teacher)
-      const dur = (p.period || '').match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
-      const duration = dur ? norm(dur[0]) : '';
-      return parseTimetableCellEntries(p.text).map((cell) => ({
+      const timeInfo = parsePeriodTimeInfo(p.period, p.duration);
+      if (p.subject && !p.text) {
+        return [{
+          period: p.period,
+          periodCode: timeInfo.period,
+          duration: timeInfo.duration || p.duration,
+          startTime: timeInfo.startTime || (p.startTime ? p.startTime : ''),
+          endTime: timeInfo.endTime || (p.endTime ? p.endTime : ''),
+          subject: p.subject || '',
+          subjectCode: p.subjectCode || '',
+          room: p.room || '',
+          teacher: p.teacher || '',
+          raw: p.raw || p.subject || '',
+        }];
+      }
+      return parseTimetableCellEntries(p.text || p.raw || '').map((cell) => ({
         period: p.period,
-        duration,
+        periodCode: timeInfo.period,
+        duration: timeInfo.duration,
+        startTime: timeInfo.startTime,
+        endTime: timeInfo.endTime,
         subject: cell.subject || '',
         subjectCode: cell.subjectCode || '',
         room: cell.room || '',
         teacher: cell.teacher || '',
-        raw: p.text,
+        raw: p.text || p.raw || '',
       }));
     });
+}
+
+/** Return clean normalized weekly timetable grouped by weekday, sorted chronologically */
+function formatNormalizedTimetable(timetable) {
+  if (!timetable || !Array.isArray(timetable.days)) {
+    return { days: [] };
+  }
+  const activeWeekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const days = activeWeekdays.map((weekday) => {
+    const row = timetable.days.find(
+      (d) => canonicalDayKey(d.day) === canonicalDayKey(weekday) || canonicalDayKey(d.dayName) === canonicalDayKey(weekday)
+    );
+    if (!row) {
+      return { day: weekday, classes: [] };
+    }
+    const classes = (row.periods || [])
+      .filter((p) => {
+        const txt = p.text || p.raw || p.subject || '';
+        return !/break|lunch|^free/i.test(txt);
+      })
+      .flatMap((p) => {
+        const timeInfo = parsePeriodTimeInfo(p.period, p.duration);
+        if (p.subject && !p.text) {
+          const startTime = timeInfo.startTime || (p.startTime ? p.startTime : '');
+          const endTime = timeInfo.endTime || (p.endTime ? p.endTime : '');
+          return [{
+            period: timeInfo.period || p.period,
+            rawPeriod: p.period,
+            duration: timeInfo.duration || p.duration,
+            startTime,
+            endTime,
+            subject: p.subject || '',
+            subjectCode: p.subjectCode || '',
+            room: p.room || null,
+            teacher: p.teacher || null,
+            raw: p.raw || p.subject || '',
+          }];
+        }
+        return parseTimetableCellEntries(p.text || p.raw || '').map((cell) => ({
+          period: timeInfo.period || p.period,
+          rawPeriod: p.period,
+          duration: timeInfo.duration,
+          startTime: timeInfo.startTime,
+          endTime: timeInfo.endTime,
+          subject: cell.subject || '',
+          subjectCode: cell.subjectCode || '',
+          room: cell.room || null,
+          teacher: cell.teacher || null,
+          raw: p.text,
+        }));
+      });
+
+    // Chronological sort
+    classes.sort((a, b) => {
+      const aTime = a.startTime ? scraperTimeToMinutes(a.startTime) : 9999;
+      const bTime = b.startTime ? scraperTimeToMinutes(b.startTime) : 9999;
+      if (aTime !== bTime) return aTime - bTime;
+      return (a.period || '').localeCompare(b.period || '');
+    });
+
+    return {
+      day: weekday,
+      classes,
+      periods: classes,
+    };
+  });
+
+  return { days };
+}
+
+function scraperTimeToMinutes(timeStr) {
+  if (!timeStr) return 9999;
+  const parts = timeStr.split(':').map(Number);
+  if (parts.length >= 2 && !Number.isNaN(parts[0]) && !Number.isNaN(parts[1])) {
+    return parts[0] * 60 + parts[1];
+  }
+  return 9999;
 }
 
 /**
@@ -1239,7 +1435,7 @@ function extractPeriodKey(str) {
 
 function extractTimeRange(str) {
   if (!str) return '';
-  const m = String(str).match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
+  const m = String(str).match(/\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?\s*-\s*\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?/);
   return m ? norm(m[0]) : '';
 }
 
@@ -1673,8 +1869,12 @@ module.exports = {
   parsePeriodCell,
   parseTimetableCell,
   parseTimetableCellEntries,
+  splitTimetableEntries,
   parseTimetableApiState,
   fetchTimetableViaApi,
+  formatNormalizedTimetable,
+  parsePeriodTimeInfo,
+  STANDARD_WEEKDAYS,
   teacherForRecord,
   roomForRecord,
   dateFromAny,

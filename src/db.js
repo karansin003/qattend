@@ -1817,6 +1817,59 @@ async function deleteNotificationLog(userId, dedupeKey) {
   return (r.rowCount || 0) > 0;
 }
 
+async function hasAttendanceBeenNotified(userId, { qid, classDate, subjectCode, status, prevStatus } = {}) {
+  if (!userId || !classDate || !subjectCode) return false;
+  const q = String(qid || '').trim();
+  const cDate = String(classDate).trim();
+  const sCode = String(subjectCode).trim().toUpperCase();
+  const stat = String(status || '').trim().toLowerCase();
+
+  if (!USE_PG) {
+    const logs = data.notificationLogs || [];
+    return logs.some((n) => {
+      if (n.userId !== userId) return false;
+      const key = String(n.dedupeKey || '');
+      const meta = n.metadata || {};
+      const keyMatch =
+        (key.includes(cDate) && key.toUpperCase().includes(sCode)) ||
+        (meta.classDate === cDate && String(meta.subjectCode || '').toUpperCase() === sCode);
+      if (!keyMatch) return false;
+
+      // Status check
+      if (stat) {
+        if (
+          key.toLowerCase().endsWith(`:${stat}`) ||
+          key.toLowerCase().endsWith(`->${stat}`) ||
+          String(meta.status || '').toLowerCase() === stat ||
+          String(meta.newStatus || '').toLowerCase() === stat
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  await init();
+  const sql = `
+    SELECT 1 FROM notification_log
+    WHERE user_id = $1
+      AND (
+        (dedupe_key LIKE '%' || $2 || '%' AND UPPER(dedupe_key) LIKE '%' || $3 || '%')
+        OR (metadata->>'classDate' = $2 AND UPPER(metadata->>'subjectCode') = $3)
+      )
+      AND (
+        metadata->>'status' = $4
+        OR metadata->>'newStatus' = $4
+        OR LOWER(dedupe_key) LIKE '%:' || $4
+        OR LOWER(dedupe_key) LIKE '%->' || $4
+      )
+    LIMIT 1
+  `;
+  const r = await pool.query(sql, [userId, cDate, sCode, stat]);
+  return (r.rowCount || 0) > 0;
+}
+
 // ---- scheduled message auto-deletions ----
 async function addScheduledDeletion(chatId, messageId, deleteAt) {
   const row = {
@@ -1891,7 +1944,7 @@ module.exports={
   getQumsIdentities, getActiveQumsIdentity, switchQumsIdentity,
   saveAttendanceRecord, listAttendanceRecords,
   saveAssignmentRecord, listAssignmentRecords,
-  tryRecordNotificationLog, hasNotificationLog, deleteNotificationLog,
+  tryRecordNotificationLog, hasNotificationLog, deleteNotificationLog, hasAttendanceBeenNotified,
   getIstDateString,
   // migrations / schema
   runMigrations, schemaHealth, importLocalJsonData, sslConfig,

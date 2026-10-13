@@ -91,6 +91,12 @@ async function initializeSilentBaseline(userId, sessionPath, log = console) {
  * Compares current QUMS state against the last saved PostgreSQL snapshot.
  */
 async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}) {
+  if (sessionPath && typeof sessionPath === 'object') {
+    opts = sessionPath;
+    sessionPath = null;
+    log = console;
+  }
+
   const user = await db.getUserById(userId);
   if (!user) return false;
   const qid = user.qumsQid || '';
@@ -104,6 +110,8 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
     let fetched;
     if (opts.attendanceRecords) {
       fetched = opts.attendanceRecords;
+    } else if (opts.monthFetcher) {
+      fetched = await opts.monthFetcher();
     } else {
       const [, curMonth, curYear] = istDateString().split('/').map(Number);
       const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
@@ -115,13 +123,26 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       fetched = await scrapeMonthRegisterRange(sessionPath, months, { log });
     }
     const freshRecords = (Array.isArray(fetched) ? fetched : [fetched])
-      .flatMap((m) => (m && m.records ? m.records : []))
+      .flatMap((m) => (m && m.records ? m.records : (m && m.key ? [m] : [])))
       .filter((r) => r && r.status !== 'unmarked');
 
     const knownRecords = await db.listKnownAttendance(userId);
     const byKey = new Map();
     for (const r of knownRecords || []) {
       if (r && r.key) byKey.set(r.key, r);
+    }
+    const dbRecords = await db.listAttendanceRecords(userId, qid).catch(() => []);
+    for (const r of dbRecords || []) {
+      const key = `${r.classDate}-${r.subjectCode}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          key,
+          date: r.classDate,
+          subjectCode: r.subjectCode,
+          subject: r.subjectName,
+          status: r.status,
+        });
+      }
     }
 
     const pending = [];
@@ -155,12 +176,32 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
         continue;
       }
 
+      // Check if this attendance event was already notified (by fast loop or previous cycle)
+      const alreadyNotified = await db.hasAttendanceBeenNotified(userId, {
+        qid,
+        classDate: rec.date,
+        subjectCode: rec.subjectCode,
+        status: rec.status,
+        prevStatus: prev ? prev.status : 'unmarked',
+      });
+
+      if (alreadyNotified) {
+        log.log(`[catchup] duplicate suppressed for user=${userId} (${rec.date} ${rec.subjectCode}: ${rec.status}) — already notified.`);
+        await db.upsertKnownAttendance(userId, [rec]);
+        if (rec.date && rec.subjectCode) {
+          await db.saveAttendanceRecord(userId, qid, rec);
+        }
+        continue;
+      }
+
       const dedupeKey = `attendance_catchup:${qid}:${rec.date}:${rec.subjectCode}:${prev ? prev.status : 'N'}->${rec.status}`;
       const isNew = await db.tryRecordNotificationLog(userId, 'attendance_catchup', dedupeKey, {
+        qid,
         classDate: rec.date,
         subjectCode: rec.subjectCode,
         prevStatus: prev ? prev.status : 'unmarked',
         newStatus: rec.status,
+        status: rec.status,
       });
 
       if (isNew) {
@@ -187,7 +228,7 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
     let freshAssignments;
     if (opts.assignments) {
       freshAssignments = opts.assignments;
-    } else if (opts.skipAssignments) {
+    } else if (opts.skipAssignments || !sessionPath) {
       freshAssignments = [];
     } else {
       freshAssignments = await scrapeAssignments(sessionPath, { log });

@@ -249,6 +249,35 @@ async function runWatcherCycle(opts = {}) {
     const text = buildUpdateMessage(row);
     const eventKey = eventKeyFor(row);
     const qid = (user && user.qumsQid) || '';
+    const alreadyNotified = await db.hasAttendanceBeenNotified(opts.userId, {
+      qid,
+      classDate: now.date,
+      subjectCode: row.subjectCode,
+      status: row.status,
+    });
+    if (alreadyNotified) {
+      if (!notified.includes(eventKey)) {
+        notified.push(eventKey);
+        state[now.date] = notified;
+        saveState(state, stateFile);
+      }
+      const knownRec = {
+        key: `${now.date}-${row.subjectCode}`,
+        date: now.date,
+        subjectCode: row.subjectCode,
+        subject: row.subject,
+        status: row.status,
+        statusRaw: row.status === 'present' ? 'P' : (row.status === 'absent' ? 'A' : row.status),
+        period: row.period,
+        room: row.room || '',
+      };
+      await db.upsertKnownAttendance(opts.userId, [knownRec]).catch(() => {});
+      if (row.subjectCode) {
+        await db.saveAttendanceRecord(opts.userId, qid, knownRec).catch(() => {});
+      }
+      continue;
+    }
+
     const dedupeKey = `attendance_fast:${qid}:${now.date}:${row.subjectCode}:${row.period}:${row.status}`;
     const isNew = await db.tryRecordNotificationLog(opts.userId, 'attendance_class', dedupeKey, {
       qid,
@@ -262,6 +291,20 @@ async function runWatcherCycle(opts = {}) {
         notified.push(eventKey);
         state[now.date] = notified;
         saveState(state, stateFile);
+      }
+      const knownRec = {
+        key: `${now.date}-${row.subjectCode}`,
+        date: now.date,
+        subjectCode: row.subjectCode,
+        subject: row.subject,
+        status: row.status,
+        statusRaw: row.status === 'present' ? 'P' : (row.status === 'absent' ? 'A' : row.status),
+        period: row.period,
+        room: row.room || '',
+      };
+      await db.upsertKnownAttendance(opts.userId, [knownRec]).catch(() => {});
+      if (row.subjectCode) {
+        await db.saveAttendanceRecord(opts.userId, qid, knownRec).catch(() => {});
       }
       continue;
     }
@@ -280,6 +323,20 @@ async function runWatcherCycle(opts = {}) {
         log.log(`[watcher] 📲 sent: ${row.key} (${row.status}) — ${row.subject}`);
         // Persistent audit/analytics row (never blocks delivery).
         await db.recordNotification(opts.userId, 'attendance_class', { subject: row.subject }, log);
+      }
+      const knownRec = {
+        key: `${now.date}-${row.subjectCode}`,
+        date: now.date,
+        subjectCode: row.subjectCode,
+        subject: row.subject,
+        status: row.status,
+        statusRaw: row.status === 'present' ? 'P' : (row.status === 'absent' ? 'A' : row.status),
+        period: row.period,
+        room: row.room || '',
+      };
+      await db.upsertKnownAttendance(opts.userId, [knownRec]).catch(() => {});
+      if (row.subjectCode) {
+        await db.saveAttendanceRecord(opts.userId, qid, knownRec).catch(() => {});
       }
       sent.push({ key: row.key, status: row.status, subject: row.subject });
     } catch (err) {
@@ -637,6 +694,21 @@ async function runMonthRegisterCycle(opts = {}) {
     const prevEntry = knownByKey.get(rec.key) || null;
     const prevStatus = prevEntry ? (prevEntry.statusRaw || prevEntry.status || 'N') : 'N';
     const nextStatus = rec.statusRaw || rec.status || 'present';
+
+    const alreadyNotified = await db.hasAttendanceBeenNotified(userId, {
+      qid,
+      classDate: rec.date,
+      subjectCode: rec.subjectCode,
+      status: nextStatus,
+      prevStatus,
+    });
+    if (alreadyNotified) {
+      await db.upsertKnownAttendance(userId, [rec]);
+      if (rec.date && rec.subjectCode) {
+        await db.saveAttendanceRecord(userId, qid, rec);
+      }
+      continue;
+    }
 
     // PostgreSQL persistent deduplication scoped per user
     const dedupeKey = `attendance_month:${qid}:${rec.date}:${rec.subjectCode}:${prevStatus}->${nextStatus}`;

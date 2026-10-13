@@ -2063,5 +2063,259 @@ a.btn-danger:hover {
   }
 }
 
+/* ---- Weekly Timetable Redesign ---- */
+.tt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.tt-subtitle {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.tt-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tt-last-updated {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.tt-tabs-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 16px;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tt-tab {
+  background: #f1f5f9;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.tt-tab:hover {
+  background: #e2e8f0;
+  color: var(--text);
+}
+
+.tt-tab.active {
+  background: var(--navy);
+  color: #fff;
+  border-color: var(--navy);
+  box-shadow: 0 2px 6px rgba(30, 58, 138, 0.25);
+}
+
+.tt-status-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 30px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tt-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-top-color: var(--navy-2);
+  border-radius: 50%;
+  animation: ttSpin 0.7s linear infinite;
+}
+
+@keyframes ttSpin {
+  to { transform: rotate(360deg); }
+}
+
+.tt-empty-box {
+  text-align: center;
+  padding: 36px 16px;
+  background: #f8fafc;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  margin: 8px 0;
+}
+
+.tt-empty-icon {
+  font-size: 2rem;
+  margin-bottom: 6px;
+}
+
+.tt-empty-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tt-empty-desc {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.tt-day-group {
+  margin-bottom: 24px;
+}
+
+.tt-day-heading {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--navy-4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.tt-day-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.tt-day-heading.is-today .tt-day-badge {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.tt-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.tt-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.tt-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  border-color: #cbd5e1;
+}
+
+.tt-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tt-period-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #eff6ff;
+  color: var(--navy-2);
+  padding: 3px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.2px;
+}
+
+.tt-time {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tt-subject-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  margin: 0;
+}
+
+.tt-subject-code {
+  display: inline-block;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-top: 2px;
+  align-self: flex-start;
+}
+
+.tt-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 0.8rem;
+}
+
+.tt-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #475569;
+}
+
+.tt-meta-item strong {
+  font-weight: 600;
+  color: #334155;
+}
+
+.tt-room-tag {
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.76rem;
+}
+
+.tt-tag-type {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f3e8ff;
+  color: #7e22ce;
+}
+
 
 

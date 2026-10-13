@@ -14,7 +14,16 @@ const firebaseAuth = require('./firebaseAuth');
 const db = require('./db');
 const { encryptSecret } = require('./crypto');
 const { resolveUserRuntime } = require('./credentials');
-const { scrapeAttendance, scrapeTodaysAttendance, getStudentProfile, ensureStudentName } = require('./scraper');
+const {
+  scrapeAttendance,
+  scrapeTodaysAttendance,
+  scrapeTimetable,
+  formatNormalizedTimetable,
+  getTimetableForDate,
+  mergeScheduleWithRoom,
+  getStudentProfile,
+  ensureStudentName,
+} = require('./scraper');
 const { analyzeAttendance } = require('./calculator');
 const telegram = require('./telegram');
 const { sendMessage } = require('./telegram');
@@ -682,10 +691,14 @@ const ATTENDANCE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const todayCache = new Map(); // userId -> { data, timestamp }
 const TODAY_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
+const timetableCache = new Map(); // userId -> { data, timestamp }
+const TIMETABLE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 function invalidateUserDataCaches(userId) {
   if (userId) {
     attendanceCache.delete(userId);
     todayCache.delete(userId);
+    timetableCache.delete(userId);
   }
 }
 
@@ -781,9 +794,28 @@ app.get('/api/today', requireAuth, async (req, res) => {
     }
 
     const fetchStart = Date.now();
-    const periods = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+    let periods = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
     // Successful authenticated scrape clears any stale expiry state
     await db.clearSessionExpiry(userId, { maxExpiredAt: fetchStart }).catch(() => {});
+
+    // Room and teacher enrichment from timetable when available
+    try {
+      let timetable = null;
+      const cachedTt = timetableCache.get(userId);
+      if (cachedTt && cachedTt.data && cachedTt.data.timetable) {
+        timetable = cachedTt.data.timetable;
+      }
+      if (!timetable) {
+        timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath }).catch(() => null);
+      }
+      if (timetable) {
+        const todayPeriods = getTimetableForDate(timetable, new Date());
+        periods = mergeScheduleWithRoom(periods, todayPeriods);
+      }
+    } catch {
+      // Silently keep periods without room/teacher enrichment
+    }
+
     const payload = { date: new Date().toISOString(), periods };
     todayCache.set(userId, { data: payload, timestamp: Date.now() });
     res.json(payload);
@@ -791,6 +823,50 @@ app.get('/api/today', requireAuth, async (req, res) => {
     if (err.name === 'SessionExpiredError') {
       await db.updateUser(req.appUser.id, { qumsSessionStatus: 'expired' }).catch(() => {});
       await maybeNotifySessionExpired(console, req.appUser.id, { evidence: true }).catch(() => {});
+    }
+    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
+  }
+});
+
+app.get('/api/timetable', requireAuth, async (req, res) => {
+  try {
+    const runtime = resolveUserRuntime(req.appUser);
+    const forceFresh = req.query.fresh === '1' || req.query.refresh === '1' || req.query.force === '1';
+    const userId = req.appUser.id;
+
+    const cached = timetableCache.get(userId);
+    if (!forceFresh && cached && (Date.now() - cached.timestamp < TIMETABLE_CACHE_TTL_MS)) {
+      return res.json({ ...cached.data, _cached: true });
+    }
+
+    const fetchStart = Date.now();
+    const rawTimetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
+    await db.clearSessionExpiry(userId, { maxExpiredAt: fetchStart }).catch(() => {});
+
+    const formatted = formatNormalizedTimetable(rawTimetable);
+    const hasData = Boolean(formatted && formatted.days && formatted.days.some((d) => d.periods && d.periods.length > 0));
+
+    const payload = {
+      success: true,
+      updatedAt: new Date().toISOString(),
+      hasData,
+      timetable: formatted,
+    };
+    timetableCache.set(userId, { data: payload, timestamp: Date.now() });
+    res.json(payload);
+  } catch (err) {
+    if (err.name === 'SessionExpiredError') {
+      await db.updateUser(req.appUser.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+      await maybeNotifySessionExpired(console, req.appUser.id, { evidence: true }).catch(() => {});
+    }
+    const cached = timetableCache.get(req.appUser.id);
+    if (cached) {
+      return res.status(200).json({
+        ...cached.data,
+        _cached: true,
+        _stale: true,
+        warning: 'QUMS timetable currently unreachable, showing cached timetable.',
+      });
     }
     res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
   }
