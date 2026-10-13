@@ -158,6 +158,40 @@ async function runTests() {
   assert.strictEqual(merged[0].teacher, 'Dr. Roy');
   pass('mergeScheduleWithRoom enriches today\'s attendance rows with room and teacher');
 
+  // 1.6 combineTimetableWithLiveAttendance: preserves all scheduled periods even when live attendance only has 1 marked row
+  const tuesdayTtPeriods = [
+    { period: 'P1', duration: '09:00 - 09:55', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', room: 'A-004', teacher: 'RAJ KUMAR' },
+    { period: 'P2', duration: '09:55 - 10:50', subject: 'Tools for Data Science', subjectCode: 'CS35305', room: 'A-102', teacher: 'BHANU PARTAP' },
+    { period: 'P3', duration: '10:50 - 11:45', subject: 'Design and Analysis of Algorithm Lab', subjectCode: 'CS35363', room: 'E-202A', teacher: 'RAJ KUMAR' },
+    { period: 'P6', duration: '13:35 - 14:30', subject: 'Corporate Communication', subjectCode: 'AE35362', room: 'A-213', teacher: 'RYANSHU SAINI' },
+    { period: 'P7', duration: '14:30 - 15:25', subject: 'Technical Skills Development-IV', subjectCode: 'SE35309', room: 'E-203', teacher: 'GURNAM SINGH' },
+    { period: 'P8', duration: '15:25 - 16:20', subject: 'Technical Skills Development-IV', subjectCode: 'SE35309', room: 'E-203', teacher: 'GURNAM SINGH' },
+  ];
+  const liveMorningRows = [
+    { period: 'P1', duration: '09:00 - 09:55', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', employee: 'RAJ KUMAR', attendance: 'P', status: 'present', key: 'P1-CS35303' },
+  ];
+  const combined = scraper.combineTimetableWithLiveAttendance(tuesdayTtPeriods, liveMorningRows);
+  assert.strictEqual(combined.length, 6, 'Must preserve all 6 classes scheduled for the day');
+  assert.strictEqual(combined[0].status, 'present', 'Period 1 marked as present');
+  assert.strictEqual(combined[1].status, 'unmarked', 'Period 2 unmarked');
+  assert.strictEqual(combined[4].period, 'P7', 'Period 7 correctly preserved');
+  assert.strictEqual(combined[5].period, 'P8', 'Period 8 correctly preserved with same subject code');
+  assert.strictEqual(combined[4].room, 'E-203');
+  assert.strictEqual(combined[5].room, 'E-203');
+
+  const { formatMorningSchedule, formatTodayAttendanceStatus } = require('../src/messages');
+  const morningText = formatMorningSchedule(combined, 'Tue, 13 Oct 2026', 'Karan');
+  assert(morningText.includes("🌅 *Today's Classes*"), 'Contains morning header');
+  assert(morningText.includes('Room: A-004 • RAJ KUMAR'), 'Contains room and faculty');
+  assert(morningText.includes('1. 🕐 *09:00 - 09:55* — Design and Analysis of Algorithm (CS35303)'), 'Period 1 formatted cleanly');
+  assert(morningText.includes('6. 🕐 *15:25 - 16:20* — Technical Skills Development-IV (SE35309)'), 'Period 8 formatted cleanly');
+
+  const todayStatusText = formatTodayAttendanceStatus(combined, 'Tue, 13 Oct 2026', 'Karan');
+  assert(todayStatusText.includes('✅ *Present*'), 'Shows marked present');
+  assert(todayStatusText.includes('⏳ *Not Marked Yet*'), 'Shows remaining unmarked');
+  assert(!todayStatusText.includes('(Period (P1)'), 'No ugly duplicated period strings');
+  pass('combineTimetableWithLiveAttendance retains all 6 classes and formats beautifully for Telegram');
+
 
   // --------------------------------------------------------------------------
   // TEST GROUP 2: Reconnect Attendance Deduplication & Isolation

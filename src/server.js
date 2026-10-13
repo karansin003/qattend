@@ -20,6 +20,7 @@ const {
   scrapeTimetable,
   formatNormalizedTimetable,
   getTimetableForDate,
+  combineTimetableWithLiveAttendance,
   mergeScheduleWithRoom,
   getStudentProfile,
   ensureStudentName,
@@ -810,7 +811,7 @@ app.get('/api/today', requireAuth, async (req, res) => {
       }
       if (timetable) {
         const todayPeriods = getTimetableForDate(timetable, new Date());
-        periods = mergeScheduleWithRoom(periods, todayPeriods);
+        periods = combineTimetableWithLiveAttendance(todayPeriods, periods);
       }
     } catch {
       // Silently keep periods without room/teacher enrichment

@@ -1387,7 +1387,7 @@ async function handleToday(chatId, log = console) {
 
   try {
     const { resolveUserRuntime } = require('./credentials');
-    const { scrapeTodaysAttendance, scrapeTimetable, getTimetableForDate, mergeScheduleWithRoom } = require('./scraper');
+    const { scrapeTodaysAttendance, scrapeTimetable, getTimetableForDate, combineTimetableWithLiveAttendance, mergeScheduleWithRoom } = require('./scraper');
     const { formatTodayAttendanceStatus } = require('./messages');
 
     let rows = [];
@@ -1396,7 +1396,12 @@ async function handleToday(chatId, log = console) {
       try {
         const runtime = resolveUserRuntime(user);
         if (fs.existsSync(runtime.sessionPath)) {
-          const liveRows = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+          let liveRows = [];
+          try {
+            liveRows = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+          } catch {
+            liveRows = [];
+          }
           let timetablePeriods = [];
           try {
             const timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
@@ -1405,19 +1410,21 @@ async function handleToday(chatId, log = console) {
             timetablePeriods = [];
           }
 
-          if (liveRows && liveRows.length) {
-            rows = mergeScheduleWithRoom(liveRows, timetablePeriods);
-          } else if (timetablePeriods && timetablePeriods.length) {
-            rows = timetablePeriods.map((tp) => ({
-              period: tp.period,
-              duration: tp.duration,
-              subject: tp.subject,
-              subjectCode: tp.subjectCode,
-              teacher: tp.teacher,
-              room: tp.room,
-              status: 'unmarked',
-              attendance: 'N.M.',
-            }));
+          rows = combineTimetableWithLiveAttendance(timetablePeriods, liveRows);
+          if (rows.length) {
+            const dow = new Date().getDay();
+            await db.upsertWeeklySchedule(
+              user.id,
+              dow,
+              rows.map((r) => ({
+                period: r.period,
+                duration: r.duration || '',
+                subject: r.subject,
+                subjectCode: r.subjectCode,
+                teacher: r.teacher,
+                room: r.room,
+              }))
+            ).catch(() => {});
           }
         }
       } catch (fetchErr) {

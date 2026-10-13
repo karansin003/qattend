@@ -1466,24 +1466,141 @@ function periodMatches(a, b) {
  */
 function mergeScheduleWithRoom(todaysRows, timetablePeriods) {
   const tt = timetablePeriods || [];
+  const matchedIndices = new Set();
   return (todaysRows || []).map((row) => {
-    const match =
-      tt.find((t) => t.subjectCode && row.subjectCode && String(t.subjectCode).trim().toUpperCase() === String(row.subjectCode).trim().toUpperCase()) ||
-      tt.find((t) => periodMatches(t.period, row.period)) ||
-      null;
+    let matchIdx = tt.findIndex(
+      (t, i) => !matchedIndices.has(i) &&
+        periodMatches(t.period, row.period) &&
+        t.subjectCode && row.subjectCode &&
+        String(t.subjectCode).trim().toUpperCase() === String(row.subjectCode).trim().toUpperCase()
+    );
+    if (matchIdx === -1) {
+      matchIdx = tt.findIndex(
+        (t, i) => !matchedIndices.has(i) &&
+          t.subjectCode && row.subjectCode &&
+          String(t.subjectCode).trim().toUpperCase() === String(row.subjectCode).trim().toUpperCase()
+      );
+    }
+    if (matchIdx === -1) {
+      matchIdx = tt.findIndex(
+        (t, i) => !matchedIndices.has(i) && periodMatches(t.period, row.period)
+      );
+    }
+    let match = null;
+    if (matchIdx !== -1) {
+      matchedIndices.add(matchIdx);
+      match = tt[matchIdx];
+    }
     const dur = row.duration || (match && match.duration) || resolvePeriodDuration(row.duration, row.period) || '';
     return {
       period: row.period,
       duration: dur,
       subject: row.subject,
       subjectCode: row.subjectCode,
-      teacher: row.employee || (match && match.teacher) || '', // teacherName — Today's Attendance se
+      teacher: row.employee || (match && match.teacher) || '',
       attendance: row.attendance,
       status: row.status,
       key: row.key,
       room: match ? match.room || null : null,
     };
   });
+}
+
+/**
+ * Combines full scheduled periods for today (from student's weekly timetable)
+ * with live attendance marking register. Preserves ALL scheduled periods
+ * in chronological order, with room, teacher, timing, and marking status.
+ */
+function combineTimetableWithLiveAttendance(timetablePeriods, todaysRows) {
+  const tt = Array.isArray(timetablePeriods) ? timetablePeriods : [];
+  const live = Array.isArray(todaysRows) ? todaysRows : [];
+
+  if (!tt.length) {
+    return mergeScheduleWithRoom(live, []);
+  }
+
+  const matchedLiveIndices = new Set();
+
+  const merged = tt.map((tp) => {
+    // 1. Period + SubjectCode match
+    let matchIdx = live.findIndex(
+      (lr, idx) => !matchedLiveIndices.has(idx) &&
+        periodMatches(lr.period, tp.period) &&
+        lr.subjectCode && tp.subjectCode &&
+        String(lr.subjectCode).trim().toUpperCase() === String(tp.subjectCode).trim().toUpperCase()
+    );
+
+    // 2. Period alone
+    if (matchIdx === -1) {
+      matchIdx = live.findIndex(
+        (lr, idx) => !matchedLiveIndices.has(idx) && periodMatches(lr.period, tp.period)
+      );
+    }
+
+    // 3. Subject code alone
+    if (matchIdx === -1) {
+      matchIdx = live.findIndex(
+        (lr, idx) => !matchedLiveIndices.has(idx) &&
+          lr.subjectCode && tp.subjectCode &&
+          String(lr.subjectCode).trim().toUpperCase() === String(tp.subjectCode).trim().toUpperCase()
+      );
+    }
+
+    let liveRow = null;
+    if (matchIdx !== -1) {
+      matchedLiveIndices.add(matchIdx);
+      liveRow = live[matchIdx];
+    }
+
+    const dur = (liveRow && liveRow.duration) || tp.duration || resolvePeriodDuration(tp.duration, tp.period) || '';
+    const cleanPeriod = tp.periodCode || extractPeriodKey(tp.period) || tp.period || (liveRow ? liveRow.period : '');
+
+    return {
+      period: cleanPeriod,
+      rawPeriod: tp.period,
+      duration: dur,
+      startTime: tp.startTime || '',
+      endTime: tp.endTime || '',
+      subject: tp.subject || (liveRow ? liveRow.subject : ''),
+      subjectCode: tp.subjectCode || (liveRow ? liveRow.subjectCode : ''),
+      teacher: (liveRow && liveRow.employee) || tp.teacher || '',
+      room: tp.room || (liveRow ? liveRow.room : null) || null,
+      attendance: liveRow ? liveRow.attendance : 'N.M.',
+      status: liveRow ? (liveRow.status || 'unmarked') : 'unmarked',
+      key: liveRow ? liveRow.key : `${cleanPeriod}-${tp.subjectCode || ''}`,
+    };
+  });
+
+  // Any unmatched live row (e.g. extra/makeup class)
+  live.forEach((lr, idx) => {
+    if (!matchedLiveIndices.has(idx)) {
+      merged.push({
+        period: extractPeriodKey(lr.period) || lr.period,
+        rawPeriod: lr.period,
+        duration: lr.duration || resolvePeriodDuration(lr.duration, lr.period) || '',
+        subject: lr.subject,
+        subjectCode: lr.subjectCode,
+        teacher: lr.employee || '',
+        room: lr.room || null,
+        attendance: lr.attendance || 'N.M.',
+        status: lr.status || 'unmarked',
+        key: lr.key,
+      });
+    }
+  });
+
+  // Chronologically sort merged entries
+  merged.sort((a, b) => {
+    const aTime = a.startTime ? scraperTimeToMinutes(a.startTime) : (extractTimeRange(a.duration) ? scraperTimeToMinutes(extractTimeRange(a.duration).split('-')[0]) : 9999);
+    const bTime = b.startTime ? scraperTimeToMinutes(b.startTime) : (extractTimeRange(b.duration) ? scraperTimeToMinutes(extractTimeRange(b.duration).split('-')[0]) : 9999);
+    if (aTime !== bTime) return aTime - bTime;
+    const numA = parseInt(String(a.period || '').replace(/\D/g, ''), 10);
+    const numB = parseInt(String(b.period || '').replace(/\D/g, ''), 10);
+    if (!isNaN(numA) && !isNaN(numB) && numA !== numB) return numA - numB;
+    return String(a.period || '').localeCompare(String(b.period || ''));
+  });
+
+  return merged;
 }
 
 /**
@@ -1500,48 +1617,44 @@ async function getTodaysAttendance(userId) {
 }
 
 /**
- * Spec API: getTodaysScheduleWithRoom(userId) — MERGED schedule:
+ * Spec API: getTodaysScheduleWithRoom(userId) — FULL MERGED schedule:
  *   [{ period, duration, subject, subjectCode, teacher, room, attendance, status }]
+ * Uses today's official weekly timetable as master source of periods, merged
+ * with live attendance register marks and rooms.
  * Side-effect: result ka (period, subject, subjectCode, teacher, room) aaj ke
- * dayOfWeek pe weekly_schedule_cache me UPSERT ho jata hai (Task 2).
+ * dayOfWeek pe weekly_schedule_cache me UPSERT ho jata hai.
  */
 async function getTodaysScheduleWithRoom(userId) {
-  const todaysRows = await scrapeTodaysAttendance({ sessionPath: db.sessionPathFor(userId) });
+  let todaysRows = [];
+  try {
+    todaysRows = await scrapeTodaysAttendance({ sessionPath: db.sessionPathFor(userId) });
+  } catch {
+    todaysRows = [];
+  }
   let timetablePeriods = [];
   try {
     const timetable = await scrapeTimetable({ sessionPath: db.sessionPathFor(userId) });
     timetablePeriods = getTimetableForDate(timetable, new Date());
   } catch {
-    timetablePeriods = []; // timetable na mile to room null rahega (live rows theek hain)
+    timetablePeriods = [];
   }
-  let merged = [];
-  if (todaysRows && todaysRows.length) {
-    merged = mergeScheduleWithRoom(todaysRows, timetablePeriods);
-  } else if (timetablePeriods && timetablePeriods.length) {
-    merged = timetablePeriods.map((tp) => ({
-      period: tp.period,
-      duration: tp.duration || resolvePeriodDuration(tp.duration, tp.period),
-      subject: tp.subject,
-      subjectCode: tp.subjectCode,
-      teacher: tp.teacher,
-      room: tp.room,
-      attendance: 'N.M.',
-      status: 'unmarked',
-    }));
-  }
+
+  const merged = combineTimetableWithLiveAttendance(timetablePeriods, todaysRows);
   const dow = new Date().getDay();
-  await db.upsertWeeklySchedule(
-    userId,
-    dow,
-    merged.map((r) => ({
-      period: r.period,
-      duration: r.duration || '',
-      subject: r.subject,
-      subjectCode: r.subjectCode,
-      teacher: r.teacher,
-      room: r.room,
-    }))
-  );
+  if (merged.length) {
+    await db.upsertWeeklySchedule(
+      userId,
+      dow,
+      merged.map((r) => ({
+        period: r.period,
+        duration: r.duration || '',
+        subject: r.subject,
+        subjectCode: r.subjectCode,
+        teacher: r.teacher,
+        room: r.room,
+      }))
+    );
+  }
   return merged;
 }
 
@@ -1860,6 +1973,7 @@ module.exports = {
   getTodaysTimetable,
   getTodaysAttendance,
   getTodaysScheduleWithRoom,
+  combineTimetableWithLiveAttendance,
   mergeScheduleWithRoom,
   getMonthRegister,
   monthFromName,
