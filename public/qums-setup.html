@@ -98,9 +98,12 @@
       </div>
 
       <div id="captchaBox" class="hidden">
-        <label class="form-label">Captcha (type the characters shown in the image)</label>
-        <img id="captchaImg" class="captcha-img" alt="captcha" />
-        <input class="form-input" id="captcha" type="text" placeholder="captcha text" autocomplete="off" />
+        <label class="form-label" for="captcha">CAPTCHA (case-sensitive, usually UPPERCASE)</label>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+          <img id="captchaImg" class="captcha-img" alt="captcha" style="margin-bottom: 0;" />
+          <button type="button" id="refreshCaptchaBtn" class="btn" style="padding: 8px 14px; font-size: 13px; background: rgba(30, 58, 138, 0.08); color: var(--navy-2); border: 1px solid rgba(30, 58, 138, 0.2); white-space: nowrap;">🔄 Refresh</button>
+        </div>
+        <input class="form-input" id="captcha" type="text" placeholder="Enter CAPTCHA" autocomplete="off" style="text-transform: uppercase; letter-spacing: 2px; font-weight: 600;" />
         <div style="margin-top: 14px;"><button id="submitBtn" style="width: 100%;">Login to QUMS</button></div>
       </div>
 
@@ -230,7 +233,6 @@
           return;
         }
         if (data.captchaImage) {
-          // galat captcha — FRESH captcha already aa gayi, dobara try karo
           $('captchaImg').src = data.captchaImage;
           $('captcha').value = '';
           $('captcha').focus();
@@ -238,6 +240,14 @@
         $('msg').classList.add('hidden');
         $('error').textContent = data.error || 'Login failed — please try again.';
         $('error').classList.remove('hidden');
+
+        // If credentials were rejected by portal, switch to first-time box so user can correct password
+        if (data.code === 'INVALID_CREDENTIALS') {
+          hasSavedCredentials = false;
+          setMode('first-time');
+          $('qumsPassword').value = '';
+          $('qumsPassword').focus();
+        }
       } catch (err) {
         $('msg').classList.add('hidden');
         $('error').textContent = err.message; $('error').classList.remove('hidden');
@@ -298,6 +308,16 @@
         e.preventDefault();
         $('firstTimeCaptchaBtn').click();
       }
+    });
+    $('refreshCaptchaBtn').addEventListener('click', async () => {
+      if (busy) return;
+      busy = true; $('refreshCaptchaBtn').disabled = true;
+      await startLogin();
+      busy = false; $('refreshCaptchaBtn').disabled = false;
+    });
+
+    $('captcha').addEventListener('input', (e) => {
+      e.target.value = e.target.value.toUpperCase();
     });
     $('captcha').addEventListener('keydown', (e) => e.key === 'Enter' && $('submitBtn').click());
     // password show/hide toggle with clean SVG icons (no weird emoji)

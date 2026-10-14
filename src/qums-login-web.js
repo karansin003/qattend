@@ -223,12 +223,11 @@ async function startQumsLogin(userId, credsInput, log = console) {
     throw new ConcurrentLoginError();
   }
 
-  // Fast path: if browser & page are already active for this user, reuse them via page reload (~1s vs ~6s)
+  // Fast path: if browser & page are already active for this user, reuse them via single clean navigation (~1s vs ~6s)
   const existing = pending.get(userId);
   if (existing && existing.page && !existing.page.isClosed()) {
     try {
       log.log(`[qums-login] Reusing existing browser page for user ${userId} to refresh captcha...`);
-      await existing.page.reload({ waitUntil: 'commit', timeout: 15000 });
       const frame = await gotoLoginPage(existing.page);
       await autofillCredentials(frame, qid, password);
       existing.frame = frame;
@@ -284,52 +283,132 @@ async function startQumsLogin(userId, credsInput, log = console) {
 }
 
 /** Step 2: submit the captcha; success -> per-user session file + DB update. */
-async function submitQumsCaptcha(userId, captchaText, log = console) {
+async function submitQumsCaptcha(userId, rawCaptchaText, log = console) {
   const p = pending.get(userId);
   if (!p) {
     const e = new Error('No pending QUMS login — captcha dobara generate karo.');
     e.name = 'NoPendingLogin';
+    e.code = 'SESSION_EXPIRED';
     e.hint = 'Captcha 5 min me expire ho jata hai. Start Login dobara dabao.';
     throw e;
   }
 
+  // QUMS captchas are 6 characters uppercase [A-Z0-9]. Auto-trim and uppercase
+  // so mobile keyboards or lowercase typing never cause a false "Captcha does not match".
+  const captchaText = String(rawCaptchaText || '').trim().toUpperCase();
+
   const captchaInput = await locateCaptchaInput(p.frame);
-  await captchaInput.fill(String(captchaText || '').trim());
+  await captchaInput.fill(captchaText);
   await clickLoginButton(p.frame);
 
+  // Fast response detection: submit form and wait for POST response & DOM load.
+  // This guarantees we evaluate only the response to THIS attempt, eliminating
+  // Promise.race background leaks, stale error element matching, and false timeouts.
+  let postResponse = null;
+  let outcome = 'unknown';
   try {
-    await p.page.waitForURL((url) => !isLoginLikeUrl(url.toString()), { timeout: 30000 });
-  } catch {
-    // login fail (galat captcha / timeout) — fresh login page + FRESH captcha
-    await p.browser.close().catch(() => {});
-    activeLaunchingUserId = userId;
-    let fresh;
+    const [res] = await Promise.all([
+      p.page.waitForResponse(
+        (r) => r.request().method() === 'POST' && (r.url().includes('qums') || r.url().includes('/')),
+        { timeout: 20000 }
+      ),
+      clickLoginButton(p.frame),
+    ]);
+    postResponse = res;
+    await p.page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+  } catch (err) {
+    log.log(`[qums-login] POST submission error or timeout for user ${userId}: ${err.message}`);
+  }
+
+  // Check if navigation succeeded (redirected to dashboard / away from login URL)
+  if (!isLoginLikeUrl(p.page.url())) {
+    outcome = 'navigated';
+  } else if (!postResponse) {
+    outcome = 'timeout';
+  } else {
+    // If QUMS uses a short client-side script redirect before navigating, allow up to 3s
     try {
-      fresh = await openLoginFormPage();
-    } finally {
-      if (activeLaunchingUserId === userId) activeLaunchingUserId = null;
+      await p.page.waitForURL((url) => !isLoginLikeUrl(url.toString()), { timeout: 3000 });
+      outcome = 'navigated';
+    } catch {
+      outcome = 'validation_error';
     }
-    const { browser, context, page, frame } = fresh;
-    await autofillCredentials(frame, p.qid, p.password);
-    const newPending = {
-      browser,
-      context,
-      page,
-      frame,
-      startedAt: Date.now(),
-      qid: p.qid,
-      password: p.password,
-      confirmSwitch: p.confirmSwitch,
-    };
-    const captchaImage = await captureCaptchaFor(newPending);
-    newPending.timer = setTimeout(() => {
+  }
+
+  if (outcome !== 'navigated') {
+    // Read the exact error rendered on the portal
+    let portalError = '';
+    try {
+      portalError = await p.page.evaluate(() => {
+        const errors = Array.from(document.querySelectorAll('.validation-summary-errors, .field-validation-error'))
+          .map((el) => el.innerText.trim())
+          .filter(Boolean);
+        return errors.join('; ');
+      });
+    } catch {}
+
+    let errorCode = 'UNEXPECTED_RESPONSE';
+    let userMessage = portalError || 'Login failed on QUMS portal.';
+
+    if (/captcha/i.test(portalError)) {
+      errorCode = 'INVALID_CAPTCHA';
+      userMessage = 'Captcha galat lagii ya login nahi hua — nayi captcha le lo, dobara try karo.';
+    } else if (/user|password|credential|login id|roll/i.test(portalError)) {
+      errorCode = 'INVALID_CREDENTIALS';
+      userMessage = 'Invalid QID or password. Please verify your credentials and try again.';
+    } else if (/expired|timeout|token/i.test(portalError)) {
+      errorCode = 'SESSION_EXPIRED';
+      userMessage = 'QUMS session or CAPTCHA expired. Please try again.';
+    } else if (outcome === 'timeout') {
+      errorCode = 'PORTAL_TIMEOUT';
+      userMessage = 'QUMS portal did not respond in time (network timeout). Please try again in a moment.';
+    }
+
+    log.log(`[qums-login] Login attempt failed for user ${userId}: [${errorCode}] ${userMessage} (portal: "${portalError}")`);
+
+    if (outcome === 'timeout') {
+      await disposePending(userId);
+      return {
+        ok: false,
+        code: errorCode,
+        error: userMessage,
+        captchaImage: null,
+      };
+    }
+
+    // Fast in-page captcha capture: the error page already generated a new inline captcha image.
+    let captchaImage = '';
+    try {
+      await p.page.waitForTimeout(500);
+      captchaImage = await captureCaptchaFor(p);
+    } catch (captureErr) {
+      log.log(`[qums-login] in-page captcha capture failed (${captureErr.message}), falling back to fresh browser...`);
+      await p.browser.close().catch(() => {});
+      activeLaunchingUserId = userId;
+      let fresh;
+      try {
+        fresh = await openLoginFormPage();
+      } finally {
+        if (activeLaunchingUserId === userId) activeLaunchingUserId = null;
+      }
+      p.browser = fresh.browser;
+      p.context = fresh.context;
+      p.page = fresh.page;
+      p.frame = fresh.frame;
+      await autofillCredentials(p.frame, p.qid, p.password);
+      captchaImage = await captureCaptchaFor(p);
+    }
+
+    if (p.timer) clearTimeout(p.timer);
+    p.timer = setTimeout(() => {
       log.log(`[qums-login] pending login timeout for user ${userId} — browser close.`);
       disposePending(userId);
     }, PENDING_TTL_MS);
-    pending.set(userId, newPending);
+
     return {
       ok: false,
-      error: 'Captcha galat lagii ya login nahi hua — nayi captcha le lo, dobara try karo.',
+      code: errorCode,
+      error: userMessage,
       captchaImage,
     };
   }

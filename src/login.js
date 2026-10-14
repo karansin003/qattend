@@ -55,7 +55,12 @@ async function autofillCredentials(frame, qid, password) {
   }
 
   let qidInput = null;
-  for (let i = 0; i < textCount; i++) {
+  const fastQid = frame.locator('input#UserName, input[name="UserName" i]');
+  if ((await fastQid.count().catch(() => 0)) > 0) {
+    qidInput = fastQid.first();
+  }
+  if (!qidInput) {
+    for (let i = 0; i < textCount; i++) {
     const el = textInputs.nth(i);
     const attrs = [
       await el.getAttribute('name'),
@@ -68,6 +73,7 @@ async function autofillCredentials(frame, qid, password) {
     if (/qid|user|loginid|login_id|regd|roll|empid/.test(attrs)) {
       qidInput = el;
       break;
+    }
     }
   }
   if (!qidInput) qidInput = textInputs.first();
@@ -88,6 +94,10 @@ async function autofillCredentials(frame, qid, password) {
  * after the password field).
  */
 async function locateCaptchaInput(frame) {
+  const fastCaptcha = frame.locator('input#captcha, input[name="captcha" i], input.captcha');
+  if ((await fastCaptcha.count().catch(() => 0)) > 0) {
+    return fastCaptcha.first();
+  }
   const textInputs = frame.locator('input[type="text"]');
   const count = await textInputs.count();
   for (let i = 0; i < count; i++) {
@@ -111,8 +121,9 @@ async function locateCaptchaInput(frame) {
  */
 async function clickLoginButton(frame) {
   const candidates = [
-    frame.locator('input[type="submit"]').first(),
+    frame.locator('button.btnSubmit').first(),
     frame.locator('button[type="submit"]').first(),
+    frame.locator('input[type="submit"]').first(),
     frame.getByRole('button', { name: /login|sign in/i }).first(),
     frame.locator('a', { hasText: /login|sign in/i }).first(),
   ];
@@ -185,6 +196,16 @@ async function captureCaptchaImage(page, frame) {
   }
 
   try {
+    await chosen.waitFor({ state: 'visible', timeout: 10000 });
+    // Ensure src attribute is populated with valid image data (not empty and not whitey placeholder)
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const src = await chosen.getAttribute('src').catch(() => '');
+      if (src && !src.includes('whitey.jpg') && (src.startsWith('data:image/') || src.startsWith('http') || src.startsWith('/'))) {
+        break;
+      }
+      await (page || frame).waitForTimeout(200);
+    }
     await chosen.scrollIntoViewIfNeeded();
   } catch {}
   const buf = await chosen.screenshot({ type: 'png' });

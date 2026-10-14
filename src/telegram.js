@@ -839,8 +839,26 @@ async function handleUserMessage(msg, log = console) {
       return;
     }
 
-    // Wrong CAPTCHA
-    log.log(`[telegram-reconnect] ❌ Incorrect CAPTCHA for user ${user.id} (attempt ${rState.attempts}/${rState.maxAttempts})`);
+    // Check if the portal rejected credentials (wrong QID or password)
+    if (result && result.code === 'INVALID_CREDENTIALS') {
+      log.log(`[telegram-reconnect] ❌ Invalid credentials rejected by QUMS for user ${user.id}`);
+      await clearReconnectState(user.id, log);
+      const alerts = require('./alerts');
+      const recUrl = typeof alerts.reconnectUrl === 'function' ? alerts.reconnectUrl() : 'https://qattend.onrender.com/qums-setup?reconnect=1';
+      const msgText = [
+        '❌ *Invalid QID or Password*',
+        '',
+        'Your saved QUMS credentials were not accepted by the portal. Please update your password on the web setup page:',
+      ].join('\n');
+      const keyboard = {
+        inline_keyboard: [[{ text: '⚙️ Open QUMS Setup', url: recUrl }]],
+      };
+      await reply(chatId, msgText, log, { replyMarkup: keyboard });
+      return;
+    }
+
+    // Wrong CAPTCHA or retryable failure
+    log.log(`[telegram-reconnect] ❌ Failed captcha attempt for user ${user.id} (${result ? result.code : 'UNKNOWN'}): attempt ${rState.attempts}/${rState.maxAttempts}`);
 
     if (rState.attempts >= rState.maxAttempts) {
       await clearReconnectState(user.id, log);
