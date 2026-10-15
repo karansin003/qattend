@@ -337,5 +337,139 @@ function formatTodayAttendanceStatus(rows, dateLabel = dateLabelIST(), studentNa
   return lines.join('\n');
 }
 
-module.exports = { dateLabelIST, dateLabelFromYMD, fullDateLabelFromYMD, statusEmoji, formatAttendanceUpdate, formatBackdatedUpdate, formatMorningSchedule, formatAttendanceMessage, formatTodayAttendanceStatus, formatNewAssignment, formatAssignmentDeadlineReminder, QUMS_ASSIGNMENT_URL, norm };
+/**
+ * Split a long text into chunks that fit within maxLen without cutting lines.
+ */
+function splitTelegramMessage(text, maxLen = 4000) {
+  if (!text || text.length <= maxLen) return [text || ''];
+  const lines = text.split('\n');
+  const chunks = [];
+  let current = '';
+  for (const line of lines) {
+    if ((current ? current + '\n' + line : line).length > maxLen) {
+      if (current) chunks.push(current);
+      current = line;
+    } else {
+      current = current ? current + '\n' + line : line;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * Format full date-wise attendance report for Telegram.
+ * dateInfo: { day, month, year, ymd, formattedDate }
+ * rows: array of class records for that date
+ * options: { studentName, isCached }
+ */
+function formatDateAttendanceReport(dateInfo, rows, options = {}) {
+  const { day, month, year, ymd } = dateInfo;
+  const dStr = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+  const fullDate = fullDateLabelFromYMD(ymd || `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+
+  const lines = [
+    `📅 *Attendance for ${fullDate}* (${dStr})`,
+    '',
+  ];
+
+  if (options.isCached) {
+    lines.push('_Showing offline cached records. Live QUMS portal was unreachable._');
+    lines.push('');
+  }
+
+  const list = (rows || []).filter((r) => r && (r.subject || r.subjectCode || r.period));
+  if (!list.length) {
+    lines.push('🎉 No classes or attendance records found for this date.');
+    lines.push('(It may be a Sunday, holiday, or attendance was not marked.)');
+    return lines.join('\n');
+  }
+
+  let totalClasses = 0;
+  let presentCount = 0;
+  let absentCount = 0;
+  let unmarkedCount = 0;
+  let otherCount = 0;
+
+  list.forEach((r, idx) => {
+    const subName = r.subject || r.subjectCode || 'Class';
+    const subCode = (r.subjectCode && r.subject && r.subjectCode !== r.subject) ? ` (${r.subjectCode})` : '';
+    lines.push(`${idx + 1}. 📚 *${subName}*${subCode}`);
+
+    const lectures = Array.isArray(r.lectures) && r.lectures.length > 0 ? r.lectures : null;
+    if (lectures && lectures.length > 1) {
+      const parts = lectures.map((l, i) => {
+        totalClasses++;
+        if (l.status === 'present') presentCount++;
+        else if (l.status === 'absent') absentCount++;
+        else if (l.status === 'unmarked') unmarkedCount++;
+        else otherCount++;
+        let stText = statusEmoji(l.status, l.statusRaw);
+        if (l.status === 'unmarked') stText = '⏳ Not Marked';
+        return `L${i + 1} ${stText}`;
+      });
+      lines.push(`   Status: ${parts.join(' | ')}`);
+    } else {
+      totalClasses++;
+      const st = (lectures && lectures[0]) ? lectures[0].status : (r.status || 'unmarked');
+      const raw = (lectures && lectures[0]) ? lectures[0].statusRaw : (r.statusRaw || r.attendance);
+      if (st === 'present') presentCount++;
+      else if (st === 'absent') absentCount++;
+      else if (st === 'unmarked') unmarkedCount++;
+      else otherCount++;
+
+      let statusDisplay = statusEmoji(st, raw);
+      if (st === 'unmarked') statusDisplay = '⏳ Not Marked';
+      lines.push(`   Status: ${statusDisplay}`);
+    }
+
+    const extras = [];
+    if (r.duration) {
+      const dur = resolveDuration(r.duration, r.period);
+      if (dur) extras.push(`🕐 ${dur}`);
+    } else if (r.period) {
+      const pKey = extractPeriodKey(r.period);
+      extras.push(`🕐 ${pKey ? `Period ${pKey}` : r.period}`);
+    }
+    if (r.room) extras.push(`📍 Room: ${r.room}`);
+    const teacher = r.teacher || r.employee;
+    if (teacher) extras.push(`👨‍🏫 ${teacher}`);
+
+    if (extras.length) {
+      lines.push(`   ${extras.join(' • ')}`);
+    }
+    lines.push('');
+  });
+
+  lines.push('📊 *Day Summary:*');
+  lines.push(`• ✅ Present: ${presentCount}`);
+  lines.push(`• ❌ Absent: ${absentCount}`);
+  if (unmarkedCount > 0) {
+    lines.push(`• ⏳ Not Marked: ${unmarkedCount}`);
+  }
+  if (otherCount > 0) {
+    lines.push(`• ℹ️ Other: ${otherCount}`);
+  }
+  lines.push(`• 📚 Total Classes: ${totalClasses}`);
+
+  return lines.join('\n');
+}
+
+module.exports = {
+  dateLabelIST,
+  dateLabelFromYMD,
+  fullDateLabelFromYMD,
+  statusEmoji,
+  formatAttendanceUpdate,
+  formatBackdatedUpdate,
+  formatMorningSchedule,
+  formatAttendanceMessage,
+  formatTodayAttendanceStatus,
+  formatDateAttendanceReport,
+  splitTelegramMessage,
+  formatNewAssignment,
+  formatAssignmentDeadlineReminder,
+  QUMS_ASSIGNMENT_URL,
+  norm,
+};
 

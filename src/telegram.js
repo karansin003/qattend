@@ -773,6 +773,12 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
+  const dateMatch = parseDateCommand(text);
+  if (dateMatch) {
+    await handleDateAttendance(chatId, dateMatch, msg, log);
+    return;
+  }
+
   if (text.startsWith('/')) {
     await reply(chatId, `❓ Unknown command: ${text}\n\nSend /help to see all available commands.`, log);
     return;
@@ -1292,6 +1298,7 @@ async function handleHelp(chatId, log = console) {
     'Available commands:',
     '📊 /attendance — Full attendance summary (auto-deletes in 1 minute)',
     '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 1 minute)',
+    '📅 /DD/MM/YY — Full attendance for any specific date, e.g. /12/10/26 (auto-deletes in 1 minute)',
     '📚 /assignments — View pending assignments & deadlines',
     'ℹ️ /status — Check your QUMS & Telegram account status',
     '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
@@ -1513,6 +1520,278 @@ async function handleToday(chatId, log = console) {
   }
 }
 
+function parseDateCommand(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  const m = trimmed.match(/^\/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})(?:@\w+)?$/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const rawYear = Number(m[3]);
+  const year = m[3].length === 2 ? 2000 + rawYear : rawYear;
+  return {
+    day,
+    month,
+    year,
+    rawText: trimmed,
+    formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+    ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+}
+
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+}
+
+function isValidCalendarDate(day, month, year) {
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return false;
+  if (year < 2000 || year > 2099) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1) return false;
+  const daysInMonth = [
+    31,
+    isLeapYear(year) ? 29 : 28,
+    31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+  ];
+  return day <= daysInMonth[month - 1];
+}
+
+function isFutureDate(day, month, year, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).formatToParts(now);
+  const get = (t) => Number((parts.find((p) => p.type === t) || {}).value || 0);
+  const curDay = get('day');
+  const curMonth = get('month');
+  const curYear = get('year');
+
+  if (year > curYear) return true;
+  if (year === curYear && month > curMonth) return true;
+  if (year === curYear && month === curMonth && day > curDay) return true;
+  return false;
+}
+
+async function handleDateAttendance(chatId, dateInfo, msg = null, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  // Ensure user's command message is scheduled for deletion after 60s
+  if (msg && msg.message_id) {
+    scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+  }
+
+  if (!isValidCalendarDate(dateInfo.day, dateInfo.month, dateInfo.year)) {
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ *Invalid Date*\n\n"${dateInfo.rawText}" is not a valid calendar date.\nPlease check the day, month, and leap year.${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+    return;
+  }
+
+  if (isFutureDate(dateInfo.day, dateInfo.month, dateInfo.year)) {
+    const sentMsg = await reply(
+      chatId,
+      `📅 *Future Date*\n\nCannot lookup attendance for future date ${dateInfo.formattedDate}.\nPlease request today's or a past date.${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+    return;
+  }
+
+  if (!user.qumsQid || !user.qumsSessionPath) {
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ *QUMS Setup Pending*\n\nPlease complete QUMS setup on the web dashboard first to view your attendance.${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+    return;
+  }
+
+  if (user.qumsSessionStatus === 'expired') {
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+    return;
+  }
+
+  try {
+    const { resolveUserRuntime } = require('./credentials');
+    const {
+      scrapeMonthRegister,
+      scrapeTodaysAttendance,
+      scrapeTimetable,
+      teacherForRecord,
+      roomForRecord,
+      istDateString,
+    } = require('./scraper');
+    const { formatDateAttendanceReport, splitTelegramMessage } = require('./messages');
+
+    let recordsForDate = [];
+    let isLiveSuccess = false;
+
+    await db.ensureSessionOnDisk(user).catch(() => {});
+    const runtime = resolveUserRuntime(user);
+
+    if (fs.existsSync(runtime.sessionPath)) {
+      try {
+        const monthRes = await scrapeMonthRegister({
+          sessionPath: runtime.sessionPath,
+          month: dateInfo.month,
+          year: dateInfo.year,
+        });
+
+        isLiveSuccess = true;
+
+        if (monthRes && Array.isArray(monthRes.records)) {
+          recordsForDate = monthRes.records.filter(
+            (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
+          );
+        }
+
+        // If requested date is today in IST, also check live today's attendance for periods or unmarked statuses
+        if (dateInfo.formattedDate === istDateString()) {
+          try {
+            const todayRows = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
+            if (todayRows && todayRows.length) {
+              if (!recordsForDate.length) {
+                recordsForDate = todayRows.map((tr) => ({
+                  date: dateInfo.ymd,
+                  day: dateInfo.day,
+                  subject: tr.subject,
+                  subjectCode: tr.subjectCode,
+                  period: tr.period,
+                  duration: tr.duration,
+                  teacher: tr.employee,
+                  status: tr.status,
+                  statusRaw: tr.attendance,
+                  lectures: [{ status: tr.status, statusRaw: tr.attendance }],
+                }));
+              } else {
+                for (const tr of todayRows) {
+                  const already = recordsForDate.some(
+                    (r) => (r.subjectCode && r.subjectCode === tr.subjectCode) || (r.subject && r.subject === tr.subject)
+                  );
+                  if (!already && tr.status === 'unmarked') {
+                    recordsForDate.push({
+                      date: dateInfo.ymd,
+                      day: dateInfo.day,
+                      subject: tr.subject,
+                      subjectCode: tr.subjectCode,
+                      period: tr.period,
+                      duration: tr.duration,
+                      teacher: tr.employee,
+                      status: 'unmarked',
+                      statusRaw: tr.attendance,
+                      lectures: [{ status: 'unmarked', statusRaw: tr.attendance }],
+                    });
+                  }
+                }
+              }
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
+
+        // Cross-match timetable for teacher / room enrichment
+        try {
+          const timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
+          if (timetable) {
+            recordsForDate.forEach((r) => {
+              if (!r.teacher) r.teacher = teacherForRecord(timetable, r);
+              if (!r.room) r.room = roomForRecord(timetable, r);
+            });
+          }
+        } catch {
+          // Non-fatal
+        }
+      } catch (fetchErr) {
+        log.log(`[telegram] live date attendance scrape error for user ${user.id}: ${fetchErr.message}`);
+        if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
+          await db.markSessionExpired(user.id).catch(() => {});
+          await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
+          const { maybeNotifySessionExpired } = require('./alerts');
+          const sent = await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => false);
+          if (!sent) {
+            const sentMsg = await reply(
+              chatId,
+              `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`,
+              log
+            );
+            const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+            if (messageId) {
+              scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+            }
+          }
+          return;
+        }
+      }
+    }
+
+    let isCached = false;
+    if (!isLiveSuccess || !recordsForDate.length) {
+      const known = await db.listKnownAttendance(user.id).catch(() => []);
+      const cached = (known || []).filter(
+        (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
+      );
+      if (cached && cached.length) {
+        recordsForDate = cached;
+        isCached = !isLiveSuccess;
+      }
+    }
+
+    const reportText = formatDateAttendanceReport(dateInfo, recordsForDate, {
+      studentName: user.studentName,
+      isCached,
+    });
+    const fullText = reportText + AUTO_DELETE_FOOTNOTE;
+
+    const chunks = splitTelegramMessage(fullText, 4000);
+    for (const chunk of chunks) {
+      const sentMsg = await reply(chatId, chunk, log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) {
+        scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+      }
+    }
+  } catch (err) {
+    log.error(`[telegram] handleDateAttendance failed: ${err.message}`);
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ Could not fetch attendance for ${dateInfo.formattedDate}: ${err.message}${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+  }
+}
+
 async function handleAssignments(chatId, log = console) {
   const user = await db.getUserByTelegramChatId(chatId);
   if (!user) {
@@ -1704,6 +1983,10 @@ module.exports = {
   handleHelp,
   handleAttendance,
   handleToday,
+  handleDateAttendance,
+  parseDateCommand,
+  isValidCalendarDate,
+  isFutureDate,
   handleAssignments,
   handleReconnectCommand,
   toTelegramHtml,
