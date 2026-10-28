@@ -647,14 +647,59 @@ tbody tr:hover td {
   align-items: center;
 }
 
+.captcha-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  width: 100%;
+}
+
 .captcha-img {
   display: block;
-  max-width: 260px;
+  max-width: calc(100% - 54px);
+  width: auto;
+  height: 48px;
+  max-height: 52px;
   border-radius: 8px;
   border: 1.5px solid var(--line);
-  margin: 10px 0;
+  margin: 0;
   background: #fff;
   box-shadow: var(--shadow);
+  object-fit: contain;
+  flex: 1;
+}
+
+.captcha-refresh-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(30, 58, 138, 0.08);
+  color: var(--navy-2);
+  border: 1px solid rgba(30, 58, 138, 0.2);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.25s ease, background 0.2s, color 0.2s;
+}
+
+.captcha-refresh-btn:hover {
+  background: rgba(30, 58, 138, 0.16);
+  color: var(--navy-1);
+}
+
+.captcha-refresh-btn:active {
+  transform: scale(0.94);
+}
+
+.captcha-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .steps {

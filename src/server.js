@@ -303,6 +303,17 @@ app.get('/contact', (req, res) => {
   res.send(withContactEmail(fs.readFileSync(path.join(PUBLIC_DIR, 'contact.html'), 'utf8')));
 });
 
+// ---- public guides (no auth required) ----
+app.get('/attendance-calculator-guide', sendPage('attendance-calculator-guide.html'));
+app.get('/guides/attendance-calculator', sendPage('attendance-calculator-guide.html'));
+app.get('/qums-troubleshooting', sendPage('qums-troubleshooting.html'));
+app.get('/guides/qums-troubleshooting', sendPage('qums-troubleshooting.html'));
+app.get('/telegram-guide', sendPage('telegram-guide.html'));
+app.get('/guides/telegram-guide', sendPage('telegram-guide.html'));
+app.get('/security-and-privacy', sendPage('security-and-privacy.html'));
+app.get('/guides/security-and-privacy', sendPage('security-and-privacy.html'));
+
+
 function withQumsResetControl(html) {
   const script = `
 <script>
@@ -932,7 +943,7 @@ app.post('/api/qums-login/start', requireAuth, async (req, res) => {
 app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
   try {
     const { captchaText, captcha } = req.body || {};
-    const text = String(captchaText || captcha || '').trim();
+    const text = String(captchaText || captcha || '').trim().toUpperCase();
     const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text);
     if (result && result.ok) {
       invalidateUserDataCaches(req.session.userId);

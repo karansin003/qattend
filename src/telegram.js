@@ -559,9 +559,11 @@ const MAX_CAPTCHA_ATTEMPTS = 5;
 
 // userId -> { state, chatId, attempts, maxAttempts, startedAt, expiresAt, timer, alertMessageId, captchaMessageId, submitting }
 const reconnectStates = new Map();
-// Synchronous guard sets for in-flight captcha regeneration to prevent concurrent browser spawns
+// Synchronous guard sets for in-flight captcha regeneration and reconnect to prevent concurrent browser spawns
 const regeneratingChats = new Set();
 const regeneratingUsers = new Set();
+const reconnectingChats = new Set();
+const reconnectingUsers = new Set();
 
 const TELEGRAM_SESSION_EXPIRED_TEXT = [
   '⚠️ *QUMS Session Expired*',
@@ -938,16 +940,32 @@ async function handleCallbackQuery(query, log = console) {
     }
   }
 
+  if (data === 'qums_start_reconnect') {
+    // Synchronous mutex check: immediately reject concurrent clicks from same chat
+    if (reconnectingChats.has(chatKey)) {
+      if (bot && typeof bot.answerCallbackQuery === 'function') {
+        await bot.answerCallbackQuery(query.id, { text: '⏳ Reconnect already in progress, please wait...' }).catch(() => {});
+      }
+      return;
+    }
+    reconnectingChats.add(chatKey);
+    if (bot && typeof bot.answerCallbackQuery === 'function') {
+      await bot.answerCallbackQuery(query.id, { text: 'Starting QUMS reconnect...' }).catch(() => {});
+    }
+  }
+
   let user = null;
   try {
     user = await db.getUserByTelegramChatId(chatId);
   } catch {
     if (data === 'qums_regen_captcha') regeneratingChats.delete(chatKey);
+    if (data === 'qums_start_reconnect') reconnectingChats.delete(chatKey);
     return;
   }
 
   if (!user) {
     if (data === 'qums_regen_captcha') regeneratingChats.delete(chatKey);
+    if (data === 'qums_start_reconnect') reconnectingChats.delete(chatKey);
     if (bot && typeof bot.answerCallbackQuery === 'function') {
       await bot.answerCallbackQuery(query.id).catch(() => {});
     }
@@ -955,17 +973,20 @@ async function handleCallbackQuery(query, log = console) {
   }
 
   if (data === 'qums_start_reconnect') {
-    if (bot && typeof bot.answerCallbackQuery === 'function') {
-      await bot.answerCallbackQuery(query.id, { text: 'Starting QUMS reconnect...' }).catch(() => {});
-    }
-    const alertMsgId = (query.message && query.message.message_id) || null;
-    const started = await startTelegramCaptchaReconnect(user.id, log, { alertMessageId: alertMsgId });
-    if (!started || !started.ok) {
-      if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
-        await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and tap Reconnect again.', log);
-      } else {
-        await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+    reconnectingUsers.add(user.id);
+    try {
+      const alertMsgId = (query.message && query.message.message_id) || null;
+      const started = await startTelegramCaptchaReconnect(user.id, log, { alertMessageId: alertMsgId });
+      if (!started || !started.ok) {
+        if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
+          await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and tap Reconnect again.', log);
+        } else {
+          await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+        }
       }
+    } finally {
+      reconnectingChats.delete(chatKey);
+      reconnectingUsers.delete(user.id);
     }
     return;
   }
@@ -1824,18 +1845,28 @@ async function handleAssignments(chatId, log = console) {
 }
 
 async function handleReconnectCommand(chatId, log = console) {
-  const user = await db.getUserByTelegramChatId(chatId);
-  if (!user) {
-    await reply(chatId, MSG.STATUS_NONE, log);
+  const chatKey = String(chatId);
+  if (reconnectingChats.has(chatKey)) {
+    await reply(chatId, '⏳ Reconnect is already in progress. Please wait a moment...', log);
     return;
   }
-  const started = await startTelegramCaptchaReconnect(user.id, log);
-  if (!started || !started.ok) {
-    if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
-      await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and send /reconnect again.', log);
-    } else {
-      await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+  reconnectingChats.add(chatKey);
+  try {
+    const user = await db.getUserByTelegramChatId(chatId);
+    if (!user) {
+      await reply(chatId, MSG.STATUS_NONE, log);
+      return;
     }
+    const started = await startTelegramCaptchaReconnect(user.id, log);
+    if (!started || !started.ok) {
+      if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
+        await reply(chatId, '⏳ Another reconnect is currently in progress. Please wait a moment and send /reconnect again.', log);
+      } else {
+        await reply(chatId, '⚠️ Unable to start Telegram reconnect. Please reconnect via the dashboard or ensure your QUMS credentials are saved.', log);
+      }
+    }
+  } finally {
+    reconnectingChats.delete(chatKey);
   }
 }
 

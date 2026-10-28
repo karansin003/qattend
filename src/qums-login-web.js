@@ -31,29 +31,50 @@ const {
 
 const LOGIN_URL =
   process.env.QUMS_LOGIN_URL || 'https://qums.quantumuniversity.edu.in/';
-const PENDING_TTL_MS = 5 * 60 * 1000; // 5 min to solve the captcha
+const PENDING_TTL_MS = 2.5 * 60 * 1000; // 2.5 min to solve the captcha
+const MAX_CONCURRENT_PENDING = 2; // Allow up to 2 concurrent idle captcha sessions
 
 class ConcurrentLoginError extends Error {
   constructor(message = 'Another QUMS reconnect or login is already in progress. Please wait a moment and try again.') {
     super(message);
     this.name = 'ConcurrentLoginError';
     this.code = 'CONCURRENT_LOGIN_LIMIT';
-    this.hint = 'Only 1 active QUMS login or reconnect browser session is permitted at a time. Please wait a moment and retry.';
+    this.hint = 'Only active QUMS login or reconnect browser sessions are permitted at a time. Please wait a moment and retry.';
   }
 }
 
 /** userId -> { browser, context, page, frame, startedAt, timer } */
 const pending = new Map();
 let activeLaunchingUserId = null;
+let activeLaunchingStartedAt = 0;
+
+function cleanupStalePending() {
+  const now = Date.now();
+  for (const [id, p] of pending) {
+    const isDead = !p || !p.browser || (typeof p.browser.isConnected === 'function' && !p.browser.isConnected()) || (p.page && p.page.isClosed && p.page.isClosed());
+    const isExpired = (now - (p.startedAt || 0)) > PENDING_TTL_MS;
+    if (isDead || isExpired) {
+      disposePending(id).catch(() => {});
+    }
+  }
+}
 
 function isConcurrentBrowserActive(userId) {
+  cleanupStalePending();
   if (activeLaunchingUserId && activeLaunchingUserId !== userId) {
-    return true;
-  }
-  for (const [id] of pending) {
-    if (id !== userId) {
+    if (activeLaunchingStartedAt && (Date.now() - activeLaunchingStartedAt > 25000)) {
+      activeLaunchingUserId = null;
+      activeLaunchingStartedAt = 0;
+    } else {
       return true;
     }
+  }
+  // Allow same user to refresh or reconnect without blocking themselves
+  if (pending.has(userId)) {
+    return false;
+  }
+  if (pending.size >= MAX_CONCURRENT_PENDING) {
+    return true;
   }
   return false;
 }
@@ -218,6 +239,14 @@ async function startQumsLogin(userId, credsInput, log = console) {
     throw err;
   }
 
+  // If another user is actively launching the browser right now, wait up to 8s for them to finish
+  if (activeLaunchingUserId && activeLaunchingUserId !== userId) {
+    const waitStart = Date.now();
+    while (activeLaunchingUserId && activeLaunchingUserId !== userId && (Date.now() - waitStart < 8000)) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
   if (isConcurrentBrowserActive(userId)) {
     log.log(`[qums-login] Concurrent login rejected for user ${userId}: another browser session is active.`);
     throw new ConcurrentLoginError();
@@ -248,6 +277,7 @@ async function startQumsLogin(userId, credsInput, log = console) {
   }
 
   activeLaunchingUserId = userId;
+  activeLaunchingStartedAt = Date.now();
   try {
     await disposePending(userId); // koi purana pending ho to clean
     const { browser, context, page, frame } = await openLoginFormPage();
@@ -278,6 +308,7 @@ async function startQumsLogin(userId, credsInput, log = console) {
   } finally {
     if (activeLaunchingUserId === userId) {
       activeLaunchingUserId = null;
+      activeLaunchingStartedAt = 0;
     }
   }
 }

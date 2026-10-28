@@ -71,7 +71,8 @@ ok('U4 home.html has official AdSense verification script', homeHtml.includes(`c
 const otherPages = pages.filter((f) => f !== 'home.html');
 const unauthorizedAds = otherPages.some((f) => /adsbygoogle|ca-pub-|googlesyndication/.test(read(path.join(PUBLIC, f))));
 ok('U4 no unauthorized or fake AdSense script on other pages', !unauthorizedAds);
-ok('U4 no ads.txt shipped', !fs.existsSync(path.join(PUBLIC, 'ads.txt')));
+const adsTxtPath = path.join(PUBLIC, 'ads.txt');
+ok('U4 ads.txt exists and contains official publisher entry', fs.existsSync(adsTxtPath) && read(adsTxtPath).includes('google.com, pub-6097963574439559, DIRECT, f08c47fec0942fa0'));
 
 /* ---------------- U5: one Telegram poller / one /start handler ---------------- */
 const tg = read(path.join(SRC, 'telegram.js'));

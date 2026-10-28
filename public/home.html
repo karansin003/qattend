@@ -30,9 +30,10 @@
       <span>QAttend</span>
     </a>
     <nav class="nav-links" aria-label="Main">
-      <a href="/">Home</a>
+      <a href="/" class="active">Home</a>
       <a href="/features">Features</a>
       <a href="/how-it-works">How It Works</a>
+      <a href="/attendance-calculator-guide">Calculator Guide</a>
       <a href="/about">About</a>
       <a href="/faq">FAQ</a>
       <a href="/contact">Contact</a>
@@ -53,6 +54,10 @@
       <a href="/">🏠 Home</a>
       <a href="/features">✨ Features</a>
       <a href="/how-it-works">🔄 How It Works</a>
+      <a href="/attendance-calculator-guide">🧮 Calculator Guide</a>
+      <a href="/qums-troubleshooting">🔧 QUMS Troubleshooting</a>
+      <a href="/telegram-guide">💬 Telegram Guide</a>
+      <a href="/security-and-privacy">🔒 Security &amp; Privacy</a>
       <a href="/about">ℹ️ About</a>
       <a href="/faq">❓ FAQ</a>
       <a href="/contact">✉️ Contact</a>
@@ -337,6 +342,58 @@
       </div>
     </section>
 
+    <!-- ================= HELPFUL GUIDES ================= -->
+    <section class="section" id="student-guides">
+      <div class="section-inner">
+        <div class="section-head center">
+          <h2 class="section-title-lg">Practical Student Guides</h2>
+          <p class="section-lead">Step-by-step documentation, formulas, and troubleshooting for QAttend users.</p>
+        </div>
+        <div class="grid grid-2" style="gap:20px;">
+          <div class="feature-card">
+            <div class="feature-icon" aria-hidden="true">🧮</div>
+            <h3>Attendance Percentage Calculator &amp; 75% Guide</h3>
+            <p>
+              Understand the exact formulas to reach 75%, how many classes you can afford to miss, and use our free interactive calculation tool.
+            </p>
+            <p style="margin-top:12px;">
+              <a class="btn btn-outline" href="/attendance-calculator-guide">Open Calculator Guide →</a>
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon" aria-hidden="true">🔧</div>
+            <h3>QUMS Connection &amp; CAPTCHA Troubleshooting</h3>
+            <p>
+              Detailed setup walkthrough, solving visual CAPTCHA challenges, resolving 429 concurrency errors, and reconnecting expired sessions.
+            </p>
+            <p style="margin-top:12px;">
+              <a class="btn btn-outline" href="/qums-troubleshooting">Read Connection Guide →</a>
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon" aria-hidden="true">💬</div>
+            <h3>Telegram Alerts &amp; Bot Commands Guide</h3>
+            <p>
+              Explore verified alert schedules (8:30 AM timetable, real-time marks, 7:00 PM deadline reminders), bot commands, and date-wise lookups.
+            </p>
+            <p style="margin-top:12px;">
+              <a class="btn btn-outline" href="/telegram-guide">Read Telegram Guide →</a>
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon" aria-hidden="true">🔒</div>
+            <h3>Data Security &amp; Privacy Architecture</h3>
+            <p>
+              How student data is protected: AES-256-GCM password encryption, multi-tenant session isolation, Firebase authentication, and reset controls.
+            </p>
+            <p style="margin-top:12px;">
+              <a class="btn btn-outline" href="/security-and-privacy">Read Security Guide →</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= CTA ================= -->
     <section class="cta-band">
       <h2>Ready to stay updated?</h2>
@@ -370,6 +427,15 @@
           </p>
         </div>
         <div class="footer-col">
+          <h3>Guides</h3>
+          <ul>
+            <li><a href="/attendance-calculator-guide">Attendance Calculator</a></li>
+            <li><a href="/qums-troubleshooting">QUMS Troubleshooting</a></li>
+            <li><a href="/telegram-guide">Telegram Notifications</a></li>
+            <li><a href="/security-and-privacy">Data Security Guide</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
           <h3>Product</h3>
           <ul>
             <li><a href="/features">Features</a></li>
@@ -378,17 +444,11 @@
           </ul>
         </div>
         <div class="footer-col">
-          <h3>Company</h3>
-          <ul>
-            <li><a href="/about">About</a></li>
-            <li><a href="/contact">Contact</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
           <h3>Legal</h3>
           <ul>
             <li><a href="/privacy">Privacy Policy</a></li>
             <li><a href="/terms">Terms &amp; Conditions</a></li>
+            <li><a href="/contact">Contact</a></li>
           </ul>
         </div>
       </div>

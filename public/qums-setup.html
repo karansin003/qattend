@@ -99,11 +99,15 @@
 
       <div id="captchaBox" class="hidden">
         <label class="form-label" for="captcha">CAPTCHA (case-sensitive, usually UPPERCASE)</label>
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-          <img id="captchaImg" class="captcha-img" alt="captcha" style="margin-bottom: 0;" />
-          <button type="button" id="refreshCaptchaBtn" class="btn" style="padding: 8px 14px; font-size: 13px; background: rgba(30, 58, 138, 0.08); color: var(--navy-2); border: 1px solid rgba(30, 58, 138, 0.2); white-space: nowrap;">🔄 Refresh</button>
+        <div class="captcha-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; width: 100%;">
+          <img id="captchaImg" class="captcha-img" alt="captcha" style="margin: 0; max-width: calc(100% - 52px); height: 48px; border-radius: 8px; border: 1.5px solid var(--line); background: #fff; box-shadow: var(--shadow); object-fit: contain; flex: 1;" />
+          <button type="button" id="refreshCaptchaBtn" class="captcha-refresh-btn" title="Refresh CAPTCHA" aria-label="Refresh CAPTCHA" style="width: 44px; height: 44px; min-width: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: rgba(30, 58, 138, 0.08); color: var(--navy-2); border: 1px solid rgba(30, 58, 138, 0.2); cursor: pointer; flex-shrink: 0; transition: transform 0.25s ease, background 0.2s;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+            </svg>
+          </button>
         </div>
-        <input class="form-input" id="captcha" type="text" placeholder="Enter CAPTCHA" autocomplete="off" style="text-transform: uppercase; letter-spacing: 2px; font-weight: 600;" />
+        <input class="form-input" id="captcha" type="text" placeholder="Enter CAPTCHA" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" style="text-transform: uppercase; letter-spacing: 2px; font-weight: 600;" />
         <div style="margin-top: 14px;"><button id="submitBtn" style="width: 100%;">Login to QUMS</button></div>
       </div>
 
@@ -208,7 +212,7 @@
 
     $('submitBtn').addEventListener('click', async () => {
       if (busy) return;
-      const captchaVal = $('captcha').value.trim();
+      const captchaVal = $('captcha').value.trim().toUpperCase();
       if (!captchaVal) {
         $('error').textContent = 'Please enter the captcha text.';
         $('error').classList.remove('hidden');
@@ -312,14 +316,30 @@
     $('refreshCaptchaBtn').addEventListener('click', async () => {
       if (busy) return;
       busy = true; $('refreshCaptchaBtn').disabled = true;
+      $('refreshCaptchaBtn').style.transform = 'rotate(180deg)';
       await startLogin();
+      $('refreshCaptchaBtn').style.transform = '';
       busy = false; $('refreshCaptchaBtn').disabled = false;
     });
 
-    $('captcha').addEventListener('input', (e) => {
-      e.target.value = e.target.value.toUpperCase();
+    function forceUpperCaptcha(el) {
+      if (!el) return;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const upper = (el.value || '').toUpperCase();
+      if (el.value !== upper) {
+        el.value = upper;
+        if (start !== null && end !== null) {
+          try { el.setSelectionRange(start, end); } catch {}
+        }
+      }
+    }
+    const captchaInputEl = $('captcha');
+    ['input', 'change', 'keyup', 'blur'].forEach((evt) => {
+      captchaInputEl.addEventListener(evt, (e) => forceUpperCaptcha(e.target));
     });
-    $('captcha').addEventListener('keydown', (e) => e.key === 'Enter' && $('submitBtn').click());
+    captchaInputEl.addEventListener('paste', () => setTimeout(() => forceUpperCaptcha(captchaInputEl), 10));
+    captchaInputEl.addEventListener('keydown', (e) => e.key === 'Enter' && $('submitBtn').click());
     // password show/hide toggle with clean SVG icons (no weird emoji)
     const EYE_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
     const EYE_OFF_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';

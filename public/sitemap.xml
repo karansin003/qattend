@@ -31,6 +31,26 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://qattend.onrender.com/attendance-calculator-guide</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://qattend.onrender.com/qums-troubleshooting</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://qattend.onrender.com/telegram-guide</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://qattend.onrender.com/security-and-privacy</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://qattend.onrender.com/privacy</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
