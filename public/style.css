@@ -650,25 +650,24 @@ tbody tr:hover td {
 .captcha-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   width: 100%;
 }
 
 .captcha-img {
   display: block;
-  max-width: calc(100% - 54px);
   width: auto;
-  height: 48px;
-  max-height: 52px;
+  height: 58px;
+  min-height: 54px;
+  max-height: 64px;
+  max-width: calc(100% - 56px);
   border-radius: 8px;
   border: 1.5px solid var(--line);
   margin: 0;
   background: #fff;
   box-shadow: var(--shadow);
   object-fit: contain;
-  flex: 1;
 }
 
 .captcha-refresh-btn {
@@ -987,7 +986,7 @@ footer {
   }
 
   .captcha-img {
-    max-width: 100%;
+    max-width: calc(100% - 56px);
   }
 }
 

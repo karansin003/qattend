@@ -225,8 +225,8 @@ async function captureCaptchaImage(page, frame) {
             const w = img.naturalWidth || img.width || 180;
             const h = img.naturalHeight || img.height || 45;
             const scale = 2; // 2x sharp display
-            const padX = 50; // 50px left/right safe zone
-            const padY = 25; // 25px top/bottom safe zone
+            const padX = 12; // safe horizontal margin for mobile Telegram bubbles
+            const padY = 2; // minimal vertical margin so text stays large and legible
             const canvas = document.createElement('canvas');
             canvas.width = Math.round(w * scale + padX * 2);
             canvas.height = Math.round(h * scale + padY * 2);
