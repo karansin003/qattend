@@ -253,17 +253,17 @@ const sendPage = (name) => (req, res) => res.sendFile(path.join(PUBLIC_DIR, name
  * invented support address is never rendered.
  */
 function withContactEmail(html) {
-  const configured = String(process.env.CONTACT_EMAIL || '').trim();
+  const configured = String(process.env.CONTACT_EMAIL || 'karansin8672@gmail.com').trim();
   const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured);
   const escapeHtml = (s) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return html
-    .replace(/__CONTACT_EMAIL__/g, valid ? escapeHtml(configured) : 'Not configured yet')
+    .replace(/__CONTACT_EMAIL__/g, valid ? escapeHtml(configured) : 'karansin8672@gmail.com')
     .replace(
       /__CONTACT_EMAIL_NOTE__/g,
       valid
-        ? 'This is the support address configured for this QAttend deployment.'
-        : 'Placeholder: this deployment has no support email configured yet (set CONTACT_EMAIL to publish a real one). Please use the Telegram bot channel instead.'
+        ? 'Direct support & developer email for QAttend assistance.'
+        : 'Direct support email for QAttend assistance.'
     );
 }
 

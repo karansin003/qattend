@@ -143,6 +143,11 @@ async function runAssignmentCycle(opts = {}) {
   const mode = opts.mode || 'new';
   const fetchFn = opts.fetchFn || ((u) => scrapeAssignments({ sessionPath: u.qumsSessionPath }));
   const defaultSendFn = async (text, sendOptions = {}) => {
+    // Assignment notifications disabled by default per user request (enable via ENABLE_ASSIGNMENTS=true)
+    if (process.env.ENABLE_ASSIGNMENTS !== 'true') {
+      log.log(`[assignments] notification suppressed for user=${userId} (assignment notifications currently disabled)`);
+      return { ok: true, suppressed: true };
+    }
     const sOpts = { category: 'ASSIGNMENT', ...sendOptions };
     const ok = await sendMessage(userId, text, log, sOpts);
     if (sendOptions && sOpts.messageId) {
@@ -292,7 +297,13 @@ function getAssignmentStatus() { return { ...assignmentStatus }; }
 
 function startAssignmentWatcher(log = console) {
   assignmentStatus.armed = true;
-  const reminderTask = cron.schedule(REMINDER_CRON, () => runAssignmentPass(log, { mode: 'reminders' }), { timezone: TIMEZONE });
+  const reminderTask = cron.schedule(REMINDER_CRON, () => {
+    if (process.env.ENABLE_ASSIGNMENTS === 'true') {
+      runAssignmentPass(log, { mode: 'reminders' });
+    } else {
+      log.log('[assignments] deadline reminder skipped (assignment notifications currently disabled)');
+    }
+  }, { timezone: TIMEZONE });
 
   const minutes = ASSIGNMENT_INTERVAL_MINUTES;
   let busy = false;
@@ -300,7 +311,9 @@ function startAssignmentWatcher(log = console) {
     if (busy) return;
     busy = true;
     try {
-      await runAssignmentPass(log, { mode: 'new' });
+      if (process.env.ENABLE_ASSIGNMENTS === 'true') {
+        await runAssignmentPass(log, { mode: 'new' });
+      }
     } catch (err) {
       assignmentStatus.lastError = err.message;
       log.error(`[assignments] new-assignment pass failed: ${err.name || 'Error'}: ${err.message}`);

@@ -31,22 +31,22 @@ const {
 
 const LOGIN_URL =
   process.env.QUMS_LOGIN_URL || 'https://qums.quantumuniversity.edu.in/';
-const PENDING_TTL_MS = 2.5 * 60 * 1000; // 2.5 min to solve the captcha
-const MAX_CONCURRENT_PENDING = 2; // Allow up to 2 concurrent idle captcha sessions
+const PENDING_TTL_MS = 3 * 60 * 1000; // 3 min to solve the captcha
+const MAX_CONCURRENT_PENDING = parseInt(process.env.MAX_CONCURRENT_PENDING, 10) || 15; // Allow multiple concurrent users
+const MAX_CONCURRENT_LAUNCHES = parseInt(process.env.MAX_CONCURRENT_LAUNCHES, 10) || 6;
 
 class ConcurrentLoginError extends Error {
   constructor(message = 'Another QUMS reconnect or login is already in progress. Please wait a moment and try again.') {
     super(message);
     this.name = 'ConcurrentLoginError';
     this.code = 'CONCURRENT_LOGIN_LIMIT';
-    this.hint = 'Only active QUMS login or reconnect browser sessions are permitted at a time. Please wait a moment and retry.';
+    this.hint = 'High login traffic on the server. Please wait a moment and retry.';
   }
 }
 
 /** userId -> { browser, context, page, frame, startedAt, timer } */
 const pending = new Map();
-let activeLaunchingUserId = null;
-let activeLaunchingStartedAt = 0;
+const activeLaunchingUsers = new Map(); // userId -> startedAt
 
 function cleanupStalePending() {
   const now = Date.now();
@@ -59,18 +59,20 @@ function cleanupStalePending() {
   }
 }
 
-function isConcurrentBrowserActive(userId) {
-  cleanupStalePending();
-  if (activeLaunchingUserId && activeLaunchingUserId !== userId) {
-    if (activeLaunchingStartedAt && (Date.now() - activeLaunchingStartedAt > 25000)) {
-      activeLaunchingUserId = null;
-      activeLaunchingStartedAt = 0;
-    } else {
-      return true;
+function cleanupStaleLaunching() {
+  const now = Date.now();
+  for (const [id, startedAt] of activeLaunchingUsers) {
+    if (now - startedAt > 25000) {
+      activeLaunchingUsers.delete(id);
     }
   }
+}
+
+function isConcurrentBrowserActive(userId) {
+  cleanupStalePending();
+  cleanupStaleLaunching();
   // Allow same user to refresh or reconnect without blocking themselves
-  if (pending.has(userId)) {
+  if (pending.has(userId) || activeLaunchingUsers.has(userId)) {
     return false;
   }
   if (pending.size >= MAX_CONCURRENT_PENDING) {
@@ -239,16 +241,16 @@ async function startQumsLogin(userId, credsInput, log = console) {
     throw err;
   }
 
-  // If another user is actively launching the browser right now, wait up to 8s for them to finish
-  if (activeLaunchingUserId && activeLaunchingUserId !== userId) {
-    const waitStart = Date.now();
-    while (activeLaunchingUserId && activeLaunchingUserId !== userId && (Date.now() - waitStart < 8000)) {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
+  // If too many users are actively launching browsers right now, wait briefly in queue
+  cleanupStaleLaunching();
+  const waitStart = Date.now();
+  while (activeLaunchingUsers.size >= MAX_CONCURRENT_LAUNCHES && !activeLaunchingUsers.has(userId) && (Date.now() - waitStart < 15000)) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    cleanupStaleLaunching();
   }
 
   if (isConcurrentBrowserActive(userId)) {
-    log.log(`[qums-login] Concurrent login rejected for user ${userId}: another browser session is active.`);
+    log.log(`[qums-login] Concurrent login limit reached for user ${userId} (${pending.size} active sessions).`);
     throw new ConcurrentLoginError();
   }
 
@@ -276,8 +278,7 @@ async function startQumsLogin(userId, credsInput, log = console) {
     }
   }
 
-  activeLaunchingUserId = userId;
-  activeLaunchingStartedAt = Date.now();
+  activeLaunchingUsers.set(userId, Date.now());
   try {
     await disposePending(userId); // koi purana pending ho to clean
     const { browser, context, page, frame } = await openLoginFormPage();
@@ -306,10 +307,7 @@ async function startQumsLogin(userId, credsInput, log = console) {
       throw err;
     }
   } finally {
-    if (activeLaunchingUserId === userId) {
-      activeLaunchingUserId = null;
-      activeLaunchingStartedAt = 0;
-    }
+    activeLaunchingUsers.delete(userId);
   }
 }
 
