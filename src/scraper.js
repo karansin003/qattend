@@ -519,8 +519,11 @@ async function scrapeTodaysAttendance(opts = {}) {
     }
     const body = await resp.text();
     if (body.trim().startsWith('<')) {
-      clearCachedRegId(sessionPath);
-      throw new SessionExpiredError(); // HTML = login page
+      if (looksLikeLoginHtml(body)) {
+        clearCachedRegId(sessionPath);
+        throw new SessionExpiredError(); // Confirmed portal login page
+      }
+      throw new QumsUnreachableError('QUMS portal returned a temporary HTML error page for today\'s attendance.');
     }
 
     let rawRows = [];
@@ -993,7 +996,10 @@ async function fetchTimetableViaApi(apiContext, regId) {
     );
   }
   const body = await resp.text();
-  if (body.trim().startsWith('<')) throw new SessionExpiredError(); // login/403 page
+  if (body.trim().startsWith('<')) {
+    if (looksLikeLoginHtml(body)) throw new SessionExpiredError(); // Confirmed portal login page
+    throw new QumsUnreachableError('QUMS portal returned a temporary HTML error page for timetable.');
+  }
   let rows = [];
   try {
     const payload = JSON.parse(body);
@@ -1163,7 +1169,10 @@ async function scrapeAssignments(opts = {}) {
       );
     }
     const body = await resp.text();
-    if (body.trim().startsWith('<')) throw new SessionExpiredError(); // HTML = login page
+    if (body.trim().startsWith('<')) {
+      if (looksLikeLoginHtml(body)) throw new SessionExpiredError(); // Confirmed portal login page
+      throw new QumsUnreachableError('QUMS portal returned a temporary HTML error page for assignments.');
+    }
     let payload = {};
     try {
       payload = JSON.parse(body);
@@ -1282,7 +1291,10 @@ async function scrapeMonthRegister(opts = {}) {
       );
     }
     const body = await resp.text();
-    if (body.trim().startsWith('<')) throw new SessionExpiredError(); // HTML = login/403 page
+    if (body.trim().startsWith('<')) {
+      if (looksLikeLoginHtml(body)) throw new SessionExpiredError(); // Confirmed portal login page
+      throw new QumsUnreachableError('QUMS portal returned a temporary HTML error page for month register.');
+    }
     let payload = {};
     try {
       payload = JSON.parse(body);

@@ -26,6 +26,7 @@
  */
 require('dotenv').config();
 
+const fs = require('fs');
 const crypto = require('crypto');
 
 const CERT_URL =
@@ -210,6 +211,118 @@ function friendlyTokenError(err) {
   }
 }
 
+let adminApp = null;
+let adminInitAttempted = false;
+
+function getFirebaseAdminApp() {
+  if (adminInitAttempted) return adminApp;
+  adminInitAttempted = true;
+  try {
+    const admin = require('firebase-admin');
+    const existingApps = admin.getApps ? admin.getApps() : [];
+    if (existingApps && existingApps.length > 0) {
+      adminApp = existingApps[0];
+      return adminApp;
+    }
+
+    const serviceAccountVar =
+      process.env.FIREBASE_SERVICE_ACCOUNT ||
+      process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
+      process.env.FIREBASE_ADMIN_CREDENTIALS;
+
+    if (serviceAccountVar) {
+      let parsed = null;
+      const trimmed = serviceAccountVar.trim();
+      if (trimmed.startsWith('{')) {
+        parsed = JSON.parse(trimmed);
+      } else if (fs.existsSync(trimmed)) {
+        parsed = JSON.parse(fs.readFileSync(trimmed, 'utf8'));
+      }
+      if (parsed) {
+        adminApp = admin.initializeApp({
+          credential: admin.cert(parsed),
+          projectId: parsed.project_id || FIREBASE_PROJECT_ID,
+        });
+        console.log('[firebase] Admin SDK initialized with service account.');
+        return adminApp;
+      }
+    }
+
+    if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+      const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+      adminApp = admin.initializeApp({
+        credential: admin.cert({
+          projectId: FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey,
+        }),
+      });
+      console.log('[firebase] Admin SDK initialized with client_email & private_key.');
+      return adminApp;
+    }
+
+    // Try application default credentials if available (e.g. Google Cloud)
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      adminApp = admin.initializeApp({
+        projectId: FIREBASE_PROJECT_ID,
+      });
+      return adminApp;
+    }
+
+    console.warn('[firebase] Admin SDK credentials not configured. Set FIREBASE_SERVICE_ACCOUNT_KEY in .env / Render to enable Firebase user deletion.');
+  } catch (err) {
+    console.warn('[firebase] Could not initialize Firebase Admin SDK:', err.message);
+  }
+  return null;
+}
+
+/**
+ * Delete a user from Firebase Authentication by UID and/or Email.
+ * deps.auth or deps.app allows injecting mocks for unit testing.
+ */
+async function deleteFirebaseUser({ uid, email } = {}, deps = {}) {
+  const app = deps.app || getFirebaseAdminApp();
+  if (!app && !deps.auth) {
+    return { ok: false, deleted: false, reason: 'admin-sdk-unconfigured' };
+  }
+  let auth = deps.auth;
+  if (!auth) {
+    const { getAuth } = require('firebase-admin/auth');
+    auth = getAuth(app);
+  }
+  let deletedCount = 0;
+  let targetUid = uid;
+
+  if (targetUid) {
+    try {
+      await auth.deleteUser(targetUid);
+      deletedCount += 1;
+      console.log(`[firebase] Deleted user by UID: ${targetUid}`);
+    } catch (err) {
+      if (err && err.code !== 'auth/user-not-found') {
+        console.error(`[firebase] Failed to delete user by UID ${targetUid}:`, err.message);
+      }
+    }
+  }
+
+  if (email) {
+    try {
+      const userRecord = await auth.getUserByEmail(email);
+      if (userRecord && userRecord.uid && userRecord.uid !== targetUid) {
+        await auth.deleteUser(userRecord.uid);
+        deletedCount += 1;
+        console.log(`[firebase] Deleted user by email lookup: ${userRecord.uid} (${email})`);
+      }
+    } catch (err) {
+      if (err && err.code !== 'auth/user-not-found') {
+        console.error(`[firebase] Failed to find/delete user by email ${email}:`, err.message);
+      }
+    }
+  }
+
+  return { ok: true, deleted: deletedCount > 0, deletedCount };
+}
+
 module.exports = {
   FirebaseTokenError,
   CERT_URL,
@@ -218,6 +331,8 @@ module.exports = {
   verifyIdToken,
   friendlyTokenError,
   resetCertificateCache,
+  getFirebaseAdminApp,
+  deleteFirebaseUser,
   // exported for tests only:
   parseMaxAge,
 };

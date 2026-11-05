@@ -264,6 +264,23 @@ const MIGRATIONS = [
       `ALTER TABLE weekly_schedule ADD COLUMN IF NOT EXISTS duration TEXT DEFAULT ''`,
     ],
   },
+  {
+    id: '020_reconnect_tracking',
+    statements: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_reconnect_source TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_reconnected_at TIMESTAMPTZ`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS reconnect_count_telegram INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS reconnect_count_web INTEGER NOT NULL DEFAULT 0`,
+      `CREATE TABLE IF NOT EXISTS reconnect_events (
+         id SERIAL PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         source TEXT NOT NULL,
+         reconnected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_reconnect_events_user_id ON reconnect_events(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_reconnect_events_source ON reconnect_events(source)`,
+    ],
+  },
 ];
 
 /**

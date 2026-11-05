@@ -312,7 +312,7 @@ async function startQumsLogin(userId, credsInput, log = console) {
 }
 
 /** Step 2: submit the captcha; success -> per-user session file + DB update. */
-async function submitQumsCaptcha(userId, rawCaptchaText, log = console) {
+async function submitQumsCaptcha(userId, rawCaptchaText, log = console, opts = {}) {
   const p = pending.get(userId);
   if (!p) {
     const e = new Error('No pending QUMS login — captcha dobara generate karo.');
@@ -458,6 +458,10 @@ async function submitQumsCaptcha(userId, rawCaptchaText, log = console) {
     confirmSwitch: p.confirmSwitch,
   });
   log.log(`[qums-login] QUMS session saved for user ${userId} -> ${sessionPath}`);
+
+  // Track reconnect channel (Telegram vs Webpage)
+  const reconnectSource = (opts && opts.source === 'telegram') ? 'telegram' : 'web';
+  await db.recordUserReconnect(userId, reconnectSource, log).catch(() => {});
 
   // QUMS is the source of truth for identity: fetch the displayed name and the
   // current Year/Sem right after a successful login/reconnect (cache refresh).

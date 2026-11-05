@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs');
 // Firebase Authentication owns the reset flow now (single sender, no
 // duplicates). The mailer module itself is untouched and its tests remain.
 const firebaseAuth = require('./firebaseAuth');
+const XLSX = require('xlsx');
 
 const db = require('./db');
 const { encryptSecret } = require('./crypto');
@@ -944,7 +945,7 @@ app.post('/api/qums-login/submit-captcha', requireAuth, async (req, res) => {
   try {
     const { captchaText, captcha } = req.body || {};
     const text = String(captchaText || captcha || '').trim().toUpperCase();
-    const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text);
+    const result = await qumsLogin.submitQumsCaptcha(req.session.userId, text, console, { source: 'web' });
     if (result && result.ok) {
       invalidateUserDataCaches(req.session.userId);
       // Seed baseline marked periods for today
@@ -1032,11 +1033,119 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const search = String(req.query.search || '');
     const filter = String(req.query.filter || 'all');
+    const qumsFilter = String(req.query.qumsFilter || 'all');
+    const telegramFilter = String(req.query.telegramFilter || 'all');
+    const reconnectFilter = String(req.query.reconnectFilter || 'all');
+    const statusFilter = String(req.query.statusFilter || 'all');
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 25;
-    const data = await db.listUsersForAdmin({ search, filter, page, limit });
+    const data = await db.listUsersForAdmin({
+      search,
+      filter,
+      qumsFilter,
+      telegramFilter,
+      reconnectFilter,
+      statusFilter,
+      page,
+      limit,
+    });
     res.json(data);
   } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.get('/api/admin/export/excel', requireAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || '');
+    const filter = String(req.query.filter || 'all');
+    const qumsFilter = String(req.query.qumsFilter || 'all');
+    const telegramFilter = String(req.query.telegramFilter || 'all');
+    const reconnectFilter = String(req.query.reconnectFilter || 'all');
+    const statusFilter = String(req.query.statusFilter || 'all');
+
+    const users = await db.allUsers();
+    const expired = await db.listSessionExpiredUsers();
+    const rows = users.map((u) => db.safeAdminUser(u, expired));
+    const filtered = db.applyAdminFilters(rows, {
+      search,
+      filter,
+      qumsFilter,
+      telegramFilter,
+      reconnectFilter,
+      statusFilter,
+    });
+
+    const stats = await db.adminStats();
+
+    // Sheet 1: Users
+    const usersData = filtered.map((u, idx) => ({
+      'S.No': idx + 1,
+      'User ID': u.id,
+      'Student Name': u.studentName || '—',
+      'Email': u.email || '—',
+      'QID': u.qumsQid || '—',
+      'Year & Semester': u.qumsYearSem || '—',
+      'QUMS Session': u.sessionExpired ? 'EXPIRED' : (u.qumsConnected ? 'CONNECTED' : 'NOT SETUP'),
+      'Telegram Connected': u.telegramConnected ? 'LINKED' : 'NOT LINKED',
+      'Account Status': u.isSuspended ? 'SUSPENDED' : (!u.emailVerified ? 'UNVERIFIED' : 'ACTIVE'),
+      'Last Reconnect Source': u.lastReconnectSource ? (u.lastReconnectSource === 'telegram' ? 'Telegram' : 'Webpage') : 'None',
+      'Telegram Reconnects': u.reconnectCountTelegram || 0,
+      'Webpage Reconnects': u.reconnectCountWeb || 0,
+      'Last Reconnected At': u.lastReconnectedAt ? new Date(u.lastReconnectedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : 'Never',
+      'Attendance Last Checked': u.attendanceLastCheckedAt ? new Date(u.attendanceLastCheckedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : 'Not synced yet',
+      'Assignment Last Checked': u.assignmentLastCheckedAt ? new Date(u.assignmentLastCheckedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : 'Not synced yet',
+      'Account Created': u.createdAt ? new Date(u.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : '—',
+    }));
+
+    // Sheet 2: System & Reconnect Metrics
+    const metricsData = [
+      { Metric: 'Total Registered Users', Value: stats.totalUsers },
+      { Metric: 'QUMS Connected (Active Sessions)', Value: stats.qumsConnected },
+      { Metric: 'QUMS Sessions Expired', Value: stats.sessionExpired },
+      { Metric: 'Telegram Linked Users', Value: stats.telegramConnected },
+      { Metric: 'Suspended Users', Value: stats.suspended },
+      { Metric: 'Reconnects via Telegram (Total)', Value: (stats.reconnectStats && stats.reconnectStats.telegram) || 0 },
+      { Metric: 'Reconnects via Webpage (Total)', Value: (stats.reconnectStats && stats.reconnectStats.web) || 0 },
+      { Metric: 'Total Reconnect Events', Value: (stats.reconnectStats && stats.reconnectStats.total) || 0 },
+      { Metric: 'Report Export Time', Value: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const wsUsers = XLSX.utils.json_to_sheet(usersData);
+    const wsMetrics = XLSX.utils.json_to_sheet(metricsData);
+
+    wsUsers['!cols'] = [
+      { wch: 6 },
+      { wch: 20 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 16 },
+      { wch: 24 },
+      { wch: 20 },
+      { wch: 20 },
+      { wch: 24 },
+      { wch: 24 },
+      { wch: 24 },
+      { wch: 24 },
+    ];
+    wsMetrics['!cols'] = [{ wch: 38 }, { wch: 26 }];
+
+    XLSX.utils.book_append_sheet(wb, wsUsers, 'Users');
+    XLSX.utils.book_append_sheet(wb, wsMetrics, 'Summary & Metrics');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `qattend-users-${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error('[admin export] excel export failed:', err);
     safeServerError(res, err);
   }
 });
@@ -1126,12 +1235,35 @@ async function handleAdminDeleteUser(req, res) {
         console.warn(`[admin] failed to unlink session file for ${target.id}:`, e.message);
       }
     }
+
+    // Unlink notified periods file on disk
+    try {
+      const periodsPath = path.join(__dirname, '..', 'data', 'notified_periods', `${target.id}.json`);
+      if (fs.existsSync(periodsPath)) fs.unlinkSync(periodsPath);
+    } catch (e) {
+      console.warn(`[admin] failed to unlink notified_periods file for ${target.id}:`, e.message);
+    }
+
+    // Delete user account from Firebase Authentication
+    let firebaseStatus = { deleted: false };
+    try {
+      firebaseStatus = await firebaseAuth.deleteFirebaseUser({
+        uid: target.firebaseUid,
+        email: target.email,
+      });
+      console.log(`[admin] Firebase user deletion for ${target.email}:`, firebaseStatus);
+    } catch (fbErr) {
+      console.error(`[admin] Failed to delete ${target.email} from Firebase Auth:`, fbErr.message);
+    }
+
+    // Delete all records from Supabase / DB
     await db.deleteUser(target.id);
-    console.log(`[admin] user ${target.email} (${target.id}) deleted by ${req.appUser ? req.appUser.email : 'admin'}`);
+    console.log(`[admin] user ${target.email} (${target.id}) deleted by ${req.appUser ? req.appUser.email : 'admin'} (Firebase deleted: ${firebaseStatus.deleted})`);
     res.json({
       ok: true,
       id: target.id,
-      message: `User ${target.email} deleted successfully.`,
+      firebaseDeleted: firebaseStatus.deleted,
+      message: `User ${target.email} deleted successfully from Supabase and Firebase.`,
     });
   } catch (err) {
     safeServerError(res, err);

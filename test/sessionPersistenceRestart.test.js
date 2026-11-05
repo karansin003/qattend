@@ -17,8 +17,8 @@ const os = require('os');
 
 // Force safe testing environment
 process.env.NODE_ENV = 'test';
-delete process.env.DATABASE_URL;
-delete process.env.SUPABASE_URL;
+process.env.DATABASE_URL = '';
+process.env.SUPABASE_URL = '';
 
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'qattend-restart-test-'));
 process.env.DATA_DIR = TMP_DIR;

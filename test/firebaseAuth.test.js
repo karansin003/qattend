@@ -210,6 +210,51 @@ async function expectCode(fn, expectedCode, label) {
   check('friendlyTokenError: generic (no internals leak)', fa.friendlyTokenError({ name: 'FirebaseTokenError', code: 'wrong-issuer' }), 'Could not verify your login. Please try again.');
   check('friendlyTokenError: unknown error type', fa.friendlyTokenError(new Error('x')), 'Could not verify your login. Please try again.');
 
+  // ---- 8. deleteFirebaseUser tests ----
+  {
+    // 8a. Unconfigured returns reason
+    const unconfigRes = await fa.deleteFirebaseUser({ uid: 'test-uid' });
+    check('deleteFirebaseUser unconfigured returns ok: false', unconfigRes.ok, false);
+    check('deleteFirebaseUser unconfigured reason', unconfigRes.reason, 'admin-sdk-unconfigured');
+
+    // 8b. Mock auth delete by UID
+    const deletedUids = [];
+    const mockAuth = {
+      deleteUser: async (uid) => {
+        if (uid === 'not-found-uid') {
+          const err = new Error('User not found');
+          err.code = 'auth/user-not-found';
+          throw err;
+        }
+        deletedUids.push(uid);
+      },
+      getUserByEmail: async (email) => {
+        if (email === 'exists@example.com') {
+          return { uid: 'email-found-uid', email };
+        }
+        const err = new Error('User not found');
+        err.code = 'auth/user-not-found';
+        throw err;
+      }
+    };
+
+    const resUid = await fa.deleteFirebaseUser({ uid: 'user-123' }, { auth: mockAuth });
+    check('deleteFirebaseUser by UID ok', resUid.ok, true);
+    check('deleteFirebaseUser by UID deleted', resUid.deleted, true);
+    check('deleteFirebaseUser by UID recorded', deletedUids.includes('user-123'), true);
+
+    // 8c. Delete by Email lookup
+    const resEmail = await fa.deleteFirebaseUser({ email: 'exists@example.com' }, { auth: mockAuth });
+    check('deleteFirebaseUser by Email ok', resEmail.ok, true);
+    check('deleteFirebaseUser by Email deleted', resEmail.deleted, true);
+    check('deleteFirebaseUser by Email recorded', deletedUids.includes('email-found-uid'), true);
+
+    // 8d. User not found in Firebase (handled gracefully, no crash)
+    const resNotFound = await fa.deleteFirebaseUser({ uid: 'not-found-uid', email: 'missing@example.com' }, { auth: mockAuth });
+    check('deleteFirebaseUser user-not-found ok', resNotFound.ok, true);
+    check('deleteFirebaseUser user-not-found deleted: false', resNotFound.deleted, false);
+  }
+
   console.log(failures === 0 ? '\nALL FIREBASE AUTH TESTS PASSED' : `\n${failures} test(s) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch((err) => {

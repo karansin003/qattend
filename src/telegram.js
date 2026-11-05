@@ -821,7 +821,7 @@ async function handleUserMessage(msg, log = console) {
 
   try {
     const qumsLogin = require('./qums-login-web');
-    const result = await qumsLogin.submitQumsCaptcha(user.id, text, log);
+    const result = await qumsLogin.submitQumsCaptcha(user.id, text, log, { source: 'telegram' });
 
     if (result && result.ok) {
       log.log(`[telegram-reconnect] ✅ CAPTCHA validated successfully for user ${user.id}`);

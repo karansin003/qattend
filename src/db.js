@@ -757,6 +757,10 @@ function fromUserRow(r) {
     assignmentLastCheckedAt: r.assignment_last_checked_at ? new Date(r.assignment_last_checked_at).toISOString() : '',
     profileSyncedAt: r.profile_synced_at ? new Date(r.profile_synced_at).toISOString() : '',
     lastError: r.last_error || '',
+    lastReconnectSource: r.last_reconnect_source || '',
+    lastReconnectedAt: r.last_reconnected_at ? new Date(r.last_reconnected_at).toISOString() : '',
+    reconnectCountTelegram: Number(r.reconnect_count_telegram || 0),
+    reconnectCountWeb: Number(r.reconnect_count_web || 0),
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
     updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
   };
@@ -791,6 +795,10 @@ function blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspende
     assignmentLastCheckedAt: '',
     profileSyncedAt: '',
     lastError: '',
+    lastReconnectSource: '',
+    lastReconnectedAt: '',
+    reconnectCountTelegram: 0,
+    reconnectCountWeb: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -846,6 +854,10 @@ const WRITABLE_USER_COLUMNS = {
   monitoringStartedAt: 'monitoring_started_at',
   lastAttendanceSyncAt: 'last_attendance_sync_at',
   lastAssignmentSyncAt: 'last_assignment_sync_at',
+  lastReconnectSource: 'last_reconnect_source',
+  lastReconnectedAt: 'last_reconnected_at',
+  reconnectCountTelegram: 'reconnect_count_telegram',
+  reconnectCountWeb: 'reconnect_count_web',
   updatedAt: 'updated_at',
   lastError: 'last_error',
 };
@@ -941,6 +953,7 @@ async function getUserByFirebaseUid(firebaseUid) {
 }
 
 async function deleteUser(userId) {
+  const user = await getUserById(userId);
   if (!USE_PG) {
     const before = data.users.length;
     data.users = data.users.filter((u) => u.id !== userId);
@@ -948,12 +961,27 @@ async function deleteUser(userId) {
     data.knownAssignments = data.knownAssignments.filter((k) => k.userId !== userId);
     data.sessionExpiry = data.sessionExpiry.filter((s) => s.userId !== userId);
     data.notifications = data.notifications.filter((n) => n.userId !== userId);
+    data.qumsIdentities = (data.qumsIdentities || []).filter((q) => q.userId !== userId);
+    data.attendanceRecords = (data.attendanceRecords || []).filter((a) => a.userId !== userId);
+    data.assignmentsTable = (data.assignmentsTable || []).filter((a) => a.userId !== userId);
+    data.notificationLogs = (data.notificationLogs || []).filter((n) => n.userId !== userId);
+    if (user && user.email) {
+      data.resets = (data.resets || []).filter((r) => r.email !== user.email);
+    }
+    if (user && user.telegramChatId) {
+      data.scheduledDeletions = (data.scheduledDeletions || []).filter((s) => String(s.chatId) !== String(user.telegramChatId));
+    }
     if (before !== data.users.length) persistJson();
     return before - data.users.length;
   }
   await init();
-  // Child tables use ON DELETE CASCADE; notifications are intentionally kept
-  // (aggregate analytics must not change when a user is removed).
+  if (user && user.email) {
+    await pool.query('DELETE FROM resets WHERE email=$1', [user.email]).catch(() => {});
+  }
+  await pool.query('DELETE FROM notifications WHERE user_id=$1', [userId]).catch(() => {});
+  if (user && user.telegramChatId) {
+    await pool.query('DELETE FROM scheduled_message_deletions WHERE chat_id=$1', [String(user.telegramChatId)]).catch(() => {});
+  }
   const r = await pool.query('DELETE FROM users WHERE id=$1', [userId]);
   return r.rowCount;
 }
@@ -1418,6 +1446,10 @@ function safeAdminUser(u, expiredUserIds = []) {
     attendanceLastCheckedAt: u.attendanceLastCheckedAt || '',
     assignmentLastCheckedAt: u.assignmentLastCheckedAt || '',
     lastError: u.lastError || '',
+    lastReconnectSource: u.lastReconnectSource || '',
+    lastReconnectedAt: u.lastReconnectedAt || '',
+    reconnectCountTelegram: Number(u.reconnectCountTelegram || 0),
+    reconnectCountWeb: Number(u.reconnectCountWeb || 0),
   };
 }
 
@@ -1425,27 +1457,64 @@ function safeAdminUser(u, expiredUserIds = []) {
  * Pure: search (name/email/QID) + filter for the admin list. Exported for tests.
  * filter: 'all' | 'qums_connected' | 'session_expired' | 'telegram_connected' | 'suspended'
  */
-function applyAdminFilters(rows, { search = '', filter = 'all' } = {}) {
+function applyAdminFilters(rows, {
+  search = '',
+  filter = 'all',
+  qumsFilter = 'all',
+  telegramFilter = 'all',
+  reconnectFilter = 'all',
+  statusFilter = 'all',
+} = {}) {
   const q = String(search || '').trim().toLowerCase();
   return (rows || []).filter((r) => {
     if (q) {
       const hay = `${r.studentName || ''} ${r.email || ''} ${r.qumsQid || ''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
+    // Legacy single filter (preserves test suite parity)
     if (filter === 'qums_connected' && !r.qumsConnected) return false;
     if (filter === 'session_expired' && !r.sessionExpired) return false;
     if (filter === 'telegram_connected' && !r.telegramConnected) return false;
     if (filter === 'suspended' && !r.isSuspended) return false;
+
+    // Filter 1: QUMS Status
+    if (qumsFilter === 'connected' && (!r.qumsConnected || r.sessionExpired)) return false;
+    if (qumsFilter === 'expired' && !r.sessionExpired) return false;
+    if (qumsFilter === 'not_setup' && r.qumsConnected) return false;
+
+    // Filter 2: Telegram Status
+    if (telegramFilter === 'linked' && !r.telegramConnected) return false;
+    if (telegramFilter === 'unlinked' && r.telegramConnected) return false;
+
+    // Filter 3: Reconnect Channel (Telegram vs Webpage)
+    if (reconnectFilter === 'telegram' && r.lastReconnectSource !== 'telegram' && !(r.reconnectCountTelegram > 0)) return false;
+    if (reconnectFilter === 'web' && r.lastReconnectSource !== 'web' && !(r.reconnectCountWeb > 0)) return false;
+    if (reconnectFilter === 'never' && (r.lastReconnectSource || r.reconnectCountTelegram > 0 || r.reconnectCountWeb > 0)) return false;
+
+    // Account Status Filter
+    if (statusFilter === 'active' && (r.isSuspended || !r.emailVerified)) return false;
+    if (statusFilter === 'suspended' && !r.isSuspended) return false;
+    if (statusFilter === 'unverified' && r.emailVerified) return false;
+
     return true;
   });
 }
 
 /** Paginated admin user list (search + filter applied server-side). */
-async function listUsersForAdmin({ search = '', filter = 'all', page = 1, limit = 25 } = {}) {
+async function listUsersForAdmin({
+  search = '',
+  filter = 'all',
+  qumsFilter = 'all',
+  telegramFilter = 'all',
+  reconnectFilter = 'all',
+  statusFilter = 'all',
+  page = 1,
+  limit = 25,
+} = {}) {
   const users = await allUsers();
   const expired = await listSessionExpiredUsers();
   const rows = users.map((u) => safeAdminUser(u, expired));
-  const filtered = applyAdminFilters(rows, { search, filter });
+  const filtered = applyAdminFilters(rows, { search, filter, qumsFilter, telegramFilter, reconnectFilter, statusFilter });
   const perPage = Math.min(100, Math.max(5, Number(limit) || 25));
   const pages = Math.max(1, Math.ceil(filtered.length / perPage));
   const p = Math.min(pages, Math.max(1, Number(page) || 1));
@@ -1464,6 +1533,33 @@ async function adminStats() {
   const now = Date.now();
   const day = 86400000;
   const withSession = users.filter((u) => u.qumsSessionPath);
+
+  let telegramReconnects = 0;
+  let webReconnects = 0;
+  for (const u of users) {
+    telegramReconnects += Number(u.reconnectCountTelegram || 0);
+    webReconnects += Number(u.reconnectCountWeb || 0);
+    if (!u.reconnectCountTelegram && !u.reconnectCountWeb && u.lastReconnectSource) {
+      if (u.lastReconnectSource === 'telegram') telegramReconnects += 1;
+      else if (u.lastReconnectSource === 'web') webReconnects += 1;
+    }
+  }
+
+  if (USE_PG) {
+    try {
+      const recRes = await pool.query(`SELECT source, COUNT(*)::int as c FROM reconnect_events GROUP BY source`);
+      if (recRes && recRes.rows && recRes.rows.length) {
+        let tgEv = 0, webEv = 0;
+        for (const row of recRes.rows) {
+          if (row.source === 'telegram') tgEv = row.c;
+          if (row.source === 'web') webEv = row.c;
+        }
+        telegramReconnects = Math.max(telegramReconnects, tgEv);
+        webReconnects = Math.max(webReconnects, webEv);
+      }
+    } catch {}
+  }
+
   return {
     totalUsers: users.length,
     newUsers24h: users.filter((u) => u.createdAt && now - Date.parse(u.createdAt) < day).length,
@@ -1473,6 +1569,11 @@ async function adminStats() {
     telegramConnected: users.filter((u) => u.telegramChatId).length,
     suspended: users.filter((u) => u.isSuspended).length,
     admins: users.filter((u) => u.isAdmin).length,
+    reconnectStats: {
+      telegram: telegramReconnects,
+      web: webReconnects,
+      total: telegramReconnects + webReconnects,
+    },
     dbMode: USE_PG ? 'postgres' : 'json',
     database: {
       requested: !USE_PG ? 'json' : 'ok',
@@ -1934,6 +2035,42 @@ async function removeScheduledDeletion(chatId, messageId) {
   return res.rowCount || 0;
 }
 
+/** Record a reconnect event with its source ('telegram' | 'web') */
+async function recordUserReconnect(userId, source = 'web', log = console) {
+  const normSource = source === 'telegram' ? 'telegram' : 'web';
+  const now = new Date().toISOString();
+  if (!USE_PG) {
+    const user = (data.users || []).find((u) => u.id === userId);
+    if (user) {
+      user.lastReconnectSource = normSource;
+      user.lastReconnectedAt = now;
+      if (normSource === 'telegram') {
+        user.reconnectCountTelegram = (Number(user.reconnectCountTelegram) || 0) + 1;
+      } else {
+        user.reconnectCountWeb = (Number(user.reconnectCountWeb) || 0) + 1;
+      }
+      data.reconnectEvents = data.reconnectEvents || [];
+      data.reconnectEvents.push({ userId, source: normSource, reconnectedAt: now });
+      persistJson();
+    }
+    return;
+  }
+  await init();
+  try {
+    const colToInc = normSource === 'telegram' ? 'reconnect_count_telegram' : 'reconnect_count_web';
+    await pool.query(
+      `UPDATE users SET last_reconnect_source=$1, last_reconnected_at=NOW(), ${colToInc} = COALESCE(${colToInc}, 0) + 1 WHERE id=$2`,
+      [normSource, userId]
+    );
+    await pool.query(
+      `INSERT INTO reconnect_events(user_id, source, reconnected_at) VALUES($1, $2, NOW())`,
+      [userId, normSource]
+    );
+  } catch (err) {
+    log.error(`[db] recordUserReconnect failed for user ${userId}: ${err.message}`);
+  }
+}
+
 module.exports={
   DB_FILE,QUMS_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,
   ensureSessionOnDisk,saveUserSessionData,decodeSessionData,
@@ -1957,5 +2094,5 @@ module.exports={
   // notification log / analytics
   NOTIFICATION_KINDS, recordNotification, notificationStats, recentNotifications,
   // admin
-  safeAdminUser, applyAdminFilters, listUsersForAdmin, adminStats, ping,
+  safeAdminUser, applyAdminFilters, listUsersForAdmin, adminStats, ping, recordUserReconnect,
 };
