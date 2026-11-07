@@ -480,10 +480,14 @@
         <!-- Hidden legacy select for backwards compatibility with tests -->
         <select id="filterSelect" style="display: none;">
           <option value="all">All Users</option>
-          <option value="qums_connected">QUMS Connected</option>
-          <option value="session_expired">Session Expired</option>
-          <option value="telegram_connected">Telegram Connected</option>
-          <option value="suspended">Suspended Users</option>
+          <option value="admin">👑 Admin Users</option>
+          <option value="qums_connected">⚡ QUMS Connected</option>
+          <option value="session_expired">⚠️ Session Expired</option>
+          <option value="telegram_connected">💬 Telegram Connected</option>
+          <option value="suspended">⛔ Suspended Users</option>
+          <option value="new_erp">🚀 New ERP Users</option>
+          <option value="old_erp">🏛️ Old ERP Users</option>
+          <option value="active">🟢 Active Users</option>
         </select>
 
         <button id="downloadExcelBtn" type="button" class="btn" style="padding: 8px 14px; font-size: 13px; background: #059669; color: #fff; border: none; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
@@ -496,6 +500,9 @@
       <!-- Bulk Actions Bar -->
       <div id="bulkToolbar" class="bulk-toolbar" role="region" aria-label="Bulk actions">
         <span id="bulkSelectedCount" style="font-weight: 600;">0 user(s) selected</span>
+        <button id="selectAllPagesBtn" type="button" class="btn-bulk-secondary hidden" style="background: #eff6ff; color: #1d4ed8; border: 1.5px solid #93c5fd; font-weight: 600;">
+          🌐 Select all <span id="totalMatchingCount">0</span> users across all pages
+        </button>
         <button id="sendBulkReconnectBtn" type="button" class="btn-bulk">
           <span>📨</span> Send QUMS Reconnect Notification
         </button>
@@ -604,6 +611,7 @@
     let searchDebounce = null;
     let isRefreshing = false;
     let currentUsersOnPage = [];
+    let currentTotalMatching = 0;
     const selectedUserIds = new Set();
     let failedUserIdsFromLastRun = [];
 
@@ -646,6 +654,18 @@
         bar.classList.add('visible');
       } else {
         bar.classList.remove('visible');
+      }
+
+      // Show/Hide "Select all across all pages" button
+      const allPagesBtn = document.getElementById('selectAllPagesBtn');
+      if (allPagesBtn) {
+        if (count > 0 && count < currentTotalMatching && currentTotalMatching > currentUsersOnPage.length) {
+          allPagesBtn.classList.remove('hidden');
+          const totalCountEl = document.getElementById('totalMatchingCount');
+          if (totalCountEl) totalCountEl.textContent = String(currentTotalMatching);
+        } else {
+          allPagesBtn.classList.add('hidden');
+        }
       }
 
       // Update selectAll checkbox state
@@ -786,6 +806,7 @@
       currentUsersOnPage = users;
       totalPages = data.pages || 1;
       currentPage = data.page || 1;
+      currentTotalMatching = data.total || 0;
 
       document.getElementById('userCountBadge').textContent = `Showing ${users.length} of ${data.total || 0} user(s)`;
       document.getElementById('pageIndicator').textContent = `Page ${currentPage} of ${totalPages}`;
@@ -1175,6 +1196,58 @@
         cb.checked = false;
       });
       updateBulkToolbar();
+    });
+
+    const selectAllPagesBtn = document.getElementById('selectAllPagesBtn');
+    if (selectAllPagesBtn) {
+      selectAllPagesBtn.addEventListener('click', async () => {
+        selectAllPagesBtn.disabled = true;
+        const originalText = selectAllPagesBtn.innerHTML;
+        selectAllPagesBtn.innerHTML = '<span>⏳</span> Selecting all users…';
+        try {
+          const search = document.getElementById('searchInput').value.trim();
+          const filter = document.getElementById('filterSelect').value;
+          const query = new URLSearchParams({ search, filter });
+          const res = await fetch(`/api/admin/users/all-ids?${query.toString()}`, { cache: 'no-store' });
+          const data = await res.json();
+          if (res.ok && data.ok && Array.isArray(data.userIds)) {
+            data.userIds.forEach((id) => selectedUserIds.add(id));
+            document.querySelectorAll('.user-row-checkbox').forEach((cb) => {
+              cb.checked = true;
+            });
+            showNotification(`Selected all ${data.userIds.length} users across all pages!`, 'success');
+          } else {
+            showNotification(data.error || 'Could not select all users', 'error');
+          }
+        } catch (e) {
+          showNotification('Error selecting all users: ' + e.message, 'error');
+        } finally {
+          selectAllPagesBtn.disabled = false;
+          selectAllPagesBtn.innerHTML = originalText;
+          updateBulkToolbar();
+        }
+      });
+    }
+
+    // Make Metric Cards clickable to quick-filter
+    const cardFilters = {
+      statTotalUsers: 'all',
+      statQumsConnected: 'qums_connected',
+      statSessionExpired: 'session_expired',
+      statTelegramConnected: 'telegram_connected',
+      statSuspended: 'suspended',
+    };
+    Object.entries(cardFilters).forEach(([elId, filterVal]) => {
+      const el = document.getElementById(elId);
+      if (el && el.parentElement) {
+        el.parentElement.style.cursor = 'pointer';
+        el.parentElement.title = `Click to filter by ${filterVal}`;
+        el.parentElement.addEventListener('click', () => {
+          document.getElementById('filterSelect').value = filterVal;
+          currentPage = 1;
+          loadUsers().catch(console.error);
+        });
+      }
     });
 
     document.getElementById('sendBulkReconnectBtn').addEventListener('click', () => {

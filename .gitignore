@@ -11,3 +11,12 @@ test/fixtures/
 # Local data & sessions
 data/*
 !data/.gitkeep
+
+# Temporary debug dumps
+scripts/debug_*
+scripts/*_network_log.json
+scripts/investigate_new_erp_live.js
+scripts/test_fetch_one_course.js
+scripts/test_timetable_parser.js
+scripts/*_page_scripts.js
+scripts/inspect_portal_scripts.js

@@ -284,7 +284,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
       }
     }
     // eslint-disable-next-line no-await-in-loop
-    await new Promise((res) => setTimeout(res, 500)); // stagger users
+    if (process.env.NODE_ENV !== 'test') await new Promise((res) => setTimeout(res, 500)); // stagger users
   }
   log.log(`[assignments] ${mode} pass done: ${notified} notification(s).`);
   return { users: users.length, notified };

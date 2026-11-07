@@ -281,6 +281,63 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_reconnect_events_source ON reconnect_events(source)`,
     ],
   },
+  {
+    id: '021_new_erp_and_session_exclusivity',
+    statements: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS active_erp_type TEXT DEFAULT 'OLD'`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_email TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_password_encrypted TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_session_path TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_session_data TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_session_status TEXT DEFAULT 'not_setup'`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_student_name TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_qid TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_academic_year TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_semester TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_course TEXT DEFAULT ''`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS new_erp_last_synced_at TIMESTAMPTZ`,
+      `CREATE TABLE IF NOT EXISTS active_erp_sessions (
+         qums_identity TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         erp_type TEXT NOT NULL,
+         session_id TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'active',
+         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+         last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_active_erp_user ON active_erp_sessions(user_id)`,
+      `CREATE TABLE IF NOT EXISTS admin_audit_logs (
+         id BIGSERIAL PRIMARY KEY,
+         admin_id TEXT NOT NULL,
+         admin_email TEXT NOT NULL,
+         action TEXT NOT NULL,
+         target_user_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+         details JSONB NOT NULL DEFAULT '{}'::jsonb,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_admin_audit_action_time ON admin_audit_logs(action, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS new_erp_timetable (
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         day_of_week INTEGER NOT NULL,
+         period_time TEXT NOT NULL,
+         subject_name TEXT NOT NULL,
+         faculty_name TEXT DEFAULT '',
+         classroom TEXT DEFAULT '',
+         raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+         last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+         PRIMARY KEY (user_id, day_of_week, period_time, subject_name)
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_new_erp_tt_user ON new_erp_timetable(user_id)`,
+      `CREATE TABLE IF NOT EXISTS new_erp_attendance_cache (
+         user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+         summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+         subject_wise JSONB NOT NULL DEFAULT '[]'::jsonb,
+         daily_records JSONB NOT NULL DEFAULT '[]'::jsonb,
+         last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+    ],
+  },
 ];
 
 /**

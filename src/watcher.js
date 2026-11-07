@@ -181,6 +181,18 @@ function pendingNotifications(rows, notifiedKeys) {
  * (no Telegram spam) — requirement: never treat a timeout as expiry.
  */
 async function handleCycleError(log, userId, err) {
+  if (err && (err.name === 'NewErpSessionExpiredError' || err.name === 'NewErpSessionConflictError')) {
+    await db.updateUser(userId, { newErpSessionStatus: 'expired' }).catch(() => {});
+    await db.markSessionExpired(userId).catch(() => {});
+    if (err.name === 'NewErpSessionConflictError') {
+      const { notifySessionConflict } = require('./alerts');
+      await notifySessionConflict(userId, log).catch(() => {});
+    } else {
+      const { notifyNewErpSessionExpired } = require('./alerts');
+      await notifyNewErpSessionExpired(userId, log).catch(() => {});
+    }
+    return;
+  }
   if (err && err.name === 'SessionExpiredError') {
     await db.updateUser(userId, { qumsSessionStatus: 'expired' }).catch(() => {});
     await maybeNotifySessionExpired(log, userId, { evidence: true });
@@ -352,9 +364,35 @@ async function runWatcherCycle(opts = {}) {
 
 /** One full watcher pass over ALL users with a linked QUMS session. */
 async function runWatcherPass(log = console) {
-  const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const allUsers = (await db.allUsers()).filter((u) => {
+    if (u.isSuspended || u.status === 'suspended') return false;
+    if (u.activeErpType === 'NEW') {
+      return Boolean(u.newErpSessionPath || u.newErpSessionData);
+    }
+    return Boolean(u.qumsSessionPath);
+  });
   const users = [];
   for (const user of allUsers) {
+    if (user.activeErpType === 'NEW') {
+      if (user.newErpSessionStatus === 'expired') {
+        const state = await db.getSessionExpiryState(user.id).catch(() => null);
+        if (!state || !state.lastAlertAt) {
+          const { notifyNewErpSessionExpired } = require('./alerts');
+          await notifyNewErpSessionExpired(user.id, log).catch(() => {});
+        }
+        log.log(`[Watcher] Skipping user ${user.id}: New ERP session expired.`);
+        continue;
+      }
+      await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+      const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+      if (!fs.existsSync(sp) && !user.newErpSessionData) {
+        log.log(`[Watcher] Skipping user ${user.id}: New ERP session unavailable.`);
+        continue;
+      }
+      users.push(user);
+      continue;
+    }
+
     if (user.qumsSessionStatus === 'expired') {
       const state = await db.getSessionExpiryState(user.id).catch(() => null);
       if (!state || !state.lastAlertAt) {
@@ -380,6 +418,62 @@ async function runWatcherPass(log = console) {
   const results = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
+
+    if (user.activeErpType === 'NEW') {
+      try {
+        const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+        const newErpClient = require('./new-erp-client');
+        const todayIst = istNow();
+        // eslint-disable-next-line no-await-in-loop
+        const r = await runWatcherCycle({
+          log,
+          userId: user.id,
+          fetchFn: async () => {
+            const res = await newErpClient.scrapeNewErpSubjectLectures({
+              sessionPath: sp,
+              startDate: todayIst.date,
+              endDate: todayIst.date,
+            }).catch(() => null);
+            const daily = (res && res.dailyRecords) || [];
+            return daily.map((d, i) => {
+              const statusRaw = String(d.attendanceStatus || '').trim();
+              const isUnmarked = d.isNotMarked || /not\s*marked/i.test(statusRaw);
+              const status = isUnmarked ? 'unmarked' : /present/i.test(statusRaw) ? 'present' : /absent/i.test(statusRaw) ? 'absent' : 'other';
+              return {
+                period: `P${i + 1}`,
+                duration: d.lectureTime || '',
+                subject: d.subjectName || '',
+                subjectCode: (d.subjectName || '').replace(/[^A-Za-z0-9]/g, ''),
+                employee: d.facultyName || '',
+                attendance: statusRaw,
+                status,
+                key: `P${i + 1}-${(d.subjectName || '').replace(/[^A-Za-z0-9]/g, '')}`,
+              };
+            });
+          },
+          sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
+          stateFile: stateFileFor(user.id),
+          userEmail: user.email,
+        });
+        await db.touchUserSync(user.id, { attendance: true, error: '' });
+        log.log(`[attendance] user=${user.id} checked New ERP today's attendance`);
+        results.push({ email: user.email, ...r });
+      } catch (err) {
+        log.error(`[attendance] user=${user.id} New ERP fast loop failed: ${err.message}`);
+        if (err.name === 'NewErpSessionConflictError') {
+          await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+          await alerts.notifySessionConflict(user.id, log).catch(() => {});
+        } else if (err.name === 'NewErpSessionExpiredError') {
+          await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+          await alerts.notifyNewErpSessionExpired(user.id, log).catch(() => {});
+        }
+        results.push({ email: user.email, error: err.message });
+      }
+      // eslint-disable-next-line no-await-in-loop
+      if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+
     try {
       const startedAt = Date.now();
       // eslint-disable-next-line no-await-in-loop
@@ -406,7 +500,7 @@ async function runWatcherPass(log = console) {
       results.push({ email: user.email, error: err.message });
     }
     // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
+    if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
   }
   return { users: users.length, results };
 }
@@ -579,10 +673,22 @@ async function runMonthRegisterCycle(opts = {}) {
   if (!userId) throw new Error('runMonthRegisterCycle: userId required');
 
   const user = await db.getUserById(userId);
+  const isNewErp = user && (user.activeErpType === 'NEW' || (Boolean(user.newErpSessionPath || user.newErpEmail) && !user.qumsSessionPath));
+  const qid = (user && (isNewErp ? (user.newErpQid || user.qumsQid) : (user.qumsQid || user.newErpQid))) || '';
+
+  const todayIst = opts.now ? opts.now : istNow();
   const monitoringStartedDate = user
     ? (user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : ''))
     : '';
-  const qid = (user && user.qumsQid) || '';
+  // Safe fallback: If monitoringStartedDate is missing, default to today's date so past records are NEVER alerted!
+  const effectiveMonitoringDate = monitoringStartedDate || todayIst.date;
+
+  if (user && !user.monitoringStartedDate) {
+    await db.updateUser(userId, {
+      monitoringStartedDate: effectiveMonitoringDate,
+      monitoringStartedAt: new Date().toISOString(),
+    }).catch(() => {});
+  }
 
   let fetched;
   try {
@@ -604,7 +710,7 @@ async function runMonthRegisterCycle(opts = {}) {
   const eligiblePending = [];
   const olderToSilentlyStore = [];
   for (const rec of pending) {
-    if (monitoringStartedDate && rec.date < monitoringStartedDate) {
+    if (rec.date < effectiveMonitoringDate) {
       olderToSilentlyStore.push(rec);
     } else {
       eligiblePending.push(rec);
@@ -629,7 +735,6 @@ async function runMonthRegisterCycle(opts = {}) {
   // Bahar hours (evening/raat) fast loop soya hota hai, to month loop hi aaj
   // ke naye marks alert karta hai — par sirf wo jo fast loop ne din me pehle
   // alert na kar chuka ho (notified_periods se cross-check).
-  const todayIst = opts.now ? opts.now : istNow();
   const inHours = opts.inHours !== undefined ? opts.inHours : isWithinCollegeHours(todayIst.hourDecimal);
   const fastNotifiedCodes = new Set(
     (loadState(stateFileFor(userId))[todayIst.date] || []).map(
@@ -694,11 +799,13 @@ async function runMonthRegisterCycle(opts = {}) {
     const prevEntry = knownByKey.get(rec.key) || null;
     const prevStatus = prevEntry ? (prevEntry.statusRaw || prevEntry.status || 'N') : 'N';
     const nextStatus = rec.statusRaw || rec.status || 'present';
+    const subjectKey = (rec.subjectCode && rec.subjectCode !== 'Mandatory') ? rec.subjectCode : (rec.subject || rec.subjectCode || 'General');
 
     const alreadyNotified = await db.hasAttendanceBeenNotified(userId, {
       qid,
       classDate: rec.date,
       subjectCode: rec.subjectCode,
+      subject: rec.subject,
       status: nextStatus,
       prevStatus,
     });
@@ -711,7 +818,7 @@ async function runMonthRegisterCycle(opts = {}) {
     }
 
     // PostgreSQL persistent deduplication scoped per user
-    const dedupeKey = `attendance_month:${qid}:${rec.date}:${rec.subjectCode}:${prevStatus}->${nextStatus}`;
+    const dedupeKey = `attendance_month:${userId}:${rec.date}:${subjectKey}:${prevStatus}->${nextStatus}`;
     const isNew = await db.tryRecordNotificationLog(userId, prevEntry ? 'attendance_changed' : 'attendance_backdated', dedupeKey, {
       qid,
       classDate: rec.date,
@@ -790,7 +897,19 @@ async function runMonthRegisterCycle(opts = {}) {
  */
 async function runBaselineForUser(userId, log = console) {
   const user = await db.getUserById(userId);
-  if (!user || !user.qumsSessionPath) {
+  if (!user) {
+    return { skipped: true, reason: 'user-not-found' };
+  }
+  if (user.activeErpType === 'NEW') {
+    await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+    const sp = user.newErpSessionPath || db.sessionPathForNewErp(userId);
+    if (!fs.existsSync(sp) && !user.newErpSessionData) {
+      return { skipped: true, reason: 'new-erp-session-missing' };
+    }
+    log.log(`[watcher] baseline New ERP ${user.email}: ready.`);
+    return { skipped: false, newErp: true };
+  }
+  if (!user.qumsSessionPath) {
     return { skipped: true, reason: 'qums-session-missing' };
   }
   const rows = await scrapeTodaysAttendance({ sessionPath: user.qumsSessionPath });
@@ -820,9 +939,35 @@ async function runBaselineForUser(userId, log = console) {
 
 /** One full month-register pass over ALL users with a linked QUMS session. */
 async function runMonthRegisterPass(log = console, opts = {}) {
-  const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const allUsers = (await db.allUsers()).filter((u) => {
+    if (u.isSuspended || u.status === 'suspended') return false;
+    if (u.activeErpType === 'NEW') {
+      return Boolean(u.newErpSessionPath || u.newErpSessionData);
+    }
+    return Boolean(u.qumsSessionPath);
+  });
   const users = [];
   for (const user of allUsers) {
+    if (user.activeErpType === 'NEW') {
+      if (user.newErpSessionStatus === 'expired') {
+        const state = await db.getSessionExpiryState(user.id).catch(() => null);
+        if (!state || !state.lastAlertAt) {
+          const { notifyNewErpSessionExpired } = require('./alerts');
+          await notifyNewErpSessionExpired(user.id, log).catch(() => {});
+        }
+        log.log(`[Watcher] Skipping user ${user.id}: New ERP session expired.`);
+        continue;
+      }
+      await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+      const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+      if (!fs.existsSync(sp) && !user.newErpSessionData) {
+        log.log(`[Watcher] Skipping user ${user.id}: New ERP session unavailable.`);
+        continue;
+      }
+      users.push(user);
+      continue;
+    }
+
     if (user.qumsSessionStatus === 'expired') {
       const state = await db.getSessionExpiryState(user.id).catch(() => null);
       if (!state || !state.lastAlertAt) {
@@ -839,7 +984,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     users.push(user);
   }
   if (!users.length) {
-    log.log('[watcher] month-register: koi user ka QUMS session linked nahi — pass skip.');
+    log.log('[watcher] month-register: koi user ka QUMS/New ERP session linked nahi — pass skip.');
     return { users: 0 };
   }
 
@@ -869,6 +1014,51 @@ async function runMonthRegisterPass(log = console, opts = {}) {
   const results = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
+
+    if (user.activeErpType === 'NEW') {
+      try {
+        const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+        const newErpClient = require('./new-erp-client');
+        // eslint-disable-next-line no-await-in-loop
+        const r = await runMonthRegisterCycle({
+          log,
+          userId: user.id,
+          userEmail: user.email,
+          dryRun: !!opts.dryRun,
+          fetchFn: async () => {
+            const res = await newErpClient.scrapeAllNewErpLectureRecords({ sessionPath: sp }, log);
+            return {
+              year: new Date().getFullYear(),
+              month: new Date().getMonth() + 1,
+              records: res.records || [],
+            };
+          },
+          timetableFn: async () => {
+            const tt = await db.getNewErpTimetable(user.id);
+            return tt && tt.timetable ? tt.timetable.rows : [];
+          },
+          sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
+        });
+        await db.touchUserSync(user.id, { attendance: true, error: '' });
+        log.log(`[attendance] user=${user.id} checked New ERP backdated lecture records`);
+        results.push({ email: user.email, ...r });
+      } catch (err) {
+        log.error(`[attendance] user=${user.id} New ERP month-register failed: ${err.message}`);
+        if (err.name === 'NewErpSessionConflictError') {
+          await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+          await alerts.notifySessionConflict(user.id, log).catch(() => {});
+        } else if (err.name === 'NewErpSessionExpiredError') {
+          await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+          await alerts.notifyNewErpSessionExpired(user.id, log).catch(() => {});
+        }
+        watcherStatus.monthLastError = err.message;
+        results.push({ email: user.email, error: err.message });
+      }
+      // eslint-disable-next-line no-await-in-loop
+      if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+
     try {
       const startedAt = Date.now();
       // eslint-disable-next-line no-await-in-loop
@@ -891,7 +1081,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
       results.push({ email: user.email, error: err.message });
     }
     // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
+    if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
   }
   return { users: users.length, months: monthKeys, results };
 }

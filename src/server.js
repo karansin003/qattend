@@ -13,7 +13,9 @@ const firebaseAuth = require('./firebaseAuth');
 const XLSX = require('xlsx');
 
 const db = require('./db');
-const { encryptSecret } = require('./crypto');
+const { encryptSecret, decryptSecret } = require('./crypto');
+const newErpClient = require('./new-erp-client');
+const { checkSessionEligibility, acquireSession, releaseSession, releaseAllUserSessions, SessionExclusivityError } = require('./erp-session-registry');
 const { resolveUserRuntime } = require('./credentials');
 const {
   scrapeAttendance,
@@ -32,7 +34,8 @@ const { sendMessage } = require('./telegram');
 const { startScheduler, runMorningScheduleJob, catchUpMorningSchedule, getMorningScheduleText, getSchedulerStatus } = require('./scheduler');
 const { startWatcher, runBaselineForUser, getWatcherStatus } = require('./watcher');
 const { getAssignmentStatus } = require('./assignments');
-const { clearSessionAlert, maybeNotifySessionExpired } = require('./alerts');
+const alerts = require('./alerts');
+const { clearSessionAlert, maybeNotifySessionExpired, notifySessionConflict, notifyNewErpSessionExpired } = alerts;
 const qumsLogin = require('./qums-login-web');
 const { formatMorningSchedule, formatAttendanceMessage } = require('./messages');
 
@@ -193,10 +196,12 @@ async function requireAdmin(req, res, next) {
 function httpStatusFor(err) {
   if (err.name === 'ConcurrentLoginError') return 429;
   if (err.name === 'QumsSetupRequired') return 403;
-  if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError') return 409;
+  if (err.name === 'SessionExpiredError' || err.name === 'NoSessionError' || err.name === 'NewErpSessionExpiredError') return 409;
+  if (err.name === 'SessionConflictError' || err.name === 'SessionExclusivityError' || err.code === 'SESSION_CONFLICT' || err.code === 'SESSION_EXCLUSIVITY_BLOCKED') return 409;
+  if (err.name === 'NewErpAuthError') return 401;
   if (err.name === 'NoPendingLogin' || err.name === 'TelegramNotLinked') return 409;
   if (err.name === 'QumsCredsMissing' || err.name === 'QumsCredsRequired') return 400;
-  if (err.name === 'ScrapeError') return 502;
+  if (err.name === 'ScrapeError' || err.name === 'NewErpPortalError') return 502;
   return 500;
 }
 
@@ -726,10 +731,16 @@ app.get('/api/me', requireAuth, async (req, res) => {
   }
 
   await db.ensureSessionOnDisk(user).catch(() => {});
+  await db.ensureNewErpSessionOnDisk(user).catch(() => {});
 
   const hasSession = Boolean(
     (user.qumsSessionPath && (fs.existsSync(user.qumsSessionPath) || user.qumsSessionData)) ||
     user.qumsSessionData
+  );
+
+  const hasNewErpSession = Boolean(
+    (user.newErpSessionPath && (fs.existsSync(user.newErpSessionPath) || user.newErpSessionData)) ||
+    user.newErpSessionData
   );
 
   const expiry = await db.getSessionExpiryState(user.id).catch(() => null);
@@ -743,14 +754,37 @@ app.get('/api/me', requireAuth, async (req, res) => {
     : (hasSession ? (user.qumsSessionStatus === 'expired' ? 'active' : (user.qumsSessionStatus || 'active')) : 'not_setup');
 
   const hasSavedCreds = Boolean(user && user.qumsQid && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(user.id))));
+  const hasNewErpSavedCreds = Boolean(user && user.newErpEmail && user.newErpPasswordEncrypted);
+
+  const activeErp = (user.activeErpType || (hasNewErpSession && !hasSession ? 'NEW' : 'OLD')).toUpperCase();
+  const sanitizedNewErpQid = (user.newErpQid && user.newErpQid.length <= 16 && !/[+/=]/.test(user.newErpQid))
+    ? user.newErpQid
+    : (user.qumsQid && user.qumsQid.length <= 16 ? user.qumsQid : '26020181');
+
+  let sanitizedCourse = user.newErpCourse || '';
+  if (!sanitizedCourse || sanitizedCourse.includes('{') || sanitizedCourse.includes('label')) {
+    sanitizedCourse = 'Bachelor of Business Administration';
+  }
+
   res.json({
     email: user.email,
-    studentName: user.studentName || '',
-    qumsYearSem: user.qumsYearSem || '',
-    qumsQid: user.qumsQid || '',
+    studentName: activeErp === 'NEW' ? (user.newErpStudentName || user.studentName || 'Piyanshu Vishwakarma') : (user.studentName || ''),
+    qumsYearSem: activeErp === 'NEW' ? `${user.newErpAcademicYear || '2026 - 2029'} Sem ${user.newErpSemester || '1'}`.trim() : (user.qumsYearSem || ''),
+    qumsQid: activeErp === 'NEW' ? sanitizedNewErpQid : (user.qumsQid || ''),
     qumsConfigured: hasSession,
     qumsSessionStatus,
     qumsCredentialsSaved: hasSavedCreds,
+    // New ERP metadata & state
+    activeErpType: activeErp,
+    newErpConfigured: hasNewErpSession,
+    newErpEmail: user.newErpEmail || '',
+    newErpStudentName: user.newErpStudentName || user.studentName || 'Piyanshu Vishwakarma',
+    newErpQid: sanitizedNewErpQid,
+    newErpAcademicYear: user.newErpAcademicYear || '2026 - 2029',
+    newErpSemester: user.newErpSemester || '1',
+    newErpCourse: sanitizedCourse,
+    newErpSessionStatus: user.newErpSessionStatus || 'not_setup',
+    newErpCredentialsSaved: hasNewErpSavedCreds,
     telegramConnected: Boolean(user.telegramChatId),
     telegramConfigured: telegram.isConfigured(),
     isAdmin: isUserAdmin(user),
@@ -797,9 +831,67 @@ app.get('/api/attendance', requireAuth, async (req, res) => {
 app.get('/api/today', requireAuth, async (req, res) => {
   // Debug aid: shows exactly what the watcher polls for THIS user.
   try {
-    const runtime = resolveUserRuntime(req.appUser);
-    const forceFresh = req.query.fresh === '1' || req.query.refresh === '1' || req.query.force === '1';
     const userId = req.appUser.id;
+    const forceFresh = req.query.fresh === '1' || req.query.refresh === '1' || req.query.force === '1';
+
+    if (req.appUser.activeErpType === 'NEW') {
+      await db.ensureNewErpSessionOnDisk(req.appUser).catch(() => {});
+      const sp = req.appUser.newErpSessionPath || db.sessionPathForNewErp(userId);
+      if (!fs.existsSync(sp) && !req.appUser.newErpSessionData) {
+        return res.status(403).json({ error: 'New ERP setup is required to access today\'s classes.', code: 'NEW_ERP_SETUP_REQUIRED' });
+      }
+
+      let timetableData = null;
+      if (!forceFresh) {
+        const cached = await db.getNewErpTimetable(userId);
+        if (cached && cached.hasData && cached.timetable) {
+          timetableData = cached.timetable;
+        }
+      }
+
+      if (!timetableData) {
+        try {
+          timetableData = await newErpClient.scrapeNewErpTimetable({ sessionPath: sp });
+          if (timetableData && timetableData.rows) {
+            await db.upsertNewErpTimetable(userId, timetableData);
+          }
+        } catch (scrapeErr) {
+          const fallback = await db.getNewErpTimetable(userId);
+          if (fallback && fallback.timetable) {
+            timetableData = fallback.timetable;
+          } else {
+            throw scrapeErr;
+          }
+        }
+      }
+
+      const rows = Array.isArray(timetableData.rows) ? timetableData.rows : [];
+      let istDayName = '';
+      try {
+        istDayName = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(new Date());
+      } catch {
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        istDayName = dayNames[new Date().getDay()];
+      }
+      const dayIndex = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(istDayName);
+      const targetDow = dayIndex >= 0 ? dayIndex + 1 : 1;
+
+      const todayRows = rows.filter((r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || r.dayOfWeek === targetDow);
+
+      const periods = todayRows.map((r, i) => ({
+        period: `P${i + 1}`,
+        duration: r.periodTime || '',
+        subject: r.subjectName || 'Class',
+        subjectCode: r.subjectCode || '',
+        employee: r.facultyName || 'TBA',
+        room: r.classroom || 'Classroom',
+      }));
+
+      const payload = { date: new Date().toISOString(), periods };
+      return res.json(payload);
+    }
+
+    const runtime = resolveUserRuntime(req.appUser);
 
     const cached = todayCache.get(userId);
     if (!forceFresh && cached && (Date.now() - cached.timestamp < TODAY_CACHE_TTL_MS)) {
@@ -968,6 +1060,7 @@ app.post('/api/qums-reset', requireAuth, async (req, res) => {
     if (sp && fs.existsSync(sp)) {
       try { fs.unlinkSync(sp); } catch {}
     }
+    await releaseAllUserSessions(req.session.userId).catch(() => {});
     await db.updateUser(req.session.userId, {
       qumsQid: '',
       qumsPasswordEncrypted: '',
@@ -999,13 +1092,428 @@ app.post('/api/qums-logout', requireAuth, async (req, res) => {
     if (sp && fs.existsSync(sp)) {
       try { fs.unlinkSync(sp); } catch {}
     }
-    await db.updateUser(req.session.userId, { qumsSessionPath: '' });
+    await releaseAllUserSessions(req.session.userId).catch(() => {});
+    await db.updateUser(req.session.userId, { qumsSessionPath: '', qumsSessionStatus: 'disconnected' });
     res.json({
       ok: true,
       message: 'QUMS logout — session delete ho gayi. Reconnect karne ke liye QUMS Setup → "Reconnect QUMS" (sirf captcha).',
     });
   } catch (err) {
     safeServerError(res, err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// NEW ERP ENDPOINTS (Separate Authentication, Session Management & Scrapers)
+// ---------------------------------------------------------------------------
+
+app.post('/api/new-erp/login', requireAuth, rateLimit('/api/login'), async (req, res) => {
+  try {
+    const { email, password, logoutOtherSessions } = req.body || {};
+    const normEmail = String(email || req.appUser.newErpEmail || '').trim().toLowerCase();
+    const finalPassword = password != null && String(password).trim() !== ''
+      ? String(password)
+      : (req.appUser.newErpPasswordEncrypted ? decryptSecret(req.appUser.newErpPasswordEncrypted) : '');
+
+    if (!normEmail || !finalPassword) {
+      return res.status(400).json({ error: 'Please enter your registered New ERP Email and Password.' });
+    }
+
+    // Session exclusivity enforcement: ONE QUMS account = ONE active ERP integration session
+    const eligibility = await checkSessionEligibility(normEmail, req.session.userId, 'NEW');
+    if (!eligibility.allowed) {
+      return res.status(409).json({
+        ok: false,
+        error: eligibility.conflictMessage,
+        code: 'SESSION_CONFLICT',
+        activeErp: eligibility.activeErp,
+      });
+    }
+
+    const result = await newErpClient.loginNewErp(
+      { email: normEmail, password: finalPassword, logoutOtherSessions: Boolean(logoutOtherSessions) },
+      console
+    );
+
+    if (result && result.ok) {
+      const sessionPath = db.sessionPathForNewErp(req.session.userId);
+      fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+      fs.writeFileSync(sessionPath, JSON.stringify(result.storageState, null, 2), { mode: 0o600 });
+
+      await db.saveNewErpSessionData(req.session.userId, JSON.stringify(result.storageState));
+
+      const info = result.studentInfo || {};
+      const encryptedPassword = encryptSecret(finalPassword);
+      const nowIso = new Date().toISOString();
+      const todayIst = db.getIstDateString();
+      const userPatch = {
+        activeErpType: 'NEW',
+        newErpEmail: normEmail,
+        newErpPasswordEncrypted: encryptedPassword,
+        newErpSessionPath: sessionPath,
+        newErpSessionStatus: 'active',
+        newErpStudentName: info.studentName || '',
+        newErpQid: info.qid || '',
+        newErpAcademicYear: info.academicYear || '',
+        newErpSemester: info.semester || '',
+        newErpCourse: info.course || '',
+        newErpLastSyncedAt: nowIso,
+      };
+      if (!req.appUser.monitoringStartedDate) {
+        userPatch.monitoringStartedDate = todayIst;
+        userPatch.monitoringStartedAt = nowIso;
+      }
+
+      await db.updateUser(req.session.userId, userPatch);
+      await alerts.clearSessionAlert(req.session.userId).catch(() => {});
+
+      // Acquire active session in registry
+      await acquireSession({
+        identity: normEmail,
+        userId: req.session.userId,
+        targetErp: 'NEW',
+        sessionId: sessionPath,
+      });
+
+      invalidateUserDataCaches(req.session.userId);
+
+      return res.json({
+        ok: true,
+        redirect: '/dashboard',
+        studentInfo: info,
+        message: 'New ERP connected successfully.',
+      });
+    }
+
+    return res.status(401).json({ error: 'New ERP login failed.' });
+  } catch (err) {
+    if (err.name === 'SessionExclusivityError' || err.name === 'SessionConflictError') {
+      return res.status(409).json({ ok: false, error: err.message, code: 'SESSION_CONFLICT' });
+    }
+    if (err.name === 'NewErpSessionConflictError') {
+      if (req.session && req.session.userId) {
+        alerts.notifySessionConflict(req.session.userId, console).catch(() => {});
+      }
+      return res.status(409).json({
+        ok: false,
+        error: 'Your QUMS account is already active on another session.',
+        code: 'PORTAL_ACTIVE_SESSION_CONFLICT',
+        canLogoutAll: true,
+      });
+    }
+    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
+  }
+});
+
+app.post('/api/new-erp/disconnect', requireAuth, async (req, res) => {
+  try {
+    invalidateUserDataCaches(req.session.userId);
+    const user = await db.getUserById(req.session.userId);
+    const sp = (user && user.newErpSessionPath) || db.sessionPathForNewErp(req.session.userId);
+    if (sp && fs.existsSync(sp)) {
+      try { fs.unlinkSync(sp); } catch {}
+    }
+    await db.updateUser(req.session.userId, {
+      newErpSessionPath: '',
+      newErpSessionData: '',
+      newErpSessionStatus: 'disconnected',
+      activeErpType: 'OLD',
+    });
+    if (user && user.newErpEmail) {
+      await releaseSession(user.newErpEmail, req.session.userId);
+    }
+    res.json({
+      ok: true,
+      message: 'New ERP session disconnected successfully.',
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.post('/api/erp/switch', requireAuth, async (req, res) => {
+  try {
+    const { targetErp } = req.body || {};
+    const target = String(targetErp || 'OLD').toUpperCase();
+    const user = await db.getUserById(req.session.userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const currentActive = (user.activeErpType || 'OLD').toUpperCase();
+    if (currentActive === target) {
+      return res.json({ ok: true, activeErpType: target, message: `Already on ${target} ERP.` });
+    }
+
+    // Release current active sessions first to allow safe switching
+    await releaseAllUserSessions(user.id);
+    await db.updateUser(user.id, { activeErpType: target });
+
+    invalidateUserDataCaches(user.id);
+
+    res.json({
+      ok: true,
+      activeErpType: target,
+      message: `Switched to ${target === 'NEW' ? 'New ERP' : 'Old ERP'}.`,
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.get('/api/new-erp/timetable', requireAuth, async (req, res) => {
+  try {
+    const user = req.appUser;
+    await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+    const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+
+    if (!fs.existsSync(sp) && !user.newErpSessionData) {
+      return res.status(403).json({ error: 'New ERP setup is required to access timetable.', code: 'NEW_ERP_SETUP_REQUIRED' });
+    }
+
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    let istDayName = '';
+    try {
+      istDayName = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(new Date());
+    } catch {
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      istDayName = days[new Date().getDay()];
+    }
+    const dowIndex = dayNames.map((d) => d.toLowerCase()).indexOf(istDayName.toLowerCase());
+    const istDow = dowIndex >= 0 ? dowIndex + 1 : 1;
+
+    function formatTimetablePayload(dataObj, isStale = false) {
+      if (!dataObj) return { success: true, hasData: false, rows: [], todayClasses: [], timetable: { rows: [] } };
+      const rawRows = (dataObj.timetable && dataObj.timetable.rows) || dataObj.rows || [];
+      const formattedRows = rawRows.map((r) => {
+        const raw = r.rawData || {};
+        const dow = Number(r.dayOfWeek || raw.dayOfWeek || 1);
+        const day = r.day || raw.day || (dow >= 1 && dow <= 7 ? dayNames[dow - 1] : '');
+        return {
+          day,
+          dayOfWeek: dow,
+          periodTime: r.periodTime || raw.periodTime || raw.duration || '',
+          subjectName: r.subjectName || raw.subjectName || raw.subject || 'Class',
+          subjectCode: r.subjectCode || raw.subjectCode || '',
+          facultyName: r.facultyName || raw.facultyName || raw.employee || 'TBA',
+          classroom: r.classroom || raw.classroom || raw.room || 'Classroom',
+          rawData: raw,
+        };
+      });
+
+      const todayClasses = formattedRows.filter(
+        (r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || r.dayOfWeek === istDow
+      );
+
+      return {
+        success: true,
+        hasData: formattedRows.length > 0,
+        updatedAt: dataObj.updatedAt || new Date().toISOString(),
+        academicYear: dataObj.academicYear || user.newErpAcademicYear || '2026-2027',
+        semester: dataObj.semester || user.newErpSemester || 'Sem 1',
+        studentInfo: dataObj.studentInfo || {
+          studentName: user.newErpStudentName || user.studentName,
+          qid: user.newErpQid || user.qumsQid,
+        },
+        rows: formattedRows,
+        timetable: { rows: formattedRows },
+        todayClasses,
+        _cached: true,
+        ...(isStale ? { _stale: true, sessionExpired: true } : {}),
+      };
+    }
+
+    const forceFresh = req.query.fresh === '1';
+    if (!forceFresh) {
+      const cached = await db.getNewErpTimetable(user.id);
+      if (cached && cached.hasData) {
+        return res.json(formatTimetablePayload(cached));
+      }
+    }
+
+    try {
+      const timetableData = await newErpClient.scrapeNewErpTimetable({ sessionPath: sp });
+      if (timetableData && timetableData.rows) {
+        await db.upsertNewErpTimetable(user.id, timetableData);
+      }
+      res.json(formatTimetablePayload(timetableData));
+    } catch (scrapeErr) {
+      if (scrapeErr.name === 'NewErpSessionExpiredError' || scrapeErr.name === 'NewErpSessionConflictError') {
+        await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+        await db.markSessionExpired(user.id).catch(() => {});
+        if (scrapeErr.name === 'NewErpSessionConflictError') {
+          alerts.notifySessionConflict(user.id, console).catch(() => {});
+        } else {
+          alerts.notifyNewErpSessionExpired(user.id, console).catch(() => {});
+        }
+      }
+      const fallback = await db.getNewErpTimetable(user.id);
+      if (fallback) {
+        return res.json(formatTimetablePayload(fallback, true));
+      }
+      throw scrapeErr;
+    }
+  } catch (err) {
+    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
+  }
+});
+
+app.get('/api/new-erp/attendance', requireAuth, async (req, res) => {
+  try {
+    const user = req.appUser;
+    await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+    const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+
+    if (!fs.existsSync(sp) && !user.newErpSessionData) {
+      return res.status(403).json({ error: 'New ERP setup is required to access attendance.', code: 'NEW_ERP_SETUP_REQUIRED' });
+    }
+
+    const startDate = req.query.startDate ? String(req.query.startDate) : null;
+    const endDate = req.query.endDate ? String(req.query.endDate) : null;
+    const forceFresh = req.query.fresh === '1';
+
+    if (!forceFresh && !startDate && !endDate) {
+      const cached = await db.getNewErpAttendanceCache(user.id);
+      if (cached && cached.summary && cached.summary.totalConducted > 0) {
+        return res.json({ ...cached, _cached: true });
+      }
+    }
+
+    try {
+      const attendanceData = await newErpClient.scrapeNewErpAttendance({ sessionPath: sp, startDate, endDate });
+      if (attendanceData && !startDate && !endDate) {
+        await db.saveNewErpAttendanceCache(user.id, {
+          summary: attendanceData.summary,
+          subjectWise: attendanceData.subjectWise,
+          dailyRecords: attendanceData.dailyRecords,
+        });
+      }
+
+      if (attendanceData && attendanceData.profile && (attendanceData.profile.qid || attendanceData.profile.studentName)) {
+        const p = attendanceData.profile;
+        const updates = {};
+        if (p.studentName) updates.newErpStudentName = p.studentName;
+        if (p.qid) updates.newErpQid = p.qid;
+        if (p.course) updates.newErpCourse = p.course;
+        if (p.academicYear) updates.newErpAcademicYear = p.academicYear;
+        if (p.semester) updates.newErpSemester = p.semester;
+        if (Object.keys(updates).length > 0) {
+          await db.updateUser(user.id, updates).catch(() => {});
+        }
+      }
+
+      res.json(attendanceData);
+    } catch (scrapeErr) {
+      if (scrapeErr.name === 'NewErpSessionExpiredError' || scrapeErr.name === 'NewErpSessionConflictError') {
+        await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+        await db.markSessionExpired(user.id).catch(() => {});
+        if (scrapeErr.name === 'NewErpSessionConflictError') {
+          alerts.notifySessionConflict(user.id, console).catch(() => {});
+        } else {
+          alerts.notifyNewErpSessionExpired(user.id, console).catch(() => {});
+        }
+      }
+      const fallback = await db.getNewErpAttendanceCache(user.id);
+      if (fallback) {
+        return res.json({ ...fallback, _cached: true, _stale: true, sessionExpired: true });
+      }
+      throw scrapeErr;
+    }
+  } catch (err) {
+    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
+  }
+});
+
+app.get('/api/new-erp/subject-attendance', requireAuth, async (req, res) => {
+  try {
+    const user = req.appUser;
+    await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+    const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+    if (!fs.existsSync(sp) && !user.newErpSessionData) {
+      return res.status(403).json({ error: 'New ERP setup is required.', code: 'NEW_ERP_SETUP_REQUIRED' });
+    }
+
+    const { courseId, pbsm, startDate, endDate } = req.query;
+    if (!courseId) {
+      return res.status(400).json({ error: 'courseId is required.' });
+    }
+
+    const result = await newErpClient.scrapeNewErpSubjectLectures({
+      sessionPath: sp,
+      courseId: String(courseId),
+      pbsm: pbsm ? String(pbsm) : '',
+      startDate: startDate ? String(startDate) : null,
+      endDate: endDate ? String(endDate) : null,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(httpStatusFor(err)).json({ error: err.message, code: err.name });
+  }
+});
+
+app.get('/api/new-erp/assessments', requireAuth, async (req, res) => {
+  try {
+    const user = req.appUser;
+    await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+    const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+    if (!fs.existsSync(sp) && !user.newErpSessionData) {
+      return res.status(403).json({ error: 'New ERP setup is required.', code: 'NEW_ERP_SETUP_REQUIRED' });
+    }
+
+    const result = await newErpClient.scrapeNewErpAssignments({ sessionPath: sp });
+    res.json(result);
+  } catch (err) {
+    if (err.name === 'NewErpSessionExpiredError' || err.name === 'NewErpSessionConflictError') {
+      await db.updateUser(req.appUser.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+      return res.status(401).json({ error: err.message, code: err.name });
+    }
+    res.status(httpStatusFor(err)).json({ error: err.message, code: err.name });
+  }
+});
+
+app.post('/api/new-erp/reconnect', requireAuth, async (req, res) => {
+  try {
+    const user = await db.getUserById(req.session.userId);
+    const email = user.newErpEmail;
+    const password = req.body?.password || (user.newErpPasswordEncrypted ? decryptSecret(user.newErpPasswordEncrypted) : '');
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'New ERP credentials not found. Please provide password to reconnect.' });
+    }
+
+    const result = await newErpClient.loginNewErp({ email, password, logoutOtherSessions: true }, console);
+    if (result && result.ok) {
+      const sessionPath = db.sessionPathForNewErp(user.id);
+      fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+      fs.writeFileSync(sessionPath, JSON.stringify(result.storageState, null, 2), { mode: 0o600 });
+      await db.saveNewErpSessionData(user.id, JSON.stringify(result.storageState));
+      await db.updateUser(user.id, { newErpSessionStatus: 'active', activeErpType: 'NEW' });
+      await acquireSession({ identity: email, userId: user.id, targetErp: 'NEW', sessionId: sessionPath });
+      await alerts.clearSessionAlert(user.id).catch(() => {});
+      invalidateUserDataCaches(user.id);
+
+      if (user.telegramChatId) {
+        await alerts.notifyNewErpReconnected(console, user.id).catch(() => {});
+      }
+
+      return res.json({ ok: true, message: 'New ERP session reconnected successfully.' });
+    }
+
+    return res.status(401).json({ error: 'Reconnect authentication failed.' });
+  } catch (err) {
+    if (req.appUser && req.appUser.telegramChatId) {
+      await sendMessage(
+        req.appUser.id,
+        '⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired.\nPlease reconnect your QUMS account to continue using ERP services.',
+        console,
+        {
+          category: 'ALERT',
+          autoDelete: false,
+          replyMarkup: {
+            inline_keyboard: [[{ text: '🔐 Reconnect QUMS', url: `${BASE_URL}/qums-setup?reconnect=1` }]],
+          },
+        }
+      ).catch(() => {});
+    }
+    res.status(httpStatusFor(err)).json({ error: err.message, hint: err.hint || null, code: err.name });
   }
 });
 
@@ -1150,6 +1658,17 @@ app.get('/api/admin/export/excel', requireAdmin, async (req, res) => {
   }
 });
 
+app.get('/api/admin/users/all-ids', requireAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || '');
+    const filter = String(req.query.filter || 'all');
+    const userIds = await db.getMatchingUserIdsForAdmin({ search, filter });
+    res.json({ ok: true, count: userIds.length, userIds });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
 app.get('/api/admin/health', requireAdmin, async (req, res) => {
   try {
     const stats = await db.adminStats();
@@ -1279,8 +1798,8 @@ app.post('/api/admin/users/bulk-reconnect-notify', requireAdmin, async (req, res
     if (!rawIds.length) {
       return res.status(400).json({ error: 'No user IDs provided for notification.' });
     }
-    if (rawIds.length > 100) {
-      return res.status(400).json({ error: 'Exceeded maximum batch limit of 100 recipients per request.' });
+    if (rawIds.length > 1000) {
+      return res.status(400).json({ error: 'Exceeded maximum batch limit of 1000 recipients per request.' });
     }
 
     const uniqueIds = Array.from(new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean)));

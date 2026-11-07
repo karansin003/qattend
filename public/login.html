@@ -138,9 +138,10 @@
       } catch (fbError) {
         const code = (fbError && fbError.code) || '';
         if (code.startsWith('auth/')) {
-          // Could be a pre-Firebase legacy account not yet in Firebase — let
-          // the backend's bcrypt fallback decide instead of erroring out now.
-          if (!['auth/user-not-found', 'auth/invalid-credential', 'auth/wrong-password'].includes(code)) {
+          // If the account does not exist in Firebase, or if running on localhost / unauthorized domain,
+          // or pre-Firebase legacy user — let the backend's bcrypt fallback verify the credentials.
+          const isHardUserError = ['auth/user-disabled', 'auth/too-many-requests'].includes(code);
+          if (isHardUserError) {
             $('error').textContent = firebaseLoginErrorMessage(fbError);
             $('error').classList.remove('hidden');
             btn.disabled = false;

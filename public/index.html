@@ -53,9 +53,25 @@
   </aside>
 
   <div class="container">
-    <div id="sessionExpiredBanner" class="banner warn hidden" style="background: #fef2f2; border-color: #fca5a5; color: #991b1b;">
-      <span>⚠️ <strong>QUMS Session Expired</strong> — Your login session has expired. Automatic tracking is paused until reconnection.</span>
-      <a href="/qums-setup" class="btn" style="background: #dc2626; color: #fff; text-decoration: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; margin-left: 10px;">🔐 Reconnect QUMS</a>
+    <!-- SESSION EXPIRED / LOGGED OUT BANNER WITH 1-CLICK RECONNECT -->
+    <div id="sessionExpiredBanner" class="banner warn hidden" style="background: #fef2f2; border: 1.5px solid #f87171; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(239,68,68,0.1);">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; width: 100%;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 26px;">⚠️</span>
+          <div>
+            <b style="color: #991b1b; font-size: 15px;" id="expiredBannerTitle">New ERP Session Logged Out</b>
+            <div style="font-size: 13px; color: #b91c1c; margin-top: 2px;" id="expiredBannerSub">
+              Aapka QUMS account kisi aur portal/device par login hua hai ya session expire ho gaya hai.
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" id="oneClickReconnectBtn" class="btn" style="background: #2563eb; color: #fff; font-weight: 600; padding: 9px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 13.5px; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 2px 4px rgba(37,99,235,0.25);">
+            <span>⚡</span> 1-Click Reconnect
+          </button>
+          <a href="/qums-setup" id="manualSetupLink" class="btn" style="background: #f1f5f9; color: var(--muted); border: 1px solid var(--line); padding: 8px 12px; font-size: 13px; text-decoration: none; border-radius: 8px;">Settings</a>
+        </div>
+      </div>
     </div>
     <div id="setupBanner" class="banner warn hidden">
       <span>⚠️ QUMS setup is incomplete — complete the QID + captcha login so alerts can start.</span>
@@ -85,6 +101,11 @@
           <div class="status-note">
             <a href="/qums-setup">Open QUMS Setup</a>
             <button id="qumsLogoutBtn" class="link hidden" style="margin-left: 8px; color: var(--muted);" type="button">Logout</button>
+          </div>
+          <div id="cardOneClickWrap" class="hidden" style="margin-top: 10px;">
+            <button type="button" id="cardOneClickBtn" class="btn" style="background: #2563eb; color: #fff; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.25);">
+              <span>⚡</span> 1-Click Reconnect
+            </button>
           </div>
         </div>
         <div class="status-card">
@@ -121,13 +142,135 @@
       <div class="chips" id="chips"></div>
       <div id="errorBox" class="form-error hidden" role="alert" aria-live="polite"></div>
 
-      <div class="table-wrap">
+      <!-- OLD ERP ATTENDANCE TABLE -->
+      <div class="table-wrap" id="oldErpTableWrap">
         <table id="table" hidden>
           <thead>
             <tr><th>Subject</th><th>Code</th><th>Attended</th><th>%</th><th>Status</th><th>Guidance</th></tr>
           </thead>
           <tbody id="tbody"></tbody>
         </table>
+      </div>
+
+      <!-- NEW ERP VIEW NAVIGATION -->
+      <div id="newErpViewNav" class="erp-segmented-control hidden" style="margin-top: 20px;">
+        <button type="button" id="tabNewAttendance" class="erp-tab-btn active">📊 Attendance System</button>
+        <button type="button" id="tabNewTimetable" class="erp-tab-btn">📅 Time Table</button>
+      </div>
+
+      <!-- NEW ERP ATTENDANCE SECTION -->
+      <div id="newErpAttendanceSection" class="hidden">
+        <!-- Overall Attendance Metric Summary Cards -->
+        <div class="status-grid" style="margin-top: 14px; margin-bottom: 16px;">
+          <div class="status-card" style="border-left: 4px solid var(--navy-2);">
+            <div class="status-label">Total Conducted</div>
+            <div class="status-value" id="newErpTotalConducted">0</div>
+            <div class="status-note">Total lectures held</div>
+          </div>
+          <div class="status-card" style="border-left: 4px solid var(--ok);">
+            <div class="status-label">Total Attended</div>
+            <div class="status-value" id="newErpTotalAttended" style="color: var(--ok);">0</div>
+            <div class="status-note">Present lectures</div>
+          </div>
+          <div class="status-card" style="border-left: 4px solid var(--bad);">
+            <div class="status-label">Total Absent</div>
+            <div class="status-value" id="newErpTotalAbsent" style="color: var(--bad);">0</div>
+            <div class="status-note">Unattended lectures</div>
+          </div>
+          <div class="status-card" style="border-left: 4px solid var(--amber);">
+            <div class="status-label">Overall Percentage</div>
+            <div class="status-value" id="newErpOverallPct">0%</div>
+            <div class="status-note" id="newErpOverallBadge">Calculating…</div>
+          </div>
+        </div>
+
+        <!-- Subject-Wise Attendance Table -->
+        <div class="table-wrap">
+          <table id="newErpSubjectTable" style="margin-top: 10px;">
+            <thead>
+              <tr>
+                <th>Subject</th>
+                <th>Code</th>
+                <th>Attended</th>
+                <th>%</th>
+                <th>Status</th>
+                <th>Guidance</th>
+              </tr>
+            </thead>
+            <tbody id="newErpSubjectTbody">
+              <tr><td colspan="6" style="text-align:center; color: var(--muted); padding: 24px;">Loading New ERP attendance records…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- NEW ERP TIMETABLE SECTION -->
+      <div id="newErpTimetableSection" class="hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin: 16px 0 12px; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h2 style="font-size: 16px; margin: 0; color: var(--navy-4);" id="timetableHeading">Academic Schedule</h2>
+            <span class="sub" id="timetableSub" style="font-size: 12.5px;">Auto-detected from https://my.quantumuniversity.edu.in/Student/Academic</span>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button type="button" id="btnTtDaily" class="btn" style="font-size: 12.5px; padding: 6px 12px; background: var(--navy-2); color: #fff;">Today's Schedule</button>
+            <button type="button" id="btnTtWeekly" class="btn" style="font-size: 12.5px; padding: 6px 12px; background: #f1f5f9; color: var(--muted); border: 1px solid var(--line);">Weekly View</button>
+          </div>
+        </div>
+
+        <div id="timetableDailyContainer">
+          <div id="timetableDailyList" class="timetable-grid"></div>
+        </div>
+
+        <div id="timetableWeeklyContainer" class="hidden">
+          <div class="table-wrap">
+            <table id="timetableWeeklyTable">
+              <thead>
+                <tr>
+                  <th>Day</th>
+                  <th>Time</th>
+                  <th>Subject</th>
+                  <th>Faculty</th>
+                  <th>Classroom</th>
+                </tr>
+              </thead>
+              <tbody id="timetableWeeklyTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBJECT ATTENDANCE DETAILS MODAL -->
+      <div id="newErpDetailsModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalSubjectTitle">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <div>
+              <h3 id="modalSubjectTitle" style="margin: 0; font-size: 16px; color: var(--navy-4);">Subject Attendance Details</h3>
+              <div id="modalSubjectMeta" style="font-size: 12.5px; color: var(--muted); margin-top: 3px;">Showing all recorded lectures</div>
+            </div>
+            <button type="button" id="closeDetailsModalBtn" style="border: none; background: transparent; font-size: 20px; cursor: pointer; color: var(--muted); padding: 4px 8px;">✕</button>
+          </div>
+          <div class="modal-body">
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 12.5px; color: #1e40af;">
+              ℹ️ <b>Attendance Calculation Policy:</b> "Not Marked" lectures are never counted as Absent. Dates displayed are the original lecture dates.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Faculty</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="modalDetailsTbody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" id="closeDetailsModalBtn2" class="btn" style="background: #f1f5f9; color: var(--muted); border: 1px solid var(--line);">Close</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -247,6 +390,7 @@
     }
 
     async function loadAttendance(forceFresh = false) {
+      if (appMe && appMe.activeErpType === 'NEW') return;
       refreshBtn.disabled = true;
       errorBox.classList.add('hidden');
       const hasRendered = !tableEl.hidden;
@@ -297,32 +441,82 @@
         const res = await fetch('/api/me');
         if (res.status === 401) { location.href = '/login'; return; }
         const me = await res.json();
+        appMe = me;
         // The dashboard shows the QUMS student NAME only — the email stays
         // internal (auth/database) and is never rendered in the UI.
-        const name = me.studentName || 'Student';
+        const name = (me.activeErpType === 'NEW' && me.newErpStudentName) ? me.newErpStudentName : (me.studentName || 'Student');
         $('userName').textContent = name;
         $('welcomeName').textContent = name;
-        if (me.qumsYearSem) {
-          $('welcomeYearSem').textContent = me.qumsYearSem;
-          $('welcomeYearSem').classList.remove('hidden');
-        } else {
-          $('welcomeYearSem').classList.add('hidden');
-        }
-        if (!me.qumsConfigured) {
-          $('setupBanner').classList.remove('hidden');
-          $('sessionExpiredBanner').classList.add('hidden');
-        } else if (me.qumsSessionStatus === 'expired') {
-          $('sessionExpiredBanner').classList.remove('hidden');
+
+        if (me.activeErpType === 'NEW') {
+          // New ERP Active View Mode
+          const semYearText = [me.newErpCourse, me.newErpSemester ? 'Sem ' + me.newErpSemester : '', me.newErpAcademicYear].filter(Boolean).join(' • ');
+          if (semYearText) {
+            $('welcomeYearSem').textContent = semYearText;
+            $('welcomeYearSem').classList.remove('hidden');
+          } else {
+            $('welcomeYearSem').classList.add('hidden');
+          }
+
+          $('oldErpTableWrap').classList.add('hidden');
+          $('chips').classList.remove('hidden');
+          $('newErpViewNav').classList.remove('hidden');
+          $('newErpAttendanceSection').classList.remove('hidden');
+
+          const isExpired = me.newErpSessionStatus === 'expired' || me.newErpSessionStatus === 'EXPIRED';
+          $('sessionExpiredBanner').classList.toggle('hidden', !isExpired);
+          if ($('cardOneClickWrap')) $('cardOneClickWrap').classList.toggle('hidden', !isExpired);
+          if (isExpired) {
+            $('expiredBannerTitle').textContent = 'New ERP Session Logged Out';
+            $('expiredBannerSub').textContent = 'Aapka QUMS account kisi aur portal/device par login hua hai ya session expire ho gaya hai.';
+            $('oneClickReconnectBtn').classList.remove('hidden');
+          }
           $('setupBanner').classList.add('hidden');
+
+          $('qumsDot').className = 'status-dot ' + (isExpired ? 'off' : 'on');
+          $('qumsState').textContent = isExpired ? 'New ERP: Logged Out ⚠️' : 'New ERP: Connected ✅';
+          $('qumsLogoutBtn').textContent = 'Disconnect';
+          $('qumsLogoutBtn').classList.remove('hidden');
+
+          loadNewErpAttendance(false);
+          loadNewErpTimetable(false);
         } else {
-          $('sessionExpiredBanner').classList.add('hidden');
-          $('setupBanner').classList.add('hidden');
+          // Old ERP Active View Mode
+          $('oldErpTableWrap').classList.remove('hidden');
+          $('chips').classList.remove('hidden');
+          $('newErpViewNav').classList.add('hidden');
+          $('newErpAttendanceSection').classList.add('hidden');
+          $('newErpTimetableSection').classList.add('hidden');
+
+          if (me.qumsYearSem) {
+            $('welcomeYearSem').textContent = me.qumsYearSem;
+            $('welcomeYearSem').classList.remove('hidden');
+          } else {
+            $('welcomeYearSem').classList.add('hidden');
+          }
+          if (!me.qumsConfigured) {
+            $('setupBanner').classList.remove('hidden');
+            $('sessionExpiredBanner').classList.add('hidden');
+          } else if (me.qumsSessionStatus === 'expired') {
+            $('sessionExpiredBanner').classList.remove('hidden');
+            $('expiredBannerTitle').textContent = 'Old ERP Session Expired';
+            $('expiredBannerSub').textContent = 'Your Old ERP session has expired. Please reconnect in QUMS Setup.';
+            $('oneClickReconnectBtn').classList.add('hidden');
+            $('setupBanner').classList.add('hidden');
+          } else {
+            $('sessionExpiredBanner').classList.add('hidden');
+            $('setupBanner').classList.add('hidden');
+          }
+          $('qumsDot').className = 'status-dot ' + (me.qumsConfigured && me.qumsSessionStatus !== 'expired' ? 'on' : 'off');
+          $('qumsState').textContent = !me.qumsConfigured
+            ? 'Setup pending'
+            : (me.qumsSessionStatus === 'expired' ? 'Session expired ⚠️' : 'Connected ✅');
+          $('qumsLogoutBtn').textContent = 'Logout';
+          $('qumsLogoutBtn').classList.toggle('hidden', !me.qumsConfigured);
+
+          loadAttendance(false);
         }
-        $('qumsDot').className = 'status-dot ' + (me.qumsConfigured && me.qumsSessionStatus !== 'expired' ? 'on' : 'off');
-        $('qumsState').textContent = !me.qumsConfigured
-          ? 'Setup pending'
-          : (me.qumsSessionStatus === 'expired' ? 'Session expired ⚠️' : 'Connected ✅');
-        $('qumsLogoutBtn').classList.toggle('hidden', !me.qumsConfigured);
+
         if (me.isAdmin) {
           if ($('adminLink')) $('adminLink').classList.remove('hidden');
           if ($('adminDrawerLink')) $('adminDrawerLink').classList.remove('hidden');
@@ -331,6 +525,16 @@
     }
 
     $('qumsLogoutBtn').addEventListener('click', async () => {
+      if (appMe && appMe.activeErpType === 'NEW') {
+        if (!confirm('Disconnect New ERP session?')) return;
+        $('qumsLogoutBtn').disabled = true;
+        try {
+          await fetch('/api/new-erp/disconnect', { method: 'POST' });
+        } catch {}
+        $('qumsLogoutBtn').disabled = false;
+        loadMe();
+        return;
+      }
       if (!confirm('QUMS logout? The session file will be deleted (Reconnect will only ask for the captcha).')) return;
       $('qumsLogoutBtn').disabled = true;
       try {
@@ -339,6 +543,59 @@
       $('qumsLogoutBtn').disabled = false;
       loadMe();
     });
+
+    if ($('oneClickReconnectBtn')) {
+      $('oneClickReconnectBtn').addEventListener('click', async () => {
+        const btn = $('oneClickReconnectBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span> Reconnecting…';
+        try {
+          const res = await fetch('/api/new-erp/reconnect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          const data = await res.json();
+          if (res.ok && data.ok) {
+            $('sessionExpiredBanner').classList.add('hidden');
+            if ($('cardOneClickWrap')) $('cardOneClickWrap').classList.add('hidden');
+            $('qumsDot').className = 'status-dot on';
+            $('qumsState').textContent = 'New ERP: Connected ✅';
+            if (appMe) appMe.newErpSessionStatus = 'active';
+            statusEl.textContent = '✅ Session reconnected successfully! Refreshing data…';
+            statusEl.classList.remove('hidden');
+            setTimeout(() => statusEl.classList.add('hidden'), 4000);
+            await loadNewErpAttendance(true);
+            await loadNewErpTimetable(true);
+          } else {
+            alert(data.error || 'Reconnection failed. Please open QUMS Setup to login again.');
+            btn.disabled = false;
+            btn.innerHTML = '<span>⚡</span> 1-Click Reconnect';
+          }
+        } catch (err) {
+          alert('Network error while reconnecting: ' + err.message);
+          btn.disabled = false;
+          btn.innerHTML = '<span>⚡</span> 1-Click Reconnect';
+        }
+      });
+    }
+
+    if ($('cardOneClickBtn')) {
+      $('cardOneClickBtn').addEventListener('click', () => {
+        if ($('oneClickReconnectBtn')) $('oneClickReconnectBtn').click();
+      });
+    }
+
+    // Auto-trigger 1-click reconnect if deep-linked via ?reconnect=1
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('reconnect') === '1') {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setTimeout(() => {
+          if ($('oneClickReconnectBtn')) $('oneClickReconnectBtn').click();
+        }, 350);
+      }
+    } catch {}
 
     if ($('permanentQumsResetBtn')) {
       $('permanentQumsResetBtn').addEventListener('click', async () => {
@@ -472,8 +729,578 @@
       btn.disabled = false;
     }
 
-    refreshBtn.addEventListener('click', () => loadAttendance(true));
-    $('todayLoadBtn').addEventListener('click', (e) => loadToday(e.currentTarget));
+    let appMe = null;
+    let newErpAttendanceData = null;
+    let newErpTimetableData = null;
+    let activeFilterStartDate = null;
+    let activeFilterEndDate = null;
+    let tempRangeStart = null;
+    let tempRangeEnd = null;
+    let calBaseOffset = 0;
+
+    // ---- New ERP Tab Navigation ----
+    if ($('tabNewAttendance') && $('tabNewTimetable')) {
+      $('tabNewAttendance').addEventListener('click', () => {
+        $('tabNewAttendance').classList.add('active');
+        $('tabNewTimetable').classList.remove('active');
+        $('newErpAttendanceSection').classList.remove('hidden');
+        $('newErpTimetableSection').classList.add('hidden');
+      });
+      $('tabNewTimetable').addEventListener('click', () => {
+        $('tabNewTimetable').classList.add('active');
+        $('tabNewAttendance').classList.remove('active');
+        $('newErpTimetableSection').classList.remove('hidden');
+        $('newErpAttendanceSection').classList.add('hidden');
+      });
+    }
+
+    // ---- New ERP Timetable Daily / Weekly Toggle ----
+    if ($('btnTtDaily') && $('btnTtWeekly')) {
+      $('btnTtDaily').addEventListener('click', () => {
+        $('btnTtDaily').style.background = 'var(--navy-2)';
+        $('btnTtDaily').style.color = '#fff';
+        $('btnTtWeekly').style.background = '#f1f5f9';
+        $('btnTtWeekly').style.color = 'var(--muted)';
+        $('timetableDailyContainer').classList.remove('hidden');
+        $('timetableWeeklyContainer').classList.add('hidden');
+      });
+      $('btnTtWeekly').addEventListener('click', () => {
+        $('btnTtWeekly').style.background = 'var(--navy-2)';
+        $('btnTtWeekly').style.color = '#fff';
+        $('btnTtDaily').style.background = '#f1f5f9';
+        $('btnTtDaily').style.color = 'var(--muted)';
+        $('timetableWeeklyContainer').classList.remove('hidden');
+        $('timetableDailyContainer').classList.add('hidden');
+      });
+    }
+
+    // ---- Subject Attendance Details Modal ----
+    async function openSubjectDetails(subjectName, courseId = '', pbsm = '') {
+      const cleanSubName = decodeURIComponent(subjectName);
+      $('modalSubjectTitle').textContent = cleanSubName;
+      $('modalSubjectMeta').textContent = 'Loading lecture records…';
+      const tbody = $('modalDetailsTbody');
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:18px; color:var(--muted);">Loading records…</td></tr>';
+      $('newErpDetailsModal').classList.remove('hidden');
+
+      let records = (newErpAttendanceData && newErpAttendanceData.dailyRecords ? newErpAttendanceData.dailyRecords : []).filter((r) =>
+        r.subjectName && (r.subjectName.toLowerCase().includes(cleanSubName.toLowerCase()) || cleanSubName.toLowerCase().includes(r.subjectName.toLowerCase()))
+      );
+
+      if ((!records || records.length === 0) && courseId) {
+        try {
+          const res = await fetch(`/api/new-erp/subject-attendance?courseId=${encodeURIComponent(courseId)}&pbsm=${encodeURIComponent(pbsm || '')}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.dailyRecords && data.dailyRecords.length) {
+              records = data.dailyRecords.map((r) => ({ ...r, subjectName: cleanSubName }));
+              if (newErpAttendanceData) {
+                newErpAttendanceData.dailyRecords = (newErpAttendanceData.dailyRecords || []).concat(records);
+                renderHorizontalDateSlider(newErpAttendanceData.dailyRecords);
+              }
+            }
+          }
+        } catch {}
+      }
+
+      $('modalSubjectMeta').textContent = records.length ? `${records.length} lecture(s) found` : 'No lecture logs recorded';
+      tbody.innerHTML = '';
+      if (!records.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:18px; color:var(--muted);">No detailed lecture logs recorded for this subject yet.</td></tr>';
+      } else {
+        records.forEach((r) => {
+          const tr = document.createElement('tr');
+          let statusBadge = '<span class="badge-not-marked">Not Marked</span>';
+          if (r.attendanceStatus === 'Present') statusBadge = '<span class="badge-present">Present</span>';
+          else if (r.attendanceStatus === 'Absent') statusBadge = '<span class="badge-absent">Absent</span>';
+
+          tr.innerHTML = `
+            <td><b>${r.lectureDate || r.rawDate || '—'}</b></td>
+            <td>${r.lectureTime || '—'}</td>
+            <td>${r.facultyName || '—'}</td>
+            <td>${statusBadge}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+    }
+    window.openSubjectDetails = openSubjectDetails;
+
+    if ($('closeDetailsModalBtn')) $('closeDetailsModalBtn').onclick = () => $('newErpDetailsModal').classList.add('hidden');
+    if ($('closeDetailsModalBtn2')) $('closeDetailsModalBtn2').onclick = () => $('newErpDetailsModal').classList.add('hidden');
+    if ($('newErpDetailsModal')) {
+      $('newErpDetailsModal').addEventListener('click', (e) => {
+        if (e.target === $('newErpDetailsModal')) $('newErpDetailsModal').classList.add('hidden');
+      });
+    }
+
+    // ---- Two-Month Date Range Picker ----
+    function formatYMD(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function renderMonthCal(containerId, year, month) {
+      const el = $(containerId);
+      if (!el) return;
+      el.innerHTML = '';
+
+      const monthDate = new Date(year, month, 1);
+      const monthName = monthDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+      const header = document.createElement('div');
+      header.className = 'cal-month-header';
+      header.textContent = monthName;
+      el.appendChild(header);
+
+      const grid = document.createElement('div');
+      grid.className = 'cal-grid';
+
+      const daysOfWeek = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+      daysOfWeek.forEach((dow) => {
+        const hc = document.createElement('div');
+        hc.className = 'cal-header-cell';
+        hc.textContent = dow;
+        grid.appendChild(hc);
+      });
+
+      const firstDayIndex = monthDate.getDay();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+      for (let i = 0; i < firstDayIndex; i++) {
+        const emptyCell = document.createElement('div');
+        emptyCell.className = 'cal-day-cell empty';
+        grid.appendChild(emptyCell);
+      }
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const cellDate = new Date(year, month, d);
+        const ymd = formatYMD(cellDate);
+        const cell = document.createElement('div');
+        cell.className = 'cal-day-cell';
+        cell.textContent = d;
+        cell.dataset.date = ymd;
+
+        const isStart = tempRangeStart && tempRangeStart === ymd;
+        const isEnd = tempRangeEnd && tempRangeEnd === ymd;
+        const inBetween = tempRangeStart && tempRangeEnd && ymd > tempRangeStart && ymd < tempRangeEnd;
+
+        if (isStart || isEnd) cell.classList.add('selected');
+        else if (inBetween) cell.classList.add('in-range');
+
+        cell.addEventListener('click', () => {
+          if (!tempRangeStart || (tempRangeStart && tempRangeEnd)) {
+            tempRangeStart = ymd;
+            tempRangeEnd = null;
+          } else {
+            if (ymd < tempRangeStart) {
+              tempRangeEnd = tempRangeStart;
+              tempRangeStart = ymd;
+            } else {
+              tempRangeEnd = ymd;
+            }
+          }
+          updateRangePreview();
+          renderCalendars();
+        });
+
+        grid.appendChild(cell);
+      }
+      el.appendChild(grid);
+    }
+
+    function renderCalendars() {
+      const now = new Date();
+      const m1Date = new Date(now.getFullYear(), now.getMonth() + calBaseOffset, 1);
+      const m2Date = new Date(now.getFullYear(), now.getMonth() + calBaseOffset + 1, 1);
+      renderMonthCal('calMonth1', m1Date.getFullYear(), m1Date.getMonth());
+      renderMonthCal('calMonth2', m2Date.getFullYear(), m2Date.getMonth());
+    }
+
+    function updateRangePreview() {
+      const preview = $('rangeSelectionPreview');
+      if (!preview) return;
+      if (tempRangeStart && tempRangeEnd) {
+        preview.textContent = `${tempRangeStart}  to  ${tempRangeEnd}`;
+      } else if (tempRangeStart) {
+        preview.textContent = `Start: ${tempRangeStart} (Select End Date)`;
+      } else {
+        preview.textContent = 'Select Start & End Dates';
+      }
+    }
+
+    if ($('toggleDatePickerBtn')) {
+      $('toggleDatePickerBtn').addEventListener('click', () => {
+        const isHidden = $('newErpDatePickerBox').classList.contains('hidden');
+        if (isHidden) {
+          $('newErpDatePickerBox').classList.remove('hidden');
+          tempRangeStart = activeFilterStartDate;
+          tempRangeEnd = activeFilterEndDate;
+          updateRangePreview();
+          renderCalendars();
+        } else {
+          $('newErpDatePickerBox').classList.add('hidden');
+        }
+      });
+    }
+
+    if ($('prevMonthBtn')) {
+      $('prevMonthBtn').addEventListener('click', () => {
+        calBaseOffset -= 1;
+        renderCalendars();
+      });
+    }
+    if ($('nextMonthBtn')) {
+      $('nextMonthBtn').addEventListener('click', () => {
+        calBaseOffset += 1;
+        renderCalendars();
+      });
+    }
+    if ($('cancelDatePickerBtn')) {
+      $('cancelDatePickerBtn').addEventListener('click', () => {
+        $('newErpDatePickerBox').classList.add('hidden');
+      });
+    }
+    if ($('applyDatePickerBtn')) {
+      $('applyDatePickerBtn').addEventListener('click', () => {
+        if (!tempRangeStart || !tempRangeEnd) {
+          alert('Please select both a start date and an end date.');
+          return;
+        }
+        activeFilterStartDate = tempRangeStart;
+        activeFilterEndDate = tempRangeEnd;
+        $('activeDateRangeLabel').textContent = `${activeFilterStartDate} to ${activeFilterEndDate}`;
+        $('clearDateRangeBtn').classList.remove('hidden');
+        $('newErpDatePickerBox').classList.add('hidden');
+        loadNewErpAttendance(false, activeFilterStartDate, activeFilterEndDate);
+      });
+    }
+    if ($('clearDateRangeBtn')) {
+      $('clearDateRangeBtn').addEventListener('click', () => {
+        activeFilterStartDate = null;
+        activeFilterEndDate = null;
+        $('activeDateRangeLabel').textContent = 'Showing All Dates';
+        $('clearDateRangeBtn').classList.add('hidden');
+        loadNewErpAttendance(false, null, null);
+      });
+    }
+
+    // ---- Horizontal Date Slider Scrolling ----
+    if ($('sliderPrevBtn') && $('sliderNextBtn') && $('sliderCardsWrapper')) {
+      $('sliderPrevBtn').addEventListener('click', () => {
+        $('sliderCardsWrapper').scrollBy({ left: -260, behavior: 'smooth' });
+      });
+      $('sliderNextBtn').addEventListener('click', () => {
+        $('sliderCardsWrapper').scrollBy({ left: 260, behavior: 'smooth' });
+      });
+    }
+
+    function renderHorizontalDateSlider(records) {
+      const wrapper = $('sliderCardsWrapper');
+      if (!wrapper) return;
+      wrapper.innerHTML = '';
+
+      if (!records || !records.length) {
+        wrapper.innerHTML = '<div style="padding: 10px; font-size: 13px; color: var(--muted);">No daily records available for slider.</div>';
+        return;
+      }
+
+      // Group records by lectureDate
+      const dateMap = new Map();
+      records.forEach((r) => {
+        const d = r.lectureDate || 'Unknown';
+        if (!dateMap.has(d)) dateMap.set(d, { present: 0, absent: 0, notMarked: 0, items: [] });
+        const g = dateMap.get(d);
+        g.items.push(r);
+        if (r.attendanceStatus === 'Present') g.present++;
+        else if (r.attendanceStatus === 'Absent') g.absent++;
+        else g.notMarked++;
+      });
+
+      for (const [dateStr, stats] of dateMap.entries()) {
+        const card = document.createElement('div');
+        card.className = 'slider-card';
+
+        let dayName = '';
+        try {
+          const parsed = new Date(dateStr);
+          if (!isNaN(parsed)) dayName = parsed.toLocaleDateString('default', { weekday: 'short' });
+        } catch {}
+
+        card.innerHTML = `
+          <div class="slider-card-day">${dayName || 'CLASS'}</div>
+          <div class="slider-card-date">${dateStr}</div>
+          <div class="slider-card-stats">
+            <span style="color:var(--ok); font-weight:700;">${stats.present}P</span>
+            <span style="color:var(--bad); font-weight:700;">${stats.absent}A</span>
+            ${stats.notMarked ? `<span style="color:var(--muted);">${stats.notMarked}NM</span>` : ''}
+          </div>
+        `;
+
+        card.addEventListener('click', () => {
+          document.querySelectorAll('.slider-card').forEach((c) => c.classList.remove('active'));
+          card.classList.add('active');
+          // Highlight modal or filtered view for that day
+          openDateLecturesModal(dateStr, stats.items);
+        });
+
+        wrapper.appendChild(card);
+      }
+    }
+
+    function openDateLecturesModal(dateStr, records) {
+      $('modalSubjectTitle').textContent = `Lectures on ${dateStr}`;
+      $('modalSubjectMeta').textContent = `${records.length} lecture(s) recorded`;
+      const tbody = $('modalDetailsTbody');
+      tbody.innerHTML = '';
+      records.forEach((r) => {
+        const tr = document.createElement('tr');
+        let statusBadge = '<span class="badge-not-marked">Not Marked</span>';
+        if (r.attendanceStatus === 'Present') statusBadge = '<span class="badge-present">Present</span>';
+        else if (r.attendanceStatus === 'Absent') statusBadge = '<span class="badge-absent">Absent</span>';
+
+        tr.innerHTML = `
+          <td><b>${r.subjectName || 'Class'}</b></td>
+          <td>${r.lectureTime || '—'}</td>
+          <td>${r.facultyName || '—'}</td>
+          <td>${statusBadge}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      $('newErpDetailsModal').classList.remove('hidden');
+    }
+
+    // ---- Load New ERP Attendance ----
+    async function loadNewErpAttendance(forceFresh = false, startDate = null, endDate = null) {
+      refreshBtn.disabled = true;
+      errorBox.classList.add('hidden');
+      statusEl.textContent = 'Refreshing attendance from New ERP (my.quantumuniversity.edu.in)...';
+      statusEl.classList.remove('hidden');
+
+      try {
+        let url = `/api/new-erp/attendance?fresh=${forceFresh ? '1' : '0'}`;
+        if (startDate) url += `&startDate=${encodeURIComponent(startDate)}`;
+        if (endDate) url += `&endDate=${encodeURIComponent(endDate)}`;
+
+        const res = await fetch(url);
+        if (res.status === 401) { location.href = '/login'; return; }
+        const data = await res.json();
+
+        if (!res.ok) {
+          statusEl.classList.add('hidden');
+          errorBox.textContent = (data.error || 'Failed to load New ERP attendance.') + (data.hint ? ' → ' + data.hint : '');
+          errorBox.classList.remove('hidden');
+          if (res.status === 409 || data.code === 'NEW_ERP_SESSION_EXPIRED' || data.code === 'NEW_ERP_SESSION_CONFLICT' || /already active|expired|login/i.test(data.error || '')) {
+            $('sessionExpiredBanner').classList.remove('hidden');
+            $('expiredBannerTitle').textContent = 'New ERP Session Logged Out';
+            $('expiredBannerSub').textContent = 'Aapka QUMS account kisi aur portal/device par login hua hai ya session expire ho gaya hai.';
+            $('oneClickReconnectBtn').classList.remove('hidden');
+            if ($('cardOneClickWrap')) $('cardOneClickWrap').classList.remove('hidden');
+            $('qumsDot').className = 'status-dot off';
+            $('qumsState').textContent = 'New ERP: Logged Out ⚠️';
+          }
+          return;
+        }
+
+        if (data && data.sessionExpired) {
+          $('sessionExpiredBanner').classList.remove('hidden');
+          $('expiredBannerTitle').textContent = 'New ERP Session Logged Out';
+          $('expiredBannerSub').textContent = 'Aapka QUMS account kisi aur portal/device par login hua hai ya session expire ho gaya hai.';
+          $('oneClickReconnectBtn').classList.remove('hidden');
+          if ($('cardOneClickWrap')) $('cardOneClickWrap').classList.remove('hidden');
+          $('qumsDot').className = 'status-dot off';
+          $('qumsState').textContent = 'New ERP: Logged Out ⚠️';
+        }
+
+        newErpAttendanceData = data;
+        statusEl.classList.add('hidden');
+
+        // Render Summary Cards
+        const sm = data.summary || {};
+        $('newErpTotalConducted').textContent = sm.totalConducted ?? 0;
+        $('newErpTotalAttended').textContent = sm.totalAttended ?? 0;
+        $('newErpTotalAbsent').textContent = sm.totalAbsent ?? 0;
+        const pct = sm.overallPercentage != null ? sm.overallPercentage : 0;
+        $('newErpOverallPct').textContent = pct + '%';
+        $('overallValue').textContent = pct + '%';
+        $('overallNote').textContent = `${sm.totalAttended ?? 0} / ${sm.totalConducted ?? 0} attended`;
+
+        const subjects = data.subjectWise || data.subjects || [];
+        const below75Count = subjects.filter((s) => ((s.attendancePercentage != null ? s.attendancePercentage : (s.percentage || 0)) < 75)).length;
+        const okCount = subjects.length - below75Count;
+
+        // Populate Summary Chips (exact parity with Old ERP)
+        chipsEl.innerHTML = '';
+        chipsEl.appendChild(chip('Subjects', subjects.length));
+        chipsEl.appendChild(chip('Below 75%', below75Count));
+        chipsEl.appendChild(chip('OK (>=75%)', okCount));
+        chipsEl.appendChild(chip('Overall', pct + '%'));
+        chipsEl.classList.remove('hidden');
+
+        // Status Card at top
+        $('overallValue').textContent = pct + '%';
+        $('overallNote').textContent = `${sm.totalAttended ?? 0} / ${sm.totalConducted ?? 0} attended (${below75Count} below 75%)`;
+
+        const badge = $('newErpOverallBadge');
+        if (pct >= 75) {
+          badge.innerHTML = '<span class="badge ok">OK (≥75%)</span>';
+        } else {
+          badge.innerHTML = '<span class="badge bad">ATTENTION (<75%)</span>';
+        }
+
+        // Render Horizontal Date Slider
+        renderHorizontalDateSlider(data.dailyRecords || []);
+
+        // Render Subject Table (exact Old ERP columns: Subject | Code | Attended | % | Status | Guidance)
+        const tbody = $('newErpSubjectTbody');
+        tbody.innerHTML = '';
+        if (!subjects.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--muted);">No subject-wise records returned by New ERP portal.</td></tr>';
+        } else {
+          subjects.forEach((s) => {
+            const tr = document.createElement('tr');
+            const subName = s.subjectName || s.subject || 'Subject';
+            const subCode = s.subjectCode || '—';
+            const conducted = s.totalLectures != null ? s.totalLectures : (s.totalClassesAssumed != null ? s.totalClassesAssumed : 0);
+            const present = s.presentLectures != null ? s.presentLectures : (s.attendedEstimate != null ? s.attendedEstimate : 0);
+            const subPct = s.attendancePercentage != null ? s.attendancePercentage : (s.percentage != null ? s.percentage : 0);
+            const isBelow = subPct < 75;
+            const guidanceText = s.guidance || (isBelow ? 'Need more classes for 75%' : 'Safe to miss classes');
+
+            tr.innerHTML = `
+              <td><b>${subName}</b></td>
+              <td>${subCode}</td>
+              <td>${present} / ${conducted}</td>
+              <td><span class="${isBelow ? 'pct-bad' : 'pct-ok'}">${subPct}%</span></td>
+              <td><span class="badge ${isBelow ? 'bad' : 'ok'}">${isBelow ? 'ATTENTION' : 'OK'}</span></td>
+              <td><div class="guidance">${guidanceText}</div></td>
+            `;
+            tbody.appendChild(tr);
+          });
+        }
+      } catch (err) {
+        statusEl.classList.add('hidden');
+        errorBox.textContent = 'Network error fetching New ERP attendance: ' + err.message;
+        errorBox.classList.remove('hidden');
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    // ---- Load New ERP Timetable ----
+    async function loadNewErpTimetable(forceFresh = false) {
+      try {
+        const res = await fetch(`/api/new-erp/timetable?fresh=${forceFresh ? '1' : '0'}`);
+        const data = await res.json().catch(() => null);
+        if (!res.ok || (data && data.sessionExpired)) {
+          if (res.status === 409 || (data && (data.sessionExpired || data.code === 'NEW_ERP_SESSION_EXPIRED' || data.code === 'NEW_ERP_SESSION_CONFLICT'))) {
+            $('sessionExpiredBanner').classList.remove('hidden');
+            $('expiredBannerTitle').textContent = 'New ERP Session Logged Out';
+            $('expiredBannerSub').textContent = 'Aapka QUMS account kisi aur portal/device par login hua hai ya session expire ho gaya hai.';
+            $('oneClickReconnectBtn').classList.remove('hidden');
+            if ($('cardOneClickWrap')) $('cardOneClickWrap').classList.remove('hidden');
+            $('qumsDot').className = 'status-dot off';
+            $('qumsState').textContent = 'New ERP: Logged Out ⚠️';
+          }
+          if (!data || (!data.rows?.length && !data.timetable?.rows?.length)) {
+            return;
+          }
+        }
+        newErpTimetableData = data;
+
+        if (data.academicYear || data.semester) {
+          $('timetableSub').textContent = `Session: ${data.academicYear || 'Current'} • Semester: ${data.semester || 'Current'}`;
+        }
+
+        // Render Daily View
+        const dailyList = $('timetableDailyList');
+        dailyList.innerHTML = '';
+        const rows = (data.rows && data.rows.length) ? data.rows : ((data.timetable && data.timetable.rows) || []);
+        const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+        let istDayName = '';
+        try {
+          istDayName = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(new Date());
+        } catch {
+          const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          istDayName = days[new Date().getDay()];
+        }
+        const dowIndex = dayNames.map((d) => d.toLowerCase()).indexOf(istDayName.toLowerCase());
+        const istDow = dowIndex >= 0 ? dowIndex + 1 : 1;
+
+        rows.forEach((r) => {
+          if (!r.day && r.dayOfWeek) {
+            r.day = dayNames[Number(r.dayOfWeek) - 1] || '';
+          }
+        });
+
+        const todayRows = (data.todayClasses && data.todayClasses.length)
+          ? data.todayClasses
+          : rows.filter((r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || Number(r.dayOfWeek) === istDow);
+
+        $('todayCount').textContent = String(todayRows.length);
+
+        if (!todayRows.length) {
+          dailyList.innerHTML = `<div style="color:var(--muted); font-size:13px; padding:16px; background:#f8fafc; border-radius:8px; border:1px dashed var(--line); text-align:center;">
+            <b>No scheduled classes for ${istDayName || 'Today'}.</b><br>
+            <span style="font-size:12px;">Enjoy your day! Tap <b>Weekly View</b> above to see your full schedule for the week.</span>
+          </div>`;
+        } else {
+          todayRows.forEach((r) => {
+            const card = document.createElement('div');
+            card.className = 'timetable-card';
+            card.innerHTML = `
+              <div class="timetable-time">⏰ ${r.periodTime || 'Scheduled Class'} ${r.day ? '• ' + r.day : ''}</div>
+              <div class="timetable-sub">${r.subjectName || 'Class'}</div>
+              <div class="timetable-meta">
+                <span>👨‍🏫 Faculty: <b>${r.facultyName || 'TBA'}</b></span>
+                <span>🏫 Room: <b>${r.classroom || 'Classroom'}</b></span>
+              </div>
+            `;
+            dailyList.appendChild(card);
+          });
+        }
+
+        // Render Weekly View Table
+        const weeklyTbody = $('timetableWeeklyTbody');
+        weeklyTbody.innerHTML = '';
+        if (!rows.length) {
+          weeklyTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--muted);">No weekly timetable records available.</td></tr>';
+        } else {
+          rows.forEach((r) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td><b>${r.day || '—'}</b></td>
+              <td>${r.periodTime || '—'}</td>
+              <td>${r.subjectName || '—'}</td>
+              <td>${r.facultyName || '—'}</td>
+              <td>${r.classroom || '—'}</td>
+            `;
+            weeklyTbody.appendChild(tr);
+          });
+        }
+      } catch {}
+    }
+
+    // ---- Refresh Button Router ----
+    refreshBtn.addEventListener('click', () => {
+      if (appMe && appMe.activeErpType === 'NEW') {
+        loadNewErpAttendance(true, activeFilterStartDate, activeFilterEndDate);
+        loadNewErpTimetable(true);
+      } else {
+        loadAttendance(true);
+      }
+    });
+
+    $('todayLoadBtn').addEventListener('click', (e) => {
+      loadToday(e.currentTarget);
+      if (appMe && appMe.activeErpType === 'NEW') {
+        $('tabNewTimetable').click();
+      }
+    });
+
 
     // Instant First Paint from localStorage cache if present (0ms display!)
     try {

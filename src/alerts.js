@@ -14,7 +14,11 @@
  *   - a successful reconnect clears the state, so a LATER expiry alerts again.
  */
 require('dotenv').config();
-const { isConfigured, sendMessage, deleteMessage, scheduleAutoDelete } = require('./telegram');
+const telegram = require('./telegram');
+const isConfigured = (...args) => telegram.isConfigured(...args);
+const sendMessage = (...args) => telegram.sendMessage(...args);
+const deleteMessage = (...args) => telegram.deleteMessage(...args);
+const scheduleAutoDelete = (...args) => telegram.scheduleAutoDelete(...args);
 const db = require('./db');
 
 const COOLDOWN_MS = db.SESSION_ALERT_COOLDOWN_MS;
@@ -52,6 +56,14 @@ const RECONNECTED_TEXT = [
   'Your QUMS session has been restored. Attendance and assignment monitoring has resumed.',
 ].join('\n');
 
+const NEW_ERP_RECONNECTED_TEXT = [
+  '✅ *New ERP Reconnected*',
+  '',
+  'Your New ERP session has been successfully restored. Live tracking and notifications have resumed.',
+  '',
+  '⏳ _This message will automatically delete in 1 minute._',
+].join('\n');
+
 /** Inline keyboard with the Reconnect button. */
 function reconnectButton(canTelegramReconnect = false) {
   const url = reconnectUrl();
@@ -77,26 +89,19 @@ function reconnectButton(canTelegramReconnect = false) {
 async function deleteSessionExpiredAlert(userId, log = console) {
   try {
     if (!userId) return false;
-    const state = await db.getSessionExpiryState(userId);
-    let messageId = state?.telegramMessageId;
-    if (!messageId) {
-      const notifs = await db.recentNotifications(20).catch(() => []);
-      const match = (notifs || []).find((n) => n.userId === userId && n.kind === 'session_expired' && n.meta && n.meta.messageId);
-      if (match) messageId = match.meta.messageId;
+    const { deleteMessage } = require('./telegram');
+    const messageIds = await db.getSessionExpiryMessageIds(userId).catch(() => []);
+    let deletedCount = 0;
+    for (const msgId of messageIds) {
+      if (msgId && typeof deleteMessage === 'function') {
+        const res = await deleteMessage(userId, msgId, log).catch(() => false);
+        if (res) deletedCount++;
+      }
     }
-    if (messageId) {
-      let deleted = false;
-      if (typeof deleteMessage === 'function') {
-        const res = await deleteMessage(userId, messageId, log).catch(() => false);
-        deleted = Boolean(res);
-      }
-      if (deleted) {
-        await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
-        log.log(`[alerts] 🗑️ Session-expired message ${messageId} deleted for user=${userId}.`);
-        return true;
-      }
-      log.log(`[alerts] ⚠️ Session-expired message ${messageId} deletion failed or skipped for user=${userId}.`);
-      return false;
+    await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
+    if (deletedCount > 0) {
+      log.log(`[alerts] 🗑️ Deleted ${deletedCount} session-expired message(s) for user=${userId}.`);
+      return true;
     }
     return false;
   } catch (err) {
@@ -253,6 +258,40 @@ async function notifyQumsReconnected(log = console, userId, opts = {}) {
 }
 
 /**
+ * "✅ New ERP Reconnected" confirmation — sent after successful New ERP reconnect.
+ * Accepts both (userId, log, opts) and (log, userId, opts).
+ */
+async function notifyNewErpReconnected(arg1 = console, arg2 = null, opts = {}) {
+  try {
+    const userId = typeof arg1 === 'string' ? arg1 : (typeof arg2 === 'string' ? arg2 : null);
+    const log = (typeof arg1 === 'object' && arg1 !== null) ? arg1 : console;
+    if (!userId) return false;
+    await deleteSessionExpiredAlert(userId, log);
+    await db.clearSessionExpiry(userId);
+    if (!isConfigured()) return false;
+    const delayMs = opts && opts.deleteAfterMs !== undefined ? Number(opts.deleteAfterMs) : RECONNECT_DELETE_DELAY_MS;
+    const sendOpts = {
+      category: 'TEMPORARY',
+      delayMs,
+    };
+    const sent = await sendMessage(userId, NEW_ERP_RECONNECTED_TEXT, log, sendOpts);
+    if (sent) {
+      const messageId = sendOpts.messageId || null;
+      await db.recordNotification(userId, 'new_erp_reconnected', { messageId }, log).catch(() => {});
+      log.log(`[alerts] 📲 New ERP reconnected confirmation sent user=${userId} (msgId=${messageId || 'n/a'}).`);
+      if (messageId) {
+        scheduleMessageDeletion(userId, messageId, delayMs, log);
+      }
+    }
+    return Boolean(sent);
+  } catch (err) {
+    const log = (typeof arg1 === 'object' && arg1 !== null) ? arg1 : console;
+    log.error(`[alerts] New ERP reconnect confirmation failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Clear one user's session-expiry state and delete stale Telegram alert — called
  * after a SUCCESSFUL reconnect so a later expiry alerts again.
  */
@@ -263,17 +302,191 @@ async function clearSessionAlert(userId, log = console) {
   } catch { /* clearing must never block the reconnect flow */ }
 }
 
+/**
+ * Notify user of New ERP session expiry via Telegram
+ */
+async function notifyNewErpSessionExpired(userId, log = console) {
+  try {
+    if (!userId || !isConfigured()) return false;
+
+    // Dedupe / Cooldown guard: if an alert was sent in this cooldown window (default 12 hours), do not flood Telegram
+    const state = await db.getSessionExpiryState(userId).catch(() => null);
+    const now = Date.now();
+    const cooldownMs = db.SESSION_ALERT_COOLDOWN_MS || 12 * 60 * 60 * 1000;
+    if (state && state.lastAlertAt && (now - Number(state.lastAlertAt) < cooldownMs)) {
+      log.log(`[alerts] user=${userId} New ERP session expiry alert sent recently (${Math.round((now - Number(state.lastAlertAt)) / 1000)}s ago) — suppressing duplicate.`);
+      return false;
+    }
+
+    // Delete any previous session alert so there is never more than 1 in chat
+    await deleteSessionExpiredAlert(userId, log).catch(() => {});
+
+    const base = baseUrl();
+    const url = /^https:\/\//i.test(base) ? `${base}/dashboard?reconnect=1` : 'https://qattend.onrender.com/dashboard?reconnect=1';
+
+    const text = [
+      '⚠️ *QUMS Session Logged Out / Expired*',
+      '',
+      'Aapka New ERP session logout ho gaya hai (kisi aur device/portal par login hone ke karan ya session expire hone par).',
+      '',
+      'Neeche button dabayein: dusri device se logout ho jayega aur yahan 1-Click me turant reconnect ho jayega:',
+    ].join('\n');
+
+    const opts = {
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+          [{ text: '🔐 Reconnect QUMS', url }],
+        ],
+      },
+      category: 'ALERT',
+      autoDelete: false,
+    };
+
+    const sent = await sendMessage(userId, text, log, opts);
+    if (sent) {
+      const msgId = opts.messageId ? String(opts.messageId) : null;
+      await db.recordNotification(userId, 'session_expired', { erpType: 'NEW', messageId: msgId }, log).catch(() => {});
+      await db.recordSessionExpiryAlert(userId, msgId).catch(() => {});
+    }
+    return Boolean(sent);
+  } catch (err) {
+    log.error(`[alerts] New ERP session expiry notification failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Notify user of failed reconnection attempt
+ */
+async function notifyReconnectionFailed(userId, errorMsg = '', log = console) {
+  try {
+    if (!userId || !isConfigured()) return false;
+    const base = baseUrl();
+    const url = /^https:\/\//i.test(base) ? `${base}/qums-setup` : 'https://qattend.onrender.com/qums-setup';
+
+    const text = [
+      '❌ *QUMS Reconnection Failed*',
+      '',
+      `Could not reconnect your QUMS session: ${errorMsg || 'Authentication failed or portal unreachable'}.`,
+      '',
+      'Please open QUMS Setup to reconnect.',
+    ].join('\n');
+
+    const opts = {
+      replyMarkup: {
+        inline_keyboard: [[{ text: '⚙️ Open QUMS Setup', url }]],
+      },
+      category: 'ALERT',
+      autoDelete: false,
+    };
+
+    return Boolean(await sendMessage(userId, text, log, opts));
+  } catch (err) {
+    log.error(`[alerts] Reconnection failure notification failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Notify user of attendance marked or updated, preserving original lecture date
+ */
+async function notifyAttendanceEvent({ userId, subject, originalDate, faculty, status, isUpdate = false, log = console } = {}) {
+  try {
+    if (!userId || !isConfigured()) return false;
+
+    const icon = isUpdate ? '🔄' : '📌';
+    const actionText = isUpdate ? 'Attendance Updated' : 'Attendance Marked';
+    const statusFormatted = status === 'Present' ? '✅ Present' : status === 'Absent' ? '❌ Absent' : '⚪ Not Marked';
+
+    const text = [
+      `${icon} *${actionText}*`,
+      '',
+      `📅 *Lecture Date:* ${originalDate}`,
+      `📚 *Subject:* ${subject || 'General'}`,
+      `👨‍🏫 *Faculty:* ${faculty || 'Faculty'}`,
+      `📊 *Status:* ${statusFormatted}`,
+    ].join('\n');
+
+    const opts = { category: 'ATTENDANCE', autoDelete: false };
+    return Boolean(await sendMessage(userId, text, log, opts));
+  } catch (err) {
+    log.error(`[alerts] Attendance notification failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Notify user of active session conflict on official portal
+ */
+async function notifySessionConflict(userId, log = console) {
+  try {
+    if (!userId || !isConfigured()) return false;
+
+    // Dedupe / Cooldown guard: if an alert was sent in this cooldown window (default 12 hours), do not flood Telegram
+    const state = await db.getSessionExpiryState(userId).catch(() => null);
+    const now = Date.now();
+    const cooldownMs = db.SESSION_ALERT_COOLDOWN_MS || 12 * 60 * 60 * 1000;
+    if (state && state.lastAlertAt && (now - Number(state.lastAlertAt) < cooldownMs)) {
+      log.log(`[alerts] user=${userId} session conflict alert sent recently — suppressing duplicate.`);
+      return false;
+    }
+
+    // Delete any previous session alert so there is never more than 1 in chat
+    await deleteSessionExpiredAlert(userId, log).catch(() => {});
+
+    const base = baseUrl();
+    const url = /^https:\/\//i.test(base) ? `${base}/dashboard?reconnect=1` : 'https://qattend.onrender.com/dashboard?reconnect=1';
+
+    const text = [
+      '⚠️ *QUMS Session Conflict Detected*',
+      '',
+      'Aapne official portal (my.quantumuniversity.edu.in) par kisi aur device se login kiya hai, isliye yahan session logout ho gaya.',
+      '',
+      'Neeche button dabayein: dusri device se logout ho jayega aur yahan 1-Click me turant reconnect ho jayega:',
+    ].join('\n');
+
+    const opts = {
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+          [{ text: '🔐 Reconnect QUMS', url }],
+        ],
+      },
+      category: 'ALERT',
+      autoDelete: false,
+    };
+
+    const sent = await sendMessage(userId, text, log, opts);
+    if (sent) {
+      const msgId = opts.messageId ? String(opts.messageId) : null;
+      await db.recordNotification(userId, 'session_conflict', { erpType: 'NEW', messageId: msgId }, log).catch(() => {});
+      await db.recordSessionExpiryAlert(userId, msgId).catch(() => {});
+    }
+    return Boolean(sent);
+  } catch (err) {
+    log.error(`[alerts] Session conflict notification failed: ${err.message}`);
+    return false;
+  }
+}
+
 module.exports = {
   maybeNotifySessionExpired,
   notifyQumsReconnected,
+  notifyNewErpReconnected,
   deleteSessionExpiredAlert,
   scheduleMessageDeletion,
   clearSessionAlert,
+  notifyNewErpSessionExpired,
+  notifySessionConflict,
+  notifyReconnectionFailed,
+  notifyAttendanceEvent,
   reconnectUrl,
   reconnectButton,
   baseUrl,
   SESSION_EXPIRED_TEXT,
   RECONNECTED_TEXT,
+  NEW_ERP_RECONNECTED_TEXT,
   COOLDOWN_MS,
   RECONNECT_DELETE_DELAY_MS,
 };

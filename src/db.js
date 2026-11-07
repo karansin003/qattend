@@ -357,6 +357,7 @@
  * users.firebase_uid maps an application user to its Firebase Auth account
  * (one application email == one application user == one Firebase user).
  */
+require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -366,11 +367,13 @@ const DB_FILE = process.env.DB_FILE
   ? path.resolve(process.env.DB_FILE) // test isolation hook (e.g. assignments --test)
   : path.join(__dirname, '..', 'data', 'db.json');
 const QUMS_SESSION_DIR = path.join(__dirname, '..', 'data', 'qums-sessions');
+const NEW_ERP_SESSION_DIR = path.join(__dirname, '..', 'data', 'new-erp-sessions');
 
 const USE_PG = Boolean(process.env.DATABASE_URL);
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 fs.mkdirSync(QUMS_SESSION_DIR, { recursive: true });
+fs.mkdirSync(NEW_ERP_SESSION_DIR, { recursive: true });
 
 let pool = null;
 let initPromise = null;
@@ -387,6 +390,10 @@ let data = {
   assignmentsTable: [],
   notificationLogs: [],
   scheduledDeletions: [],
+  activeErpSessions: [],
+  adminAuditLogs: [],
+  newErpTimetable: [],
+  newErpAttendanceCache: [],
 };
 
 if (!USE_PG) {
@@ -405,6 +412,10 @@ if (!USE_PG) {
       assignmentsTable: raw.assignmentsTable || [],
       notificationLogs: raw.notificationLogs || [],
       scheduledDeletions: raw.scheduledDeletions || [],
+      activeErpSessions: raw.activeErpSessions || [],
+      adminAuditLogs: raw.adminAuditLogs || [],
+      newErpTimetable: raw.newErpTimetable || [],
+      newErpAttendanceCache: raw.newErpAttendanceCache || [],
     };
   } catch {}
 
@@ -414,6 +425,13 @@ if (!USE_PG) {
       const canonical = path.join(QUMS_SESSION_DIR, `${u.id}.json`);
       if (u.qumsSessionPath !== canonical) {
         u.qumsSessionPath = canonical;
+        sessionPathsFixed = true;
+      }
+    }
+    if (u.newErpSessionPath) {
+      const canonicalNew = path.join(NEW_ERP_SESSION_DIR, `${u.id}.json`);
+      if (u.newErpSessionPath !== canonicalNew) {
+        u.newErpSessionPath = canonicalNew;
         sessionPathsFixed = true;
       }
     }
@@ -429,6 +447,7 @@ function persistJson() {
 
 function newId() { return crypto.randomBytes(8).toString('hex'); }
 function sessionPathFor(userId) { return path.join(QUMS_SESSION_DIR, `${userId}.json`); }
+function sessionPathForNewErp(userId) { return path.join(NEW_ERP_SESSION_DIR, `${userId}.json`); }
 
 /**
  * TLS for PostgreSQL (Supabase / Render).
@@ -708,6 +727,56 @@ async function saveUserSessionData(userId, rawJson) {
   return true;
 }
 
+async function ensureNewErpSessionOnDisk(userOrId) {
+  if (!userOrId) return null;
+  let user = typeof userOrId === 'string' ? await getUserById(userOrId) : userOrId;
+  if (!user || !user.id) return null;
+
+  const canonical = sessionPathForNewErp(user.id);
+  if (fs.existsSync(canonical)) {
+    user.newErpSessionPath = canonical;
+    return canonical;
+  }
+
+  let sessionData = user.newErpSessionData;
+  if (!sessionData && USE_PG) {
+    try {
+      await init();
+      const r = await pool.query('SELECT new_erp_session_data FROM users WHERE id=$1', [user.id]);
+      if (r.rows[0] && r.rows[0].new_erp_session_data) {
+        sessionData = r.rows[0].new_erp_session_data;
+        user.newErpSessionData = sessionData;
+      }
+    } catch {}
+  }
+
+  const plainJson = decodeSessionData(sessionData);
+  if (plainJson) {
+    try {
+      fs.mkdirSync(path.dirname(canonical), { recursive: true });
+      fs.writeFileSync(canonical, plainJson, { mode: 0o600 });
+      user.newErpSessionPath = canonical;
+      return canonical;
+    } catch (e) {
+      console.error(`[db] failed to restore new erp session on disk for user ${user.id}:`, e.message);
+    }
+  }
+  return null;
+}
+
+async function saveNewErpSessionData(userId, rawJson) {
+  if (!userId || !rawJson) return false;
+  let dataToStore = rawJson;
+  try {
+    const { encryptSecret } = require('./crypto');
+    dataToStore = encryptSecret(rawJson);
+  } catch (err) {
+    dataToStore = rawJson;
+  }
+  await updateUser(userId, { newErpSessionData: dataToStore });
+  return true;
+}
+
 function fromUserRow(r) {
   let mDate = '';
   if (r.monitoring_started_date) {
@@ -735,6 +804,21 @@ function fromUserRow(r) {
     }
   }
 
+  const canonicalNewErpSession = r.id ? sessionPathForNewErp(r.id) : (r.new_erp_session_path || '');
+  let resolvedNewErpSessionPath = r.new_erp_session_path || '';
+  if (r.id && (r.new_erp_session_path || r.new_erp_session_data)) {
+    resolvedNewErpSessionPath = canonicalNewErpSession;
+    if (r.new_erp_session_data && !fs.existsSync(canonicalNewErpSession)) {
+      try {
+        const plainJson = decodeSessionData(r.new_erp_session_data);
+        if (plainJson) {
+          fs.mkdirSync(path.dirname(canonicalNewErpSession), { recursive: true });
+          fs.writeFileSync(canonicalNewErpSession, plainJson, { mode: 0o600 });
+        }
+      } catch {}
+    }
+  }
+
   const row = {
     id: r.id, email: r.email, passwordHash: r.password_hash,
     qumsQid: r.qums_qid || '',
@@ -749,6 +833,18 @@ function fromUserRow(r) {
     emailVerified: r.email_verified === true,
     isSuspended: r.is_suspended === true,
     qumsSessionStatus: r.qums_session_status || 'active',
+    activeErpType: r.active_erp_type || 'OLD',
+    newErpEmail: r.new_erp_email || '',
+    newErpPasswordEncrypted: r.new_erp_password_encrypted || '',
+    newErpSessionPath: resolvedNewErpSessionPath,
+    newErpSessionData: r.new_erp_session_data || '',
+    newErpSessionStatus: r.new_erp_session_status || 'not_setup',
+    newErpStudentName: r.new_erp_student_name || '',
+    newErpQid: r.new_erp_qid || '',
+    newErpAcademicYear: r.new_erp_academic_year || '',
+    newErpSemester: r.new_erp_semester || '',
+    newErpCourse: r.new_erp_course || '',
+    newErpLastSyncedAt: r.new_erp_last_synced_at ? new Date(r.new_erp_last_synced_at).toISOString() : '',
     monitoringStartedDate: mDate,
     monitoringStartedAt: r.monitoring_started_at ? new Date(r.monitoring_started_at).toISOString() : '',
     lastAttendanceSyncAt: r.last_attendance_sync_at ? new Date(r.last_attendance_sync_at).toISOString() : (r.attendance_last_checked_at ? new Date(r.attendance_last_checked_at).toISOString() : ''),
@@ -779,6 +875,7 @@ function blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspende
     firebaseUid: String(firebaseUid || ''),
     qumsQid: '',
     qumsSessionPath: '',
+    qumsSessionData: '',
     telegramLinkCode: '',
     telegramChatId: '',
     studentName: '', // QUMS profile name CACHE (source of truth = QUMS session)
@@ -787,6 +884,18 @@ function blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspende
     emailVerified: Boolean(emailVerified || false),
     isSuspended: Boolean(isSuspended || false),
     qumsSessionStatus: 'active',
+    activeErpType: 'OLD',
+    newErpEmail: '',
+    newErpPasswordEncrypted: '',
+    newErpSessionPath: '',
+    newErpSessionData: '',
+    newErpSessionStatus: 'not_setup',
+    newErpStudentName: '',
+    newErpQid: '',
+    newErpAcademicYear: '',
+    newErpSemester: '',
+    newErpCourse: '',
+    newErpLastSyncedAt: '',
     monitoringStartedDate: '',
     monitoringStartedAt: '',
     lastAttendanceSyncAt: '',
@@ -850,6 +959,18 @@ const WRITABLE_USER_COLUMNS = {
   emailVerified: 'email_verified',
   isSuspended: 'is_suspended',
   qumsSessionStatus: 'qums_session_status',
+  activeErpType: 'active_erp_type',
+  newErpEmail: 'new_erp_email',
+  newErpPasswordEncrypted: 'new_erp_password_encrypted',
+  newErpSessionPath: 'new_erp_session_path',
+  newErpSessionData: 'new_erp_session_data',
+  newErpSessionStatus: 'new_erp_session_status',
+  newErpStudentName: 'new_erp_student_name',
+  newErpQid: 'new_erp_qid',
+  newErpAcademicYear: 'new_erp_academic_year',
+  newErpSemester: 'new_erp_semester',
+  newErpCourse: 'new_erp_course',
+  newErpLastSyncedAt: 'new_erp_last_synced_at',
   monitoringStartedDate: 'monitoring_started_date',
   monitoringStartedAt: 'monitoring_started_at',
   lastAttendanceSyncAt: 'last_attendance_sync_at',
@@ -1213,7 +1334,10 @@ async function markSessionExpired(userId, note = '') {
     if (!e) { e = { userId, expiredAt: now, lastAlertAt: null, alertCount: 0, resolvedAt: null, note, telegramMessageId: null }; data.sessionExpiry.push(e); }
     else { e.expiredAt = now; e.resolvedAt = null; if (note) e.note = note; }
     const u = data.users.find((x) => x.id === userId);
-    if (u) { u.qumsSessionStatus = 'expired'; }
+    if (u) {
+      u.qumsSessionStatus = 'expired';
+      if (u.activeErpType === 'NEW') u.newErpSessionStatus = 'expired';
+    }
     persistJson();
     return e;
   }
@@ -1224,7 +1348,9 @@ async function markSessionExpired(userId, note = '') {
     [userId, now, String(note || '')]
   );
   await pool.query(
-    `UPDATE users SET qums_session_status='expired', updated_at=NOW() WHERE id=$1`,
+    `UPDATE users SET qums_session_status='expired',
+     new_erp_session_status=CASE WHEN active_erp_type='NEW' THEN 'expired' ELSE new_erp_session_status END,
+     updated_at=NOW() WHERE id=$1`,
     [userId]
   ).catch(() => {});
   return getSessionExpiryState(userId);
@@ -1237,11 +1363,19 @@ async function recordSessionExpiryAlert(userId, messageId = null) {
     return null;
   }
   const now = Date.now();
-  const msgIdStr = messageId ? String(messageId) : null;
+  const msgIdStr = messageId ? String(messageId).trim() : null;
   if (!USE_PG) {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
-    if (!e) { e = { userId, expiredAt: now, lastAlertAt: now, alertCount: 1, resolvedAt: null, note: '', telegramMessageId: msgIdStr }; data.sessionExpiry.push(e); }
-    else { e.lastAlertAt = now; e.alertCount = Number(e.alertCount || 0) + 1; if (msgIdStr) e.telegramMessageId = msgIdStr; }
+    if (!e) {
+      e = { userId, expiredAt: now, lastAlertAt: now, alertCount: 1, resolvedAt: null, note: '', telegramMessageId: msgIdStr };
+      data.sessionExpiry.push(e);
+    } else {
+      e.lastAlertAt = now;
+      e.alertCount = Number(e.alertCount || 0) + 1;
+      if (msgIdStr) {
+        e.telegramMessageId = e.telegramMessageId ? `${e.telegramMessageId},${msgIdStr}` : msgIdStr;
+      }
+    }
     persistJson();
     return e;
   }
@@ -1249,11 +1383,49 @@ async function recordSessionExpiryAlert(userId, messageId = null) {
   await pool.query(
     `INSERT INTO session_expiry_state(user_id,expired_at,last_alert_at,alert_count,telegram_message_id)
      VALUES($1,$2,$2,1,$3)
-     ON CONFLICT(user_id) DO UPDATE SET last_alert_at=EXCLUDED.last_alert_at, alert_count=session_expiry_state.alert_count+1,
-     telegram_message_id=COALESCE(EXCLUDED.telegram_message_id, session_expiry_state.telegram_message_id)`,
+     ON CONFLICT(user_id) DO UPDATE SET 
+       last_alert_at=EXCLUDED.last_alert_at, 
+       alert_count=session_expiry_state.alert_count+1,
+       telegram_message_id = CASE 
+         WHEN EXCLUDED.telegram_message_id IS NULL THEN session_expiry_state.telegram_message_id
+         WHEN session_expiry_state.telegram_message_id IS NULL OR session_expiry_state.telegram_message_id = '' THEN EXCLUDED.telegram_message_id
+         ELSE session_expiry_state.telegram_message_id || ',' || EXCLUDED.telegram_message_id
+       END`,
     [userId, now, msgIdStr]
   );
   return getSessionExpiryState(userId);
+}
+
+/** Get all recorded Telegram message IDs for session expiry / conflict alerts for cleanup */
+async function getSessionExpiryMessageIds(userId) {
+  if (!userId) return [];
+  const ids = new Set();
+  const state = await getSessionExpiryState(userId);
+  if (state && state.telegramMessageId) {
+    String(state.telegramMessageId).split(',').map((s) => s.trim()).filter(Boolean).forEach((id) => ids.add(id));
+  }
+  if (!USE_PG) {
+    const logs = data.notificationLogs || [];
+    for (const n of logs) {
+      if (n.userId === userId && (n.kind === 'session_expired' || n.kind === 'session_conflict') && n.metadata && n.metadata.messageId) {
+        ids.add(String(n.metadata.messageId));
+      }
+    }
+  } else {
+    await init();
+    const r = await pool.query(
+      `SELECT metadata->>'messageId' AS message_id 
+       FROM notification_log 
+       WHERE user_id = $1 
+         AND type IN ('session_expired', 'session_conflict')
+         AND metadata->>'messageId' IS NOT NULL`,
+      [userId]
+    );
+    for (const row of r.rows) {
+      if (row.message_id) ids.add(String(row.message_id));
+    }
+  }
+  return Array.from(ids);
 }
 
 /** Clear the recorded Telegram message ID for session expiry (e.g. after deletion). */
@@ -1266,6 +1438,12 @@ async function clearSessionExpiryTelegramMessage(userId) {
   }
   await init();
   await pool.query('UPDATE session_expiry_state SET telegram_message_id=NULL WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query(
+    `UPDATE notification_log 
+     SET metadata = metadata - 'messageId' 
+     WHERE user_id=$1 AND type IN ('session_expired', 'session_conflict')`,
+    [userId]
+  ).catch(() => {});
 }
 
 /** Reconnect succeeded or verified authenticated scrape -> clear expiry state so a future expiry alerts again. */
@@ -1288,6 +1466,7 @@ async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
     if (u) {
       if (!maxExpiredAt || !e || !e.expiredAt || Number(e.expiredAt) <= Number(maxExpiredAt)) {
         u.qumsSessionStatus = 'active';
+        if (u.activeErpType === 'NEW') u.newErpSessionStatus = 'active';
         persistJson();
       }
     }
@@ -1304,8 +1483,10 @@ async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
     );
     if (r.rowCount > 0) {
       await pool.query(
-        `UPDATE users SET qums_session_status='active', updated_at=NOW() 
-         WHERE id=$1 AND qums_session_status='expired'
+        `UPDATE users SET qums_session_status='active',
+         new_erp_session_status=CASE WHEN active_erp_type='NEW' THEN 'active' ELSE new_erp_session_status END,
+         updated_at=NOW() 
+         WHERE id=$1 AND (qums_session_status='expired' OR new_erp_session_status='expired')
            AND NOT EXISTS (
              SELECT 1 FROM session_expiry_state 
              WHERE user_id=$1 AND expired_at > $2 AND resolved_at IS NULL
@@ -1323,7 +1504,9 @@ async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
     [userId, now]
   );
   await pool.query(
-    `UPDATE users SET qums_session_status='active', updated_at=NOW() WHERE id=$1`,
+    `UPDATE users SET qums_session_status='active',
+     new_erp_session_status=CASE WHEN active_erp_type='NEW' THEN 'active' ELSE new_erp_session_status END,
+     updated_at=NOW() WHERE id=$1`,
     [userId]
   ).catch(() => {});
   return true;
@@ -1450,12 +1633,18 @@ function safeAdminUser(u, expiredUserIds = []) {
     lastReconnectedAt: u.lastReconnectedAt || '',
     reconnectCountTelegram: Number(u.reconnectCountTelegram || 0),
     reconnectCountWeb: Number(u.reconnectCountWeb || 0),
+    // New ERP metadata
+    activeErpType: u.activeErpType || 'OLD',
+    newErpEmail: u.newErpEmail || '',
+    newErpStudentName: u.newErpStudentName || '',
+    newErpQid: u.newErpQid || '',
+    newErpSessionStatus: u.newErpSessionStatus || 'not_setup',
   };
 }
 
 /**
  * Pure: search (name/email/QID) + filter for the admin list. Exported for tests.
- * filter: 'all' | 'qums_connected' | 'session_expired' | 'telegram_connected' | 'suspended'
+ * filter: 'all' | 'qums_connected' | 'session_expired' | 'telegram_connected' | 'suspended' | 'active' | 'old_erp' | 'new_erp'
  */
 function applyAdminFilters(rows, {
   search = '',
@@ -1468,14 +1657,17 @@ function applyAdminFilters(rows, {
   const q = String(search || '').trim().toLowerCase();
   return (rows || []).filter((r) => {
     if (q) {
-      const hay = `${r.studentName || ''} ${r.email || ''} ${r.qumsQid || ''}`.toLowerCase();
+      const hay = `${r.studentName || ''} ${r.email || ''} ${r.qumsQid || ''} ${r.newErpEmail || ''} ${r.rawQid || ''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    // Legacy single filter (preserves test suite parity)
+    if (filter === 'admin' && !r.isAdmin) return false;
     if (filter === 'qums_connected' && !r.qumsConnected) return false;
     if (filter === 'session_expired' && !r.sessionExpired) return false;
     if (filter === 'telegram_connected' && !r.telegramConnected) return false;
     if (filter === 'suspended' && !r.isSuspended) return false;
+    if (filter === 'active' && (r.isSuspended || r.sessionExpired || !r.qumsConnected)) return false;
+    if (filter === 'old_erp' && r.activeErpType !== 'OLD') return false;
+    if (filter === 'new_erp' && r.activeErpType !== 'NEW') return false;
 
     // Filter 1: QUMS Status
     if (qumsFilter === 'connected' && (!r.qumsConnected || r.sessionExpired)) return false;
@@ -1498,6 +1690,15 @@ function applyAdminFilters(rows, {
 
     return true;
   });
+}
+
+/** Get all matching user IDs across all pages (for select all across pages) */
+async function getMatchingUserIdsForAdmin({ search = '', filter = 'all' } = {}) {
+  const users = await allUsers();
+  const expired = await listSessionExpiredUsers();
+  const rows = users.map((u) => safeAdminUser(u, expired));
+  const filtered = applyAdminFilters(rows, { search, filter });
+  return filtered.map((u) => u.id);
 }
 
 /** Paginated admin user list (search + filter applied server-side). */
@@ -1918,22 +2119,29 @@ async function deleteNotificationLog(userId, dedupeKey) {
   return (r.rowCount || 0) > 0;
 }
 
-async function hasAttendanceBeenNotified(userId, { qid, classDate, subjectCode, status, prevStatus } = {}) {
-  if (!userId || !classDate || !subjectCode) return false;
+async function hasAttendanceBeenNotified(userId, { qid, classDate, subjectCode, subject, status, prevStatus } = {}) {
+  if (!userId || !classDate) return false;
   const q = String(qid || '').trim();
   const cDate = String(classDate).trim();
-  const sCode = String(subjectCode).trim().toUpperCase();
+  const sCode = String(subjectCode || '').trim().toUpperCase();
+  const subj = String(subject || '').trim().toUpperCase();
   const stat = String(status || '').trim().toLowerCase();
 
   if (!USE_PG) {
     const logs = data.notificationLogs || [];
     return logs.some((n) => {
       if (n.userId !== userId) return false;
-      const key = String(n.dedupeKey || '');
+      const key = String(n.dedupeKey || '').toUpperCase();
       const meta = n.metadata || {};
+      const metaSubj = String(meta.subject || '').toUpperCase();
+      const metaCode = String(meta.subjectCode || '').toUpperCase();
+
       const keyMatch =
-        (key.includes(cDate) && key.toUpperCase().includes(sCode)) ||
-        (meta.classDate === cDate && String(meta.subjectCode || '').toUpperCase() === sCode);
+        (key.includes(cDate) && (
+          (sCode && sCode !== 'MANDATORY' && key.includes(sCode)) ||
+          (subj && key.includes(subj)) ||
+          (meta.classDate === cDate && (metaCode === sCode || (subj && metaSubj === subj)))
+        ));
       if (!keyMatch) return false;
 
       // Status check
@@ -1956,18 +2164,21 @@ async function hasAttendanceBeenNotified(userId, { qid, classDate, subjectCode, 
     SELECT 1 FROM notification_log
     WHERE user_id = $1
       AND (
-        (dedupe_key LIKE '%' || $2 || '%' AND UPPER(dedupe_key) LIKE '%' || $3 || '%')
-        OR (metadata->>'classDate' = $2 AND UPPER(metadata->>'subjectCode') = $3)
+        (dedupe_key LIKE '%' || $2 || '%' AND (
+          ($3 != '' AND $3 != 'MANDATORY' AND UPPER(dedupe_key) LIKE '%' || $3 || '%')
+          OR ($4 != '' AND UPPER(dedupe_key) LIKE '%' || $4 || '%')
+          OR (metadata->>'classDate' = $2 AND (UPPER(metadata->>'subjectCode') = $3 OR ($4 != '' AND UPPER(metadata->>'subject') = $4)))
+        ))
       )
       AND (
-        metadata->>'status' = $4
-        OR metadata->>'newStatus' = $4
-        OR LOWER(dedupe_key) LIKE '%:' || $4
-        OR LOWER(dedupe_key) LIKE '%->' || $4
+        metadata->>'status' = $5
+        OR metadata->>'newStatus' = $5
+        OR LOWER(dedupe_key) LIKE '%:' || $5
+        OR LOWER(dedupe_key) LIKE '%->' || $5
       )
     LIMIT 1
   `;
-  const r = await pool.query(sql, [userId, cDate, sCode, stat]);
+  const r = await pool.query(sql, [userId, cDate, sCode, subj, stat]);
   return (r.rowCount || 0) > 0;
 }
 
@@ -2035,6 +2246,367 @@ async function removeScheduledDeletion(chatId, messageId) {
   return res.rowCount || 0;
 }
 
+// ---------------------------------------------------------------------------
+// Centralized ERP Session Registry (One QUMS Account = One Active Session)
+// ---------------------------------------------------------------------------
+
+class SessionConflictError extends Error {
+  constructor(message, activeErp, requestedErp) {
+    super(message);
+    this.name = 'SessionConflictError';
+    this.code = 'SESSION_CONFLICT';
+    this.activeErp = activeErp;
+    this.requestedErp = requestedErp;
+  }
+}
+
+function normalizeQumsIdentity(id) {
+  return String(id || '').trim().toLowerCase();
+}
+
+async function getActiveErpSession(qumsIdentity) {
+  const normId = normalizeQumsIdentity(qumsIdentity);
+  if (!normId) return null;
+  if (!USE_PG) {
+    const list = data.activeErpSessions || [];
+    return list.find((s) => normalizeQumsIdentity(s.qumsIdentity) === normId && s.status === 'active') || null;
+  }
+  await init();
+  const res = await pool.query(
+    `SELECT qums_identity AS "qumsIdentity", user_id AS "userId", erp_type AS "erpType", session_id AS "sessionId", status, created_at AS "createdAt", updated_at AS "updatedAt", last_active_at AS "lastActiveAt" FROM active_erp_sessions WHERE LOWER(qums_identity) = $1 AND status = 'active' LIMIT 1`,
+    [normId]
+  );
+  return res.rows[0] || null;
+}
+
+async function getActiveErpSessionByUserId(userId) {
+  if (!userId) return null;
+  if (!USE_PG) {
+    const list = data.activeErpSessions || [];
+    return list.find((s) => s.userId === userId && s.status === 'active') || null;
+  }
+  await init();
+  const res = await pool.query(
+    `SELECT qums_identity AS "qumsIdentity", user_id AS "userId", erp_type AS "erpType", session_id AS "sessionId", status, created_at AS "createdAt", updated_at AS "updatedAt", last_active_at AS "lastActiveAt" FROM active_erp_sessions WHERE user_id = $1 AND status = 'active' LIMIT 1`,
+    [userId]
+  );
+  return res.rows[0] || null;
+}
+
+async function acquireErpSession({ qumsIdentity, userId, erpType, sessionId = newId() }) {
+  const normId = normalizeQumsIdentity(qumsIdentity);
+  if (!normId || !userId || !erpType) {
+    throw new Error('acquireErpSession requires qumsIdentity, userId, and erpType.');
+  }
+  const targetType = erpType.toUpperCase(); // 'OLD' or 'NEW'
+  const existing = await getActiveErpSession(normId);
+
+  if (existing && existing.erpType !== targetType && existing.status === 'active') {
+    const otherTypeLabel = existing.erpType === 'OLD' ? 'Old ERP' : 'New ERP';
+    const targetTypeLabel = targetType === 'OLD' ? 'Old ERP' : 'New ERP';
+    throw new SessionConflictError(
+      `This QUMS account is already active in ${otherTypeLabel}. Please disconnect the existing session before switching to ${targetTypeLabel}.`,
+      existing.erpType,
+      targetType
+    );
+  }
+
+  // Also check if this user has another active session under a different identity
+  const userExisting = await getActiveErpSessionByUserId(userId);
+  if (userExisting && userExisting.erpType !== targetType && userExisting.status === 'active') {
+    const otherTypeLabel = userExisting.erpType === 'OLD' ? 'Old ERP' : 'New ERP';
+    const targetTypeLabel = targetType === 'OLD' ? 'Old ERP' : 'New ERP';
+    throw new SessionConflictError(
+      `This QUMS account is already active in ${otherTypeLabel}. Please disconnect the existing session before switching to ${targetTypeLabel}.`,
+      userExisting.erpType,
+      targetType
+    );
+  }
+
+  const now = new Date().toISOString();
+  const sessionRecord = {
+    qumsIdentity: normId,
+    userId,
+    erpType: targetType,
+    sessionId: String(sessionId),
+    status: 'active',
+    createdAt: (existing && existing.createdAt) || now,
+    updatedAt: now,
+    lastActiveAt: now,
+  };
+
+  if (!USE_PG) {
+    if (!data.activeErpSessions) data.activeErpSessions = [];
+    const idx = data.activeErpSessions.findIndex((s) => normalizeQumsIdentity(s.qumsIdentity) === normId);
+    if (idx >= 0) {
+      data.activeErpSessions[idx] = sessionRecord;
+    } else {
+      data.activeErpSessions.push(sessionRecord);
+    }
+    persistJson();
+  } else {
+    await init();
+    await pool.query(
+      `INSERT INTO active_erp_sessions (qums_identity, user_id, erp_type, session_id, status, created_at, updated_at, last_active_at)
+       VALUES ($1, $2, $3, $4, 'active', NOW(), NOW(), NOW())
+       ON CONFLICT (qums_identity) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         erp_type = EXCLUDED.erp_type,
+         session_id = EXCLUDED.session_id,
+         status = 'active',
+         updated_at = NOW(),
+         last_active_at = NOW()`,
+      [normId, userId, targetType, String(sessionId)]
+    );
+  }
+
+  // Keep user active_erp_type updated
+  await updateUser(userId, { activeErpType: targetType }).catch(() => {});
+  return sessionRecord;
+}
+
+async function releaseErpSession(qumsIdentity, userId) {
+  const normId = normalizeQumsIdentity(qumsIdentity);
+  if (!normId && !userId) return false;
+  if (!USE_PG) {
+    if (!data.activeErpSessions) return false;
+    let modified = false;
+    for (const s of data.activeErpSessions) {
+      if ((normId && normalizeQumsIdentity(s.qumsIdentity) === normId) || (userId && s.userId === userId)) {
+        s.status = 'released';
+        s.updatedAt = new Date().toISOString();
+        modified = true;
+      }
+    }
+    if (modified) persistJson();
+    return modified;
+  }
+  await init();
+  const query = normId
+    ? `UPDATE active_erp_sessions SET status = 'released', updated_at = NOW() WHERE LOWER(qums_identity) = $1`
+    : `UPDATE active_erp_sessions SET status = 'released', updated_at = NOW() WHERE user_id = $1`;
+  const val = normId || userId;
+  const res = await pool.query(query, [val]);
+  return (res.rowCount || 0) > 0;
+}
+
+async function releaseAllErpSessionsForUser(userId) {
+  return releaseErpSession(null, userId);
+}
+
+// ---------------------------------------------------------------------------
+// Admin Audit Logs
+// ---------------------------------------------------------------------------
+
+async function logAdminAudit({ adminId, adminEmail, action, targetUserIds = [], details = {} }) {
+  const row = {
+    id: USE_PG ? undefined : (data.adminAuditLogs ? data.adminAuditLogs.length + 1 : 1),
+    adminId: String(adminId || 'unknown'),
+    adminEmail: String(adminEmail || 'admin'),
+    action: String(action || 'UNKNOWN_ACTION'),
+    targetUserIds: Array.isArray(targetUserIds) ? targetUserIds : [targetUserIds],
+    details: details || {},
+    createdAt: new Date().toISOString(),
+  };
+
+  if (!USE_PG) {
+    if (!data.adminAuditLogs) data.adminAuditLogs = [];
+    data.adminAuditLogs.push(row);
+    if (data.adminAuditLogs.length > 5000) {
+      data.adminAuditLogs = data.adminAuditLogs.slice(-5000);
+    }
+    persistJson();
+    return row;
+  }
+
+  await init();
+  const res = await pool.query(
+    `INSERT INTO admin_audit_logs (admin_id, admin_email, action, target_user_ids, details, created_at)
+     VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id, admin_id AS "adminId", admin_email AS "adminEmail", action, target_user_ids AS "targetUserIds", details, created_at AS "createdAt"`,
+    [row.adminId, row.adminEmail, row.action, JSON.stringify(row.targetUserIds), JSON.stringify(row.details)]
+  );
+  return res.rows[0];
+}
+
+async function listAdminAuditLogs({ limit = 50, offset = 0, action = null } = {}) {
+  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  const off = Math.max(0, Number(offset) || 0);
+
+  if (!USE_PG) {
+    let logs = (data.adminAuditLogs || []).slice().reverse();
+    if (action) {
+      logs = logs.filter((l) => l.action === action);
+    }
+    const total = logs.length;
+    return {
+      total,
+      limit: lim,
+      offset: off,
+      logs: logs.slice(off, off + lim),
+    };
+  }
+
+  await init();
+  let where = '';
+  const params = [];
+  if (action) {
+    params.push(action);
+    where = `WHERE action = $${params.length}`;
+  }
+  const countRes = await pool.query(`SELECT COUNT(*)::int AS n FROM admin_audit_logs ${where}`, params);
+  const total = (countRes.rows[0] && countRes.rows[0].n) || 0;
+
+  params.push(lim);
+  params.push(off);
+  const rowsRes = await pool.query(
+    `SELECT id, admin_id AS "adminId", admin_email AS "adminEmail", action, target_user_ids AS "targetUserIds", details, created_at AS "createdAt"
+     FROM admin_audit_logs ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+
+  return {
+    total,
+    limit: lim,
+    offset: off,
+    logs: rowsRes.rows,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// New ERP Timetable & Attendance Cache
+// ---------------------------------------------------------------------------
+
+async function upsertNewErpTimetable(userId, timetableData) {
+  if (!userId || !timetableData) return 0;
+  const rows = Array.isArray(timetableData.rows) ? timetableData.rows : [];
+  const now = new Date().toISOString();
+
+  if (!USE_PG) {
+    if (!data.newErpTimetable) data.newErpTimetable = [];
+    data.newErpTimetable = data.newErpTimetable.filter((t) => t.userId !== userId);
+    for (const r of rows) {
+      data.newErpTimetable.push({
+        userId,
+        dayOfWeek: r.dayOfWeek || 0,
+        periodTime: r.periodTime || r.period || '',
+        subjectName: r.subjectName || r.subject || '',
+        facultyName: r.facultyName || r.faculty || r.teacher || '',
+        classroom: r.classroom || r.room || '',
+        rawData: r,
+        lastUpdated: now,
+      });
+    }
+    persistJson();
+    return rows.length;
+  }
+
+  await init();
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO new_erp_timetable (user_id, day_of_week, period_time, subject_name, faculty_name, classroom, raw_data, last_updated)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (user_id, day_of_week, period_time, subject_name) DO UPDATE SET
+         faculty_name = EXCLUDED.faculty_name,
+         classroom = EXCLUDED.classroom,
+         raw_data = EXCLUDED.raw_data,
+         last_updated = NOW()`,
+      [
+        userId,
+        r.dayOfWeek || 0,
+        r.periodTime || r.period || '',
+        r.subjectName || r.subject || '',
+        r.facultyName || r.faculty || r.teacher || '',
+        r.classroom || r.room || '',
+        JSON.stringify(r),
+      ]
+    );
+  }
+  return rows.length;
+}
+
+async function getNewErpTimetable(userId) {
+  if (!userId) return { success: true, hasData: false, timetable: { days: [] } };
+  if (!USE_PG) {
+    const list = (data.newErpTimetable || []).filter((t) => t.userId === userId);
+    if (!list.length) return null;
+    return {
+      success: true,
+      hasData: true,
+      updatedAt: list[0].lastUpdated,
+      timetable: {
+        rows: list.map((l) => ({
+          dayOfWeek: l.dayOfWeek,
+          periodTime: l.periodTime,
+          subjectName: l.subjectName,
+          facultyName: l.facultyName,
+          classroom: l.classroom,
+        })),
+      },
+    };
+  }
+
+  await init();
+  const res = await pool.query(
+    `SELECT day_of_week AS "dayOfWeek", period_time AS "periodTime", subject_name AS "subjectName", faculty_name AS "facultyName", classroom, raw_data AS "rawData", last_updated AS "lastUpdated"
+     FROM new_erp_timetable WHERE user_id = $1 ORDER BY day_of_week, period_time`,
+    [userId]
+  );
+  if (!res.rows.length) return null;
+  return {
+    success: true,
+    hasData: true,
+    updatedAt: res.rows[0].lastUpdated,
+    timetable: {
+      rows: res.rows,
+    },
+  };
+}
+
+async function saveNewErpAttendanceCache(userId, { summary = {}, subjectWise = [], dailyRecords = [] } = {}) {
+  if (!userId) return false;
+  const now = new Date().toISOString();
+  if (!USE_PG) {
+    if (!data.newErpAttendanceCache) data.newErpAttendanceCache = [];
+    const idx = data.newErpAttendanceCache.findIndex((c) => c.userId === userId);
+    const rec = { userId, summary, subjectWise, dailyRecords, lastUpdated: now };
+    if (idx >= 0) {
+      data.newErpAttendanceCache[idx] = rec;
+    } else {
+      data.newErpAttendanceCache.push(rec);
+    }
+    persistJson();
+    return true;
+  }
+
+  await init();
+  await pool.query(
+    `INSERT INTO new_erp_attendance_cache (user_id, summary, subject_wise, daily_records, last_updated)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (user_id) DO UPDATE SET
+       summary = EXCLUDED.summary,
+       subject_wise = EXCLUDED.subject_wise,
+       daily_records = EXCLUDED.daily_records,
+       last_updated = NOW()`,
+    [userId, JSON.stringify(summary), JSON.stringify(subjectWise), JSON.stringify(dailyRecords)]
+  );
+  return true;
+}
+
+async function getNewErpAttendanceCache(userId) {
+  if (!userId) return null;
+  if (!USE_PG) {
+    const rec = (data.newErpAttendanceCache || []).find((c) => c.userId === userId);
+    return rec || null;
+  }
+  await init();
+  const res = await pool.query(
+    `SELECT summary, subject_wise AS "subjectWise", daily_records AS "dailyRecords", last_updated AS "lastUpdated"
+     FROM new_erp_attendance_cache WHERE user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  return res.rows[0] || null;
+}
+
 /** Record a reconnect event with its source ('telegram' | 'web') */
 async function recordUserReconnect(userId, source = 'web', log = console) {
   const normSource = source === 'telegram' ? 'telegram' : 'web';
@@ -2072,8 +2644,8 @@ async function recordUserReconnect(userId, source = 'web', log = console) {
 }
 
 module.exports={
-  DB_FILE,QUMS_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,
-  ensureSessionOnDisk,saveUserSessionData,decodeSessionData,
+  DB_FILE,QUMS_SESSION_DIR,NEW_ERP_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,sessionPathForNewErp,
+  ensureSessionOnDisk,saveUserSessionData,ensureNewErpSessionOnDisk,saveNewErpSessionData,decodeSessionData,
   storeResetToken,consumeResetToken,listKnownAttendance,addKnownAttendance,upsertKnownAttendance,removeKnownAttendance,upsertWeeklySchedule,getWeeklySchedule,clearWeeklySchedule,
   telegramLinkCodeFor,getUserByTelegramLinkCode,getUserByTelegramChatId,setTelegramChatId,clearTelegramChatForChat,clearTelegramChatId,
   listKnownAssignments,addKnownAssignments,removeKnownAssignment,updateKnownAssignmentMessageId,
@@ -2088,11 +2660,15 @@ module.exports={
   // per-user sync bookkeeping
   touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
   // session-expiry state (PostgreSQL-backed)
-  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
+  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, getSessionExpiryMessageIds, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
   // scheduled message auto-deletions
   addScheduledDeletion, listPendingDeletions, removeScheduledDeletion,
   // notification log / analytics
   NOTIFICATION_KINDS, recordNotification, notificationStats, recentNotifications,
   // admin
-  safeAdminUser, applyAdminFilters, listUsersForAdmin, adminStats, ping, recordUserReconnect,
+  safeAdminUser, applyAdminFilters, listUsersForAdmin, getMatchingUserIdsForAdmin, adminStats, ping, recordUserReconnect,
+  // ERP session exclusivity & New ERP helpers
+  SessionConflictError, getActiveErpSession, getActiveErpSessionByUserId, acquireErpSession, releaseErpSession, releaseAllErpSessionsForUser,
+  logAdminAudit, listAdminAuditLogs,
+  upsertNewErpTimetable, getNewErpTimetable, saveNewErpAttendanceCache, getNewErpAttendanceCache,
 };

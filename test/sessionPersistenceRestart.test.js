@@ -62,6 +62,25 @@ Module.prototype.require = function (request) {
     const orig = originalRequire.apply(this, arguments);
     return { ...orig, ...mockTelegram };
   }
+  if (request === './scraper' || request === '../src/scraper') {
+    const orig = originalRequire.apply(this, arguments);
+    return {
+      ...orig,
+      scrapeTodaysAttendance: async () => [],
+      scrapeTimetable: async () => ({ hasData: false, days: [] }),
+      scrapeMonthRegisterRange: async () => [],
+      scrapeAssignments: async () => [],
+    };
+  }
+  if (request === './new-erp-client' || request === '../src/new-erp-client') {
+    const orig = originalRequire.apply(this, arguments);
+    return {
+      ...orig,
+      scrapeNewErpSubjectLectures: async () => ({ dailyRecords: [] }),
+      scrapeNewErpTimetable: async () => ({ hasData: false, rows: [] }),
+      scrapeAllNewErpLectureRecords: async () => ({ records: [] }),
+    };
+  }
   return originalRequire.apply(this, arguments);
 };
 
@@ -105,6 +124,12 @@ const quiet = { log: () => {}, error: () => {} };
 
   try {
     await db.init();
+
+    // Clean up any test users from previous runs
+    for (let i = 1; i <= 6; i++) {
+      const existing = await db.getUserByEmail(`user${i}@test.com`);
+      if (existing) await db.deleteUser(existing.id);
+    }
 
     // =========================================================================
     // TEST 1: Valid persisted session remains valid after simulated restart

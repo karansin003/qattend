@@ -20,6 +20,7 @@ const fs = require('fs');
 const { chromium } = require('playwright');
 const db = require('./db');
 const { encryptSecret, decryptSecret } = require('./crypto');
+const { checkSessionEligibility, acquireSession } = require('./erp-session-registry');
 const {
   isLoginLikeUrl,
   findLoginForm,
@@ -241,6 +242,16 @@ async function startQumsLogin(userId, credsInput, log = console) {
     throw err;
   }
 
+  // Enforce One QUMS Account = One Active ERP Session
+  const eligibility = await checkSessionEligibility(qid, userId, 'OLD');
+  if (!eligibility.allowed) {
+    const err = new Error(eligibility.conflictMessage);
+    err.name = 'SessionConflictError';
+    err.code = 'SESSION_CONFLICT';
+    err.activeErp = eligibility.activeErp;
+    throw err;
+  }
+
   // If too many users are actively launching browsers right now, wait briefly in queue
   cleanupStaleLaunching();
   const waitStart = Date.now();
@@ -457,6 +468,8 @@ async function submitQumsCaptcha(userId, rawCaptchaText, log = console, opts = {
     password: pendingPassword,
     confirmSwitch: p.confirmSwitch,
   });
+  // Centralized session registry: record active Old ERP session
+  await acquireSession({ identity: p.qid, userId, targetErp: 'OLD' }).catch(() => {});
   log.log(`[qums-login] QUMS session saved for user ${userId} -> ${sessionPath}`);
 
   // Track reconnect channel (Telegram vs Webpage)

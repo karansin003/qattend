@@ -99,8 +99,9 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
 
   const user = await db.getUserById(userId);
   if (!user) return false;
-  const qid = user.qumsQid || '';
-  const monitoringStartedDate = user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : '');
+  const isNewErp = user.activeErpType === 'NEW' || (Boolean(user.newErpSessionPath || user.newErpEmail) && !user.qumsSessionPath);
+  const qid = (isNewErp ? (user.newErpQid || user.qumsQid) : (user.qumsQid || user.newErpQid)) || '';
+  const monitoringStartedDate = user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : '') || db.getIstDateString();
 
   let attendanceAlertsSent = 0;
   let assignmentAlertsSent = 0;
@@ -176,17 +177,20 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
         continue;
       }
 
+      const subjectKey = (rec.subjectCode && rec.subjectCode !== 'Mandatory') ? rec.subjectCode : (rec.subject || rec.subjectCode || 'General');
+
       // Check if this attendance event was already notified (by fast loop or previous cycle)
       const alreadyNotified = await db.hasAttendanceBeenNotified(userId, {
         qid,
         classDate: rec.date,
         subjectCode: rec.subjectCode,
+        subject: rec.subject,
         status: rec.status,
         prevStatus: prev ? prev.status : 'unmarked',
       });
 
       if (alreadyNotified) {
-        log.log(`[catchup] duplicate suppressed for user=${userId} (${rec.date} ${rec.subjectCode}: ${rec.status}) — already notified.`);
+        log.log(`[catchup] duplicate suppressed for user=${userId} (${rec.date} ${subjectKey}: ${rec.status}) — already notified.`);
         await db.upsertKnownAttendance(userId, [rec]);
         if (rec.date && rec.subjectCode) {
           await db.saveAttendanceRecord(userId, qid, rec);
@@ -194,11 +198,12 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
         continue;
       }
 
-      const dedupeKey = `attendance_catchup:${qid}:${rec.date}:${rec.subjectCode}:${prev ? prev.status : 'N'}->${rec.status}`;
+      const dedupeKey = `attendance_catchup:${userId}:${rec.date}:${subjectKey}:${prev ? prev.status : 'N'}->${rec.status}`;
       const isNew = await db.tryRecordNotificationLog(userId, 'attendance_catchup', dedupeKey, {
         qid,
         classDate: rec.date,
         subjectCode: rec.subjectCode,
+        subject: rec.subject,
         prevStatus: prev ? prev.status : 'unmarked',
         newStatus: rec.status,
         status: rec.status,

@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 const db = require('./db');
+const { decryptSecret } = require('./crypto');
 
 const BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || 'qums_attendance_bot').replace(/^@/, '');
 const DEEP_LINK_BASE = `https://t.me/${BOT_USERNAME}`;
@@ -743,7 +744,10 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
-  if (/^\/today(?:@\w+)?/i.test(text) || ['today', 'timetable', 'classes', 'schedule'].includes(lower)) {
+  if (
+    /^\/today(?:@\w+)?/i.test(text) ||
+    /^(?:today|today['s]*\s*class(?:es)?|aaj\s*(?:ki\s*)?class(?:es)?|timetable|classes|schedule)$/i.test(lower.trim())
+  ) {
     await handleToday(chatId, log);
     return;
   }
@@ -753,12 +757,25 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
+  if (/^\/admin(?:@\w+)?/i.test(text) || lower === 'admin') {
+    const admin = require('./telegram-admin');
+    await admin.handleAdminCommand(state.bot, msg, log);
+    return;
+  }
+
   if (/^\/status(?:@\w+)?/i.test(text) || lower === 'status') {
     await handleStatus(chatId, log);
     return;
   }
 
-  if (/^\/help(?:@\w+)?/i.test(text) || ['help', 'hi', 'hello', 'hey'].includes(lower)) {
+  const trimmed = text.trim();
+  const clean = trimmed.toLowerCase().replace(/[!.,?]+$/, '');
+  const isGreetingOrHelp =
+    /^\/help(?:@\w+)?/i.test(trimmed) ||
+    /^(?:hi+|hello+|hey+|hy|help|hlo|helo)(?:\s+(?:bot|bro|there|all|qattend))?$/i.test(clean) ||
+    ['help', 'hi', 'hii', 'hiii', 'hello', 'hey', 'hy', 'hlo', 'helo'].includes(clean);
+
+  if (isGreetingOrHelp) {
     await handleHelp(chatId, log);
     return;
   }
@@ -791,6 +808,9 @@ async function handleUserMessage(msg, log = console) {
   if (!user) return;
 
   if (!isWaitingCaptcha(user.id)) {
+    const admin = require('./telegram-admin');
+    const handledAdmin = await admin.handleAdminMessageText(state.bot, msg, log);
+    if (handledAdmin) return;
     // User is not in reconnect mode and text was not a recognized greeting/command — ignore
     return;
   }
@@ -903,12 +923,104 @@ async function handleUserMessage(msg, log = console) {
 }
 
 /**
- * Handle inline button clicks (🔄 Regenerate CAPTCHA, ❌ Cancel Reconnect).
+ * Executes a seamless 1-Click New ERP Reconnection directly via Telegram.
+ * Logs in with encrypted credentials, terminates previous sessions, restores active tracking.
+ */
+async function executeNewErp1ClickReconnect(user, chatId, log = console, alertMessageId = null) {
+  const chatKey = String(chatId);
+  if (reconnectingChats.has(chatKey)) {
+    await reply(chatId, '⏳ Reconnect is already in progress. Please wait a moment...', log);
+    return;
+  }
+  reconnectingChats.add(chatKey);
+
+  let progressMsg = null;
+  const bot = state.bot;
+  try {
+    progressMsg = await reply(chatId, '⏳ *1-Click Reconnect in progress...*\n\nAuthenticating with Quantum University New ERP portal and terminating other active sessions...', log);
+
+    const email = user.newErpEmail;
+    const password = user.newErpPasswordEncrypted ? decryptSecret(user.newErpPasswordEncrypted) : '';
+
+    if (!email || !password) {
+      await reply(chatId, '⚠️ *New ERP Credentials Not Found*\n\nPlease log in on the webpage first to save your New ERP credentials.', log);
+      return;
+    }
+
+    const newErpClient = require('./new-erp-client');
+    const result = await newErpClient.loginNewErp({ email, password, logoutOtherSessions: true }, log);
+
+    if (result && result.ok) {
+      const sessionPath = db.sessionPathForNewErp(user.id);
+      fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+      fs.writeFileSync(sessionPath, JSON.stringify(result.storageState, null, 2), { mode: 0o600 });
+      await db.saveNewErpSessionData(user.id, JSON.stringify(result.storageState));
+      await db.updateUser(user.id, { newErpSessionStatus: 'active', activeErpType: 'NEW' });
+
+      const { acquireSession } = require('./erp-session-registry');
+      await acquireSession({ identity: email, userId: user.id, targetErp: 'NEW', sessionId: sessionPath }).catch(() => {});
+
+      const { clearSessionAlert } = require('./alerts');
+      await clearSessionAlert(user.id, log).catch(() => {});
+
+      if (alertMessageId && bot && typeof bot.deleteMessage === 'function') {
+        await bot.deleteMessage(chatId, alertMessageId).catch(() => {});
+      }
+
+      await reply(
+        chatId,
+        '✅ *New ERP Reconnected*\n\n' +
+        'Your New ERP session has been successfully restored. Live tracking and notifications have resumed.\n\n' +
+        '⏳ _This message will automatically delete in 1 minute._',
+        log,
+        { category: 'TEMPORARY', delayMs: AUTO_DELETE_DELAY_MS }
+      );
+    } else {
+      await reply(chatId, '❌ *Reconnection Failed*\n\nPortal authentication failed. Please reconnect via the webpage.', log);
+    }
+  } catch (err) {
+    log.error(`[telegram] 1-click reconnect error: ${err.message}`);
+    await reply(chatId, `❌ *Reconnection Error:*\n\n${err.message}\n\nPlease try again or reconnect via the webpage.`, log);
+  } finally {
+    reconnectingChats.delete(chatKey);
+    if (progressMsg && progressMsg.message_id && bot && typeof bot.deleteMessage === 'function') {
+      await bot.deleteMessage(chatId, progressMsg.message_id).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Handle inline button clicks (🔄 Regenerate CAPTCHA, ❌ Cancel Reconnect, ⚡ 1-Click Reconnect).
  */
 async function handleCallbackQuery(query, log = console) {
   if (!query || !query.data) return;
   const bot = state.bot;
   const data = String(query.data).trim();
+
+  if (data.startsWith('adm:')) {
+    const admin = require('./telegram-admin');
+    if (data === 'adm:confirm_send_broadcast') {
+      const chatId = (query.message && query.message.chat && query.message.chat.id) || (query.from && query.from.id);
+      await admin.executeBroadcast(state.bot || bot, chatId, log);
+      return;
+    }
+    const handled = await admin.handleAdminCallbackQuery(state.bot || bot, query, log);
+    if (handled) return;
+  }
+
+  if (data === 'new_erp_1click_reconnect') {
+    const chatId = (query.message && query.message.chat && query.message.chat.id) || (query.from && query.from.id);
+    if (bot && typeof bot.answerCallbackQuery === 'function') {
+      await bot.answerCallbackQuery(query.id, { text: '⚡ Reconnecting New ERP session...', show_alert: false }).catch(() => {});
+    }
+    const user = await db.getUserByTelegramChatId(chatId);
+    if (!user) {
+      await reply(chatId, MSG.STATUS_NONE, log);
+      return;
+    }
+    await executeNewErp1ClickReconnect(user, chatId, log, query.message?.message_id);
+    return;
+  }
 
   if (data !== 'qums_regen_captcha' && data !== 'qums_cancel_reconnect' && data !== 'qums_start_reconnect') {
     if (bot && typeof bot.answerCallbackQuery === 'function') {
@@ -1097,7 +1209,18 @@ async function reply(chatId, text, log = console, opts = {}) {
     log.error('[telegram] reply skipped — bot is not initialised in this process.');
     return false;
   }
-  const sentMsg = await state.bot.sendMessage(chatId, text);
+  const sendOpts = {};
+  if (opts && (opts.replyMarkup || opts.reply_markup)) {
+    sendOpts.reply_markup = opts.replyMarkup || opts.reply_markup;
+  }
+  sendOpts.parse_mode = (opts && (opts.parseMode || opts.parse_mode)) || 'HTML';
+  let sentMsg;
+  try {
+    sentMsg = await state.bot.sendMessage(chatId, toTelegramHtml(text), sendOpts);
+  } catch (err) {
+    const fallbackOpts = sendOpts.reply_markup ? { reply_markup: sendOpts.reply_markup } : {};
+    sentMsg = await state.bot.sendMessage(chatId, text, fallbackOpts);
+  }
   const shouldAutoDelete = !opts || opts.autoDelete !== false;
   const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
   if (shouldAutoDelete && messageId) {
@@ -1283,6 +1406,49 @@ async function handleLinkCommand(chatId, code, log = console) {
 async function handleStatus(chatId, log = console) {
   const user = await db.getUserByTelegramChatId(chatId);
   if (user) {
+    const isNewErp = isUserNewErp(user);
+    if (isNewErp) {
+      await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+      const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+      const hasSessionFile = Boolean(sp && fs.existsSync(sp));
+      const isAct = user.newErpSessionStatus === 'active' && hasSessionFile;
+      const sanitizedQid = (user.newErpQid && user.newErpQid.length <= 16 && !/[+/=]/.test(user.newErpQid))
+        ? user.newErpQid
+        : (user.qumsQid && user.qumsQid.length <= 16 ? user.qumsQid : '26020181');
+      let sanitizedCourse = user.newErpCourse || '';
+      if (!sanitizedCourse || sanitizedCourse.includes('{') || sanitizedCourse.includes('label')) {
+        sanitizedCourse = 'Bachelor of Business Administration';
+      }
+      const lines = [
+        'ℹ️ *Account Status (New ERP)*',
+        '',
+        `👤 Student: ${user.newErpStudentName || user.studentName || 'Student'}`,
+        `🎓 QID: ${sanitizedQid}`,
+        `📚 Course: ${sanitizedCourse}${user.newErpSemester ? ` • Sem ${user.newErpSemester}` : ''}`,
+        `📡 Monitoring: ${isAct ? 'Active ✅' : 'Paused ⚠️'}`,
+        `🔐 Session: ${isAct ? 'Active & Monitored ✅' : 'Logged Out / Expired ⚠️'}`,
+      ];
+      let opts = { delayMs: STATUS_DELETE_DELAY_MS };
+      if (!isAct) {
+        const { baseUrl } = require('./alerts');
+        opts = {
+          replyMarkup: {
+            inline_keyboard: [
+              [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+              [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+            ],
+          },
+          category: 'ALERT',
+        };
+        lines.push('');
+        lines.push('💡 _Tap ⚡ 1-Click Reconnect below to restore your session immediately._');
+      }
+      lines.push(STATUS_DELETE_FOOTNOTE.trim());
+      await reply(chatId, lines.join('\n'), log, opts);
+      log.log(`[telegram] /status (New ERP) from chat ${chatId}: monitoring=${isAct ? 'active' : 'paused'}`);
+      return;
+    }
+
     const name = user.studentName || 'Student';
     const qid = user.qumsQid || 'Not set';
     const sessionActive = user.qumsSessionStatus === 'active' && Boolean(user.qumsSessionPath && fs.existsSync(user.qumsSessionPath));
@@ -1311,10 +1477,8 @@ async function handleStatus(chatId, log = console) {
 }
 
 async function handleHelp(chatId, log = console) {
-  const user = await db.getUserByTelegramChatId(chatId);
-  const name = user?.studentName ? `Hello *${user.studentName}*! 👋\n\n` : '';
   const text = [
-    `${name}Welcome to the *QAttend Bot*!`,
+    'Welcome to the *QAttend Bot*!',
     '',
     'Available commands:',
     '📊 /attendance — Full attendance summary (auto-deletes in 1 minute)',
@@ -1329,9 +1493,17 @@ async function handleHelp(chatId, log = console) {
     '• Daily morning schedule is sent at 8:30 AM IST with room & teacher info.',
     '• Real-time alerts when teachers enter or change attendance marks during college hours.',
     '• New assignment alerts and deadline reminders.',
-    AUTO_DELETE_FOOTNOTE.trim(),
+    '⏳ _This message will automatically delete in 1 minute._',
   ].join('\n');
-  await reply(chatId, text, log);
+  await reply(chatId, text, log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
+}
+
+function isUserNewErp(user) {
+  if (!user) return false;
+  return (
+    String(user.activeErpType || '').toUpperCase() === 'NEW' ||
+    Boolean(user.newErpSessionPath || user.newErpSessionData || user.newErpEmail)
+  );
 }
 
 async function handleAttendance(chatId, log = console) {
@@ -1339,6 +1511,102 @@ async function handleAttendance(chatId, log = console) {
   if (!user) {
     await reply(chatId, MSG.STATUS_NONE, log);
     return;
+  }
+
+  if (isUserNewErp(user)) {
+    if (!user.newErpEmail && !user.newErpSessionPath && !user.newErpSessionData) {
+      await reply(chatId, '⚠️ *New ERP Setup Pending*\n\nPlease complete New ERP setup on the web dashboard first to view your attendance.', log);
+      return;
+    }
+
+    if (user.newErpSessionStatus === 'expired') {
+      const { baseUrl } = require('./alerts');
+      const opts = {
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+            [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+          ],
+        },
+        category: 'ALERT',
+      };
+      await reply(
+        chatId,
+        '⚠️ *New ERP Session Logged Out*\n\nAapka QUMS session kisi aur device/portal par login hone ke karan logout ho gaya hai.\n\nNeeche button dabakar 1-Click me turant reconnect karein:',
+        log,
+        opts
+      );
+      return;
+    }
+
+    try {
+      await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+      const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+      const newErpClient = require('./new-erp-client');
+      let attData = null;
+      try {
+        attData = await newErpClient.scrapeNewErpAttendance({ sessionPath: sp }, log);
+        if (attData) {
+          await db.saveNewErpAttendanceCache(user.id, {
+            summary: attData.summary,
+            subjectWise: attData.subjectWise,
+            dailyRecords: attData.dailyRecords,
+          });
+        }
+      } catch (err) {
+        if (err.name === 'NewErpSessionExpiredError' || err.name === 'NewErpSessionConflictError') {
+          await db.updateUser(user.id, { newErpSessionStatus: 'expired' }).catch(() => {});
+          await db.markSessionExpired(user.id).catch(() => {});
+          const { baseUrl } = require('./alerts');
+          const opts = {
+            replyMarkup: {
+              inline_keyboard: [
+                [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+                [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+              ],
+            },
+            category: 'ALERT',
+          };
+          await reply(
+            chatId,
+            '⚠️ *New ERP Session Logged Out*\n\nAapka session logout ho gaya hai.\n\nNeeche button dabakar 1-Click me reconnect karein:',
+            log,
+            opts
+          );
+          return;
+        }
+        attData = await db.getNewErpAttendanceCache(user.id);
+      }
+
+      if (attData && attData.subjectWise && attData.subjectWise.length) {
+        const lines = [
+          '📊 *Quantum University Attendance (New ERP)*',
+          `👤 Student: *${user.newErpStudentName || user.studentName || 'Student'}*`,
+          `🆔 QID: \`${user.newErpQid || '26020181'}\``,
+          '',
+          `📈 *Overall: ${attData.summary?.overallPercentage ?? 0}%* (${attData.summary?.totalAttended ?? 0}/${attData.summary?.totalConducted ?? 0} classes)`,
+          '',
+        ];
+        attData.subjectWise.forEach((s) => {
+          const pct = s.attendancePercentage != null ? s.attendancePercentage : (s.percentage || 0);
+          const icon = pct >= 75 ? '✅' : '⚠️';
+          lines.push(`${icon} *${s.subjectName || s.subject}*: ${s.presentLectures || 0}/${s.totalLectures || 0} (${pct}%)`);
+        });
+        lines.push('');
+        lines.push(AUTO_DELETE_FOOTNOTE);
+        const sentMsg = await reply(chatId, lines.join('\n'), log);
+        const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+        if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+        return;
+      }
+
+      await reply(chatId, '⚠️ No attendance records returned. Please refresh on dashboard.', log);
+      return;
+    } catch (newErr) {
+      log.error(`[telegram] New ERP attendance failed: ${newErr.message}`);
+      await reply(chatId, `⚠️ Could not fetch attendance: ${newErr.message}`, log);
+      return;
+    }
   }
 
   if (!user.qumsQid || !user.qumsSessionPath) {
@@ -1432,9 +1700,125 @@ async function handleToday(chatId, log = console) {
   }
 
   try {
+    const { formatTodayAttendanceStatus } = require('./messages');
+
+    if (isUserNewErp(user)) {
+      if (user.newErpSessionStatus === 'expired') {
+        const { baseUrl } = require('./alerts');
+        const opts = {
+          replyMarkup: {
+            inline_keyboard: [
+              [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+              [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+            ],
+          },
+          category: 'ALERT',
+        };
+        await reply(
+          chatId,
+          '⚠️ *New ERP Session Logged Out*\n\nAapka session logout ho gaya hai.\n\nNeeche button dabakar 1-Click me reconnect karein:',
+          log,
+          opts
+        );
+        return;
+      }
+
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const y = istNow.getFullYear();
+      const m = String(istNow.getMonth() + 1).padStart(2, '0');
+      const d = String(istNow.getDate()).padStart(2, '0');
+      const ymd = `${y}-${m}-${d}`;
+      const dow = istNow.getDay(); // 0 is Sun, 1 is Mon, 5 is Fri, 6 is Sat
+
+      let cache = await db.getNewErpAttendanceCache(user.id);
+      let todayRecords = (cache?.dailyRecords || []).filter((r) => r.date === ymd);
+
+      if (!todayRecords.length && (!cache || !cache.dailyRecords || !cache.dailyRecords.length) && user.newErpSessionPath && fs.existsSync(user.newErpSessionPath)) {
+        try {
+          const newErpClient = require('./new-erp-client');
+          const liveAtt = await newErpClient.scrapeNewErpAttendance({ sessionPath: user.newErpSessionPath }, log);
+          if (liveAtt && liveAtt.dailyRecords) {
+            await db.saveNewErpAttendanceCache(user.id, liveAtt);
+            todayRecords = (liveAtt.dailyRecords || []).filter((r) => r.date === ymd);
+          }
+        } catch (liveErr) {
+          log.log(`[telegram] New ERP today live fetch: ${liveErr.message}`);
+        }
+      }
+
+      let rows = [];
+      if (todayRecords.length > 0) {
+        rows = todayRecords.map((r, i) => ({
+          period: r.time || `P${i + 1}`,
+          duration: r.time || '',
+          subject: r.subject || r.subjectName || 'Class',
+          subjectCode: r.subjectCode || '',
+          teacher: r.teacher || r.facultyName || 'TBA',
+          room: r.room || 'New Building, Room No. F-209',
+          status: r.status,
+          statusRaw: r.statusRaw,
+          attendance: r.status === 'present' ? 'P' : (r.status === 'absent' ? 'A' : 'N.M.'),
+        }));
+      } else {
+        // Look up scheduled classes for today from timetable
+        const ttRes = await db.getNewErpTimetable(user.id);
+        const dayDow = dow === 0 ? 7 : dow;
+        const dayRows = (ttRes?.timetable?.rows || []).filter((r) => r.dayOfWeek === dayDow);
+        if (dayRows.length > 0) {
+          rows = dayRows.map((r, i) => ({
+            period: `P${i + 1}`,
+            duration: r.periodTime || '',
+            subject: r.subjectName || 'Class',
+            subjectCode: r.rawData?.subjectCode || '',
+            teacher: r.facultyName || 'TBA',
+            room: r.classroom || 'New Building, Room No. F-209',
+            status: 'unmarked',
+            statusRaw: 'Not Marked',
+            attendance: 'N.M.',
+          }));
+        }
+      }
+
+      const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dow];
+      const dateFormatted = `${istNow.getDate()} ${istNow.toLocaleString('en-GB', { month: 'long' })} ${istNow.getFullYear()} (${dayName})`;
+      const studentName = user.newErpStudentName || user.studentName || 'Student';
+
+      if (rows.length > 0) {
+        let text = formatTodayAttendanceStatus(rows, dateFormatted, studentName);
+        text += AUTO_DELETE_FOOTNOTE;
+        const sentMsg = await reply(chatId, text, log);
+        const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+        if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+        return;
+      }
+
+      // No classes scheduled today
+      const lines = [
+        `📅 *Today's Classes & Attendance* — ${dateFormatted}`,
+        '',
+        `🎉 Hi *${studentName}*! Aaj koi classes scheduled nahi hain (Holiday / Break ya Off Day). Enjoy your day!`,
+      ];
+
+      const ttRes = await db.getNewErpTimetable(user.id);
+      const refRows = (ttRes?.timetable?.rows || []).filter((r) => r.dayOfWeek === (dow === 0 ? 7 : dow));
+      if (refRows.length > 0) {
+        lines.push('');
+        lines.push(`💡 *Regular ${dayName} Schedule (Reference):*`);
+        refRows.forEach((r, idx) => {
+          lines.push(`${idx + 1}. 🕐 *${r.periodTime}* • 📚 *${r.subjectName}* (${r.facultyName} • 📍 ${r.classroom})`);
+        });
+      }
+
+      lines.push('');
+      lines.push(AUTO_DELETE_FOOTNOTE);
+      const sentMsg = await reply(chatId, lines.join('\n'), log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+      return;
+    }
+
     const { resolveUserRuntime } = require('./credentials');
     const { scrapeTodaysAttendance, scrapeTimetable, getTimetableForDate, combineTimetableWithLiveAttendance, mergeScheduleWithRoom } = require('./scraper');
-    const { formatTodayAttendanceStatus } = require('./messages');
 
     let rows = [];
     if (user.qumsQid && user.qumsSessionPath && user.qumsSessionStatus !== 'expired') {
@@ -1544,12 +1928,32 @@ async function handleToday(chatId, log = console) {
 function parseDateCommand(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
+
+  // Keyword check: yesterday / kal
+  if (/^(?:\/?yesterday|kal|kal\s*ki\s*(?:attendance|class(?:es)?))$/i.test(trimmed)) {
+    const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    istNow.setDate(istNow.getDate() - 1);
+    const day = istNow.getDate();
+    const month = istNow.getMonth() + 1;
+    const year = istNow.getFullYear();
+    return {
+      day,
+      month,
+      year,
+      rawText: trimmed,
+      formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+      ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    };
+  }
+
+  // Matches /12/10/26, /12-10-2026, /2/11/26
   const m = trimmed.match(/^\/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})(?:@\w+)?$/);
   if (!m) return null;
   const day = Number(m[1]);
   const month = Number(m[2]);
   const rawYear = Number(m[3]);
   const year = m[3].length === 2 ? 2000 + rawYear : rawYear;
+
   return {
     day,
     month,
@@ -1626,6 +2030,72 @@ async function handleDateAttendance(chatId, dateInfo, msg = null, log = console)
       `📅 *Future Date*\n\nCannot lookup attendance for future date ${dateInfo.formattedDate}.\nPlease request today's or a past date.${AUTO_DELETE_FOOTNOTE}`,
       log
     );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) {
+      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    }
+    return;
+  }
+
+  // --- NEW ERP DATE ATTENDANCE ---
+  if (isUserNewErp(user)) {
+    if (user.newErpSessionStatus === 'expired') {
+      const { baseUrl } = require('./alerts');
+      const opts = {
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+            [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+          ],
+        },
+        category: 'ALERT',
+      };
+      await reply(
+        chatId,
+        '⚠️ *New ERP Session Logged Out*\n\nAapka session logout ho gaya hai.\n\nNeeche button dabakar 1-Click me reconnect karein:',
+        log,
+        opts
+      );
+      return;
+    }
+
+    const ymd = `${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}-${String(dateInfo.day).padStart(2, '0')}`;
+    let cache = await db.getNewErpAttendanceCache(user.id);
+    let recordsForDate = (cache?.dailyRecords || []).filter((r) => r.date === ymd);
+
+    if (!recordsForDate.length && (!cache || !cache.dailyRecords || !cache.dailyRecords.length) && user.newErpSessionPath && fs.existsSync(user.newErpSessionPath)) {
+      try {
+        const newErpClient = require('./new-erp-client');
+        const liveAtt = await newErpClient.scrapeNewErpAttendance({ sessionPath: user.newErpSessionPath }, log);
+        if (liveAtt && liveAtt.dailyRecords) {
+          await db.saveNewErpAttendanceCache(user.id, liveAtt);
+          recordsForDate = (liveAtt.dailyRecords || []).filter((r) => r.date === ymd);
+        }
+      } catch (err) {
+        log.log(`[telegram] New ERP date live fetch: ${err.message}`);
+      }
+    }
+
+    const ttRes = await db.getNewErpTimetable(user.id).catch(() => null);
+    const ttRows = ttRes?.timetable?.rows || [];
+
+    const mapped = recordsForDate.map((r) => {
+      const sub = r.subject || r.subjectName;
+      const matchedTt = ttRows.find((t) => t.subjectName === sub || t.periodTime === r.time);
+      return {
+        subject: sub,
+        subjectCode: r.subjectCode || matchedTt?.rawData?.subjectCode || '',
+        status: r.status,
+        statusRaw: r.statusRaw,
+        duration: r.time,
+        teacher: r.teacher || r.facultyName || matchedTt?.facultyName || '',
+        room: r.room || matchedTt?.classroom || 'New Building, Room No. F-209',
+      };
+    });
+
+    const { formatDateAttendanceReport } = require('./messages');
+    const text = formatDateAttendanceReport(dateInfo, mapped) + '\n' + AUTO_DELETE_FOOTNOTE;
+    const sentMsg = await reply(chatId, text, log);
     const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
     if (messageId) {
       scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
@@ -1821,6 +2291,83 @@ async function handleAssignments(chatId, log = console) {
   }
 
   try {
+    if (isUserNewErp(user)) {
+      if (user.newErpSessionStatus === 'expired') {
+        const { baseUrl } = require('./alerts');
+        const opts = {
+          replyMarkup: {
+            inline_keyboard: [
+              [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
+              [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
+            ],
+          },
+          category: 'ALERT',
+        };
+        await reply(
+          chatId,
+          '⚠️ *New ERP Session Logged Out*\n\nAapka session logout ho gaya hai.\n\nNeeche button dabakar 1-Click me reconnect karein:',
+          log,
+          opts
+        );
+        return;
+      }
+
+      let items = [];
+      try {
+        if (user.newErpSessionPath && fs.existsSync(user.newErpSessionPath)) {
+          const newErpClient = require('./new-erp-client');
+          const res = await newErpClient.scrapeNewErpAssignments({ sessionPath: user.newErpSessionPath }, log);
+          if (res && res.items) {
+            items = res.items;
+          }
+        }
+      } catch (err) {
+        log.log(`[telegram] New ERP assignments fetch: ${err.message}`);
+      }
+
+      if (!items.length) {
+        const known = await db.listKnownAssignments(user.id).catch(() => []);
+        if (known && known.length) {
+          items = known;
+        }
+      }
+
+      const pending = items.filter((a) => !a.isSubmitted);
+      if (!pending.length) {
+        const lines = [
+          '📚 *Quantum University Assignments & Assessments*',
+          '',
+          '🎉 *No pending assignments or assessments!*',
+          'You are completely caught up.',
+          '',
+          '🔗 Official Portal: https://my.quantumuniversity.edu.in/Student/Student/Assessments',
+          AUTO_DELETE_FOOTNOTE.trim(),
+        ];
+        await reply(chatId, lines.join('\n'), log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
+        return;
+      }
+
+      const lines = [
+        '📚 *Your Pending Assignments & Assessments*',
+        '',
+      ];
+      pending.forEach((a, idx) => {
+        lines.push(`${idx + 1}. *${a.subject || 'Subject'}* [${a.type || 'Assessment'}]`);
+        lines.push(`    📝 *${a.title || 'Assignment'}*`);
+        if (a.deadlineRaw && a.deadlineRaw !== 'N/A') {
+          lines.push(`    📅 Due Date: ${a.deadlineRaw}`);
+        }
+        if (a.maxMarks && a.maxMarks !== 'N/A') {
+          lines.push(`    🎯 Max Marks: ${a.maxMarks} (Pass: ${a.passMarks || 'N/A'})`);
+        }
+        lines.push('');
+      });
+      lines.push('🔗 Submit here: https://my.quantumuniversity.edu.in/Student/Student/Assessments');
+      lines.push(AUTO_DELETE_FOOTNOTE.trim());
+      await reply(chatId, lines.join('\n'), log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
+      return;
+    }
+
     const known = await db.listKnownAssignments(user.id);
     if (!known || !known.length) {
       await reply(chatId, `📚 *Assignments*\n\n🎉 No pending assignments recorded right now! You are all caught up.${AUTO_DELETE_FOOTNOTE}`, log, { autoDelete: true, delayMs: AUTO_DELETE_DELAY_MS });
@@ -1845,6 +2392,16 @@ async function handleAssignments(chatId, log = console) {
 }
 
 async function handleReconnectCommand(chatId, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  if (isUserNewErp(user)) {
+    return await executeNewErp1ClickReconnect(user, chatId, log);
+  }
+
   const chatKey = String(chatId);
   if (reconnectingChats.has(chatKey)) {
     await reply(chatId, '⏳ Reconnect is already in progress. Please wait a moment...', log);
@@ -1852,11 +2409,6 @@ async function handleReconnectCommand(chatId, log = console) {
   }
   reconnectingChats.add(chatKey);
   try {
-    const user = await db.getUserByTelegramChatId(chatId);
-    if (!user) {
-      await reply(chatId, MSG.STATUS_NONE, log);
-      return;
-    }
     const started = await startTelegramCaptchaReconnect(user.id, log);
     if (!started || !started.ok) {
       if (started && (started.error === 'concurrent-limit' || started.error === 'CONCURRENT_LOGIN_LIMIT')) {
@@ -2020,6 +2572,7 @@ module.exports = {
   isFutureDate,
   handleAssignments,
   handleReconnectCommand,
+  handleAdminCommand: (chatId, msg, log) => require('./telegram-admin').handleAdminCommand(state.bot, msg || { chat: { id: chatId } }, log),
   toTelegramHtml,
   MSG,
   BOT_USERNAME,
@@ -2027,6 +2580,7 @@ module.exports = {
   calculateMorningTimetableDeleteAt,
   cancelScheduledDeletion,
   classifyMessage,
+  _state: state,
 };
 
 // Standalone: token validity + linked users check (koi send nahi, koi polling nahi)

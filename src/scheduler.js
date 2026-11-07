@@ -121,10 +121,22 @@ function pruneMorningState(state, todayYMD) {
 async function activeUsers() {
   const all = await db.allUsers();
   for (const u of all) {
+    if (u.isSuspended || u.status === 'suspended') continue;
+    if (u.activeErpType === 'NEW') {
+      await db.ensureNewErpSessionOnDisk(u).catch(() => {});
+      continue;
+    }
     if (u.qumsSessionStatus === 'expired') continue;
     await db.ensureSessionOnDisk(u).catch(() => {});
   }
-  return all.filter((u) => u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath));
+  return all.filter((u) => {
+    if (u.isSuspended || u.status === 'suspended') return false;
+    if (u.activeErpType === 'NEW') {
+      const sp = u.newErpSessionPath || db.sessionPathForNewErp(u.id);
+      return (u.newErpSessionStatus === 'active' || !u.newErpSessionStatus) && fs.existsSync(sp);
+    }
+    return u.qumsSessionPath && u.qumsSessionStatus !== 'expired' && fs.existsSync(u.qumsSessionPath);
+  });
 }
 
 /**
@@ -136,6 +148,60 @@ async function activeUsers() {
  * forceRefresh=true -> cache skip + live merge (dashboard "Refresh Schedule").
  */
 async function getMorningScheduleText(user, { forceRefresh = false, log = console, fetchFn = null, now = new Date() } = {}) {
+  if (user && user.activeErpType === 'NEW') {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    let istDayName = '';
+    try {
+      istDayName = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(now);
+    } catch {
+      istDayName = dayNames[now.getDay()];
+    }
+    const dayIndex = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(istDayName);
+    const targetDow = dayIndex >= 0 ? dayIndex + 1 : 1;
+
+    let rows = [];
+    if (!forceRefresh) {
+      const ttRes = await db.getNewErpTimetable(user.id);
+      if (ttRes && ttRes.timetable && Array.isArray(ttRes.timetable.rows)) {
+        rows = ttRes.timetable.rows.filter((r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || r.dayOfWeek === targetDow);
+      }
+    }
+
+    if (!rows.length && !fetchFn) {
+      try {
+        const newErpClient = require('./new-erp-client');
+        await db.ensureNewErpSessionOnDisk(user).catch(() => {});
+        const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
+        if (fs.existsSync(sp)) {
+          const liveTt = await newErpClient.scrapeNewErpTimetable({ sessionPath: sp }, log);
+          if (liveTt && liveTt.rows) {
+            await db.upsertNewErpTimetable(user.id, liveTt);
+            rows = (liveTt.rows || []).filter((r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || r.dayOfWeek === targetDow);
+          }
+        }
+      } catch (err) {
+        log.log(`[scheduler] user=${user.id} New ERP timetable fetch error: ${err.message}`);
+      }
+    } else if (fetchFn) {
+      rows = await fetchFn(user);
+    }
+
+    const mapped = (rows || []).map((r, i) => ({
+      period: `P${i + 1}`,
+      duration: r.periodTime || r.period || '',
+      subject: r.subjectName || r.subject || 'Class',
+      subjectCode: r.rawData?.subjectCode || r.subjectCode || '',
+      teacher: r.facultyName || r.faculty || r.teacher || r.employee || 'TBA',
+      employee: r.facultyName || r.faculty || r.teacher || r.employee || 'TBA',
+      room: r.classroom || r.room || 'New Building, Room No. F-209',
+    }));
+
+    return {
+      text: formatMorningSchedule(mapped, undefined, user.newErpStudentName || user.studentName || ''),
+      mode: 'new-erp-timetable',
+    };
+  }
+
   const dow = now.getDay();
   if (!forceRefresh) {
     const cached = await db.getWeeklySchedule(user.id, dow);
