@@ -21,7 +21,10 @@
  *  - Full audit logging of all administrative actions
  */
 
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
+const firebaseAuth = require('./firebaseAuth');
 const { releaseAllUserSessions } = require('./erp-session-registry');
 
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
@@ -574,10 +577,29 @@ async function handleAdminCallbackQuery(bot, query, log = console) {
   if (data === 'adm:execute_bulk_delete') {
     const selectedIds = Array.from(state.selectedUserIds || []);
     let deletedCount = 0;
+    let firebaseDeletedCount = 0;
 
     for (const uid of selectedIds) {
       try {
-        await releaseAllUserSessions(uid);
+        const u = await db.getUserById(uid);
+        if (u) {
+          // Unlink session files on disk
+          const oldPath = u.qumsSessionPath || db.sessionPathFor(u.id);
+          if (oldPath && fs.existsSync(oldPath)) try { fs.unlinkSync(oldPath); } catch {}
+          const newPath = u.newErpSessionPath || db.sessionPathForNewErp(u.id);
+          if (newPath && fs.existsSync(newPath)) try { fs.unlinkSync(newPath); } catch {}
+          const periodsPath = path.join(__dirname, '..', 'data', 'notified_periods', `${u.id}.json`);
+          if (fs.existsSync(periodsPath)) try { fs.unlinkSync(periodsPath); } catch {}
+
+          // Delete user from Firebase Authentication & database
+          const fbRes = await firebaseAuth.deleteFirebaseUser({
+            uid: u.firebaseUid,
+            email: u.email,
+          }).catch(() => ({ deleted: false }));
+          if (fbRes && fbRes.deleted) firebaseDeletedCount++;
+        }
+
+        await releaseAllUserSessions(uid).catch(() => {});
         await db.deleteUser(uid);
         deletedCount++;
       } catch (delErr) {
@@ -590,14 +612,20 @@ async function handleAdminCallbackQuery(bot, query, log = console) {
       adminEmail,
       action: 'BULK_DELETE',
       targetUserIds: selectedIds,
-      details: { deletedCount },
+      details: { deletedCount, firebaseDeletedCount },
     });
 
     state.selectedUserIds.clear();
     state.deleteStage = 0;
 
+    let replyText = `🗑️ <b>Deletion Completed</b>\n\nSuccessfully deleted ${deletedCount} user(s) from Supabase database.`;
+    if (firebaseDeletedCount > 0) {
+      replyText += ` (${firebaseDeletedCount} removed from Firebase).`;
+    }
+    replyText += `\nApplication sessions were revoked and audit logs preserved.`;
+
     await bot.editMessageText(
-      `🗑️ <b>Deletion Completed</b>\n\nSuccessfully deleted ${deletedCount} user(s). Application sessions were revoked and audit logs preserved.`,
+      replyText,
       {
         chat_id: chatId,
         message_id: messageId,

@@ -27,6 +27,7 @@
 require('dotenv').config();
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 
 const CERT_URL =
@@ -232,7 +233,16 @@ function getFirebaseAdminApp() {
 
     if (serviceAccountVar) {
       let parsed = null;
-      const trimmed = serviceAccountVar.trim();
+      let trimmed = serviceAccountVar.trim();
+      // Support base64 encoded JSON strings (common on Render to prevent multiline mangling)
+      if (!trimmed.startsWith('{') && !trimmed.startsWith('/') && !trimmed.startsWith('.')) {
+        try {
+          const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+          if (decoded.trim().startsWith('{')) {
+            trimmed = decoded.trim();
+          }
+        } catch {}
+      }
       if (trimmed.startsWith('{')) {
         parsed = JSON.parse(trimmed);
       } else if (fs.existsSync(trimmed)) {
@@ -245,6 +255,30 @@ function getFirebaseAdminApp() {
         });
         console.log('[firebase] Admin SDK initialized with service account.');
         return adminApp;
+      }
+    }
+
+    // Check candidate local file paths if present
+    const candidateFiles = [
+      process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      path.join(process.cwd(), 'serviceAccountKey.json'),
+      path.join(process.cwd(), 'firebase-service-account.json'),
+      path.join(process.cwd(), 'service-account.json'),
+    ].filter(Boolean);
+
+    for (const f of candidateFiles) {
+      if (fs.existsSync(f)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
+          if (parsed && (parsed.private_key || parsed.client_email)) {
+            adminApp = admin.initializeApp({
+              credential: admin.cert(parsed),
+              projectId: parsed.project_id || FIREBASE_PROJECT_ID,
+            });
+            console.log(`[firebase] Admin SDK initialized with credential file: ${f}`);
+            return adminApp;
+          }
+        } catch {}
       }
     }
 
@@ -277,7 +311,7 @@ function getFirebaseAdminApp() {
 }
 
 /**
- * Delete a user from Firebase Authentication by UID and/or Email.
+ * Delete a user from Firebase Authentication, Firestore, and Realtime Database by UID and/or Email.
  * deps.auth or deps.app allows injecting mocks for unit testing.
  */
 async function deleteFirebaseUser({ uid, email } = {}, deps = {}) {
@@ -297,7 +331,7 @@ async function deleteFirebaseUser({ uid, email } = {}, deps = {}) {
     try {
       await auth.deleteUser(targetUid);
       deletedCount += 1;
-      console.log(`[firebase] Deleted user by UID: ${targetUid}`);
+      console.log(`[firebase] Deleted user by UID from Firebase Auth: ${targetUid}`);
     } catch (err) {
       if (err && err.code !== 'auth/user-not-found') {
         console.error(`[firebase] Failed to delete user by UID ${targetUid}:`, err.message);
@@ -308,15 +342,50 @@ async function deleteFirebaseUser({ uid, email } = {}, deps = {}) {
   if (email) {
     try {
       const userRecord = await auth.getUserByEmail(email);
-      if (userRecord && userRecord.uid && userRecord.uid !== targetUid) {
-        await auth.deleteUser(userRecord.uid);
-        deletedCount += 1;
-        console.log(`[firebase] Deleted user by email lookup: ${userRecord.uid} (${email})`);
+      if (userRecord && userRecord.uid) {
+        if (!targetUid) targetUid = userRecord.uid;
+        if (userRecord.uid !== uid) {
+          await auth.deleteUser(userRecord.uid);
+          deletedCount += 1;
+          console.log(`[firebase] Deleted user by email lookup from Firebase Auth: ${userRecord.uid} (${email})`);
+        }
       }
     } catch (err) {
       if (err && err.code !== 'auth/user-not-found') {
         console.error(`[firebase] Failed to find/delete user by email ${email}:`, err.message);
       }
+    }
+  }
+
+  // Also clean up any Firestore user document if Firestore is in use
+  if (app && (targetUid || email)) {
+    try {
+      const { getFirestore } = require('firebase-admin/firestore');
+      const firestore = getFirestore(app);
+      if (targetUid) {
+        await firestore.collection('users').doc(targetUid).delete().catch(() => {});
+      }
+      if (email) {
+        const snap = await firestore.collection('users').where('email', '==', email).get().catch(() => null);
+        if (snap && !snap.empty) {
+          for (const doc of snap.docs) {
+            await doc.ref.delete().catch(() => {});
+          }
+        }
+      }
+    } catch {
+      // Firestore not used or enabled, safe to ignore
+    }
+
+    // Also clean up any Realtime Database user node if RTDB is in use
+    try {
+      const { getDatabase } = require('firebase-admin/database');
+      const rtdb = getDatabase(app);
+      if (targetUid) {
+        await rtdb.ref(`users/${targetUid}`).remove().catch(() => {});
+      }
+    } catch {
+      // Realtime Database not used, safe to ignore
     }
   }
 

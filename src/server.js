@@ -1758,12 +1758,32 @@ async function handleAdminDeleteUser(req, res) {
     if (req.appUser && req.appUser.id === target.id) {
       return res.status(400).json({ error: 'Cannot delete your own admin account.' });
     }
+
+    // Release all active ERP sessions in registry & database
+    try {
+      const { releaseAllUserSessions } = require('./erp-session-registry');
+      await releaseAllUserSessions(target.id).catch(() => {});
+    } catch (e) {
+      console.warn(`[admin] failed to release sessions for ${target.id}:`, e.message);
+    }
+
+    // Unlink old ERP session file on disk
     const sessionPath = target.qumsSessionPath || db.sessionPathFor(target.id);
     if (sessionPath) {
       try {
         if (fs.existsSync(sessionPath)) fs.unlinkSync(sessionPath);
       } catch (e) {
         console.warn(`[admin] failed to unlink session file for ${target.id}:`, e.message);
+      }
+    }
+
+    // Unlink new ERP session file on disk
+    const newSessionPath = target.newErpSessionPath || db.sessionPathForNewErp(target.id);
+    if (newSessionPath) {
+      try {
+        if (fs.existsSync(newSessionPath)) fs.unlinkSync(newSessionPath);
+      } catch (e) {
+        console.warn(`[admin] failed to unlink new ERP session file for ${target.id}:`, e.message);
       }
     }
 
@@ -1775,7 +1795,7 @@ async function handleAdminDeleteUser(req, res) {
       console.warn(`[admin] failed to unlink notified_periods file for ${target.id}:`, e.message);
     }
 
-    // Delete user account from Firebase Authentication
+    // Delete user account from Firebase Authentication and Firebase database (Firestore/RTDB)
     let firebaseStatus = { deleted: false };
     try {
       firebaseStatus = await firebaseAuth.deleteFirebaseUser({
@@ -1784,17 +1804,29 @@ async function handleAdminDeleteUser(req, res) {
       });
       console.log(`[admin] Firebase user deletion for ${target.email}:`, firebaseStatus);
     } catch (fbErr) {
-      console.error(`[admin] Failed to delete ${target.email} from Firebase Auth:`, fbErr.message);
+      console.error(`[admin] Failed to delete ${target.email} from Firebase:`, fbErr.message);
+      firebaseStatus = { ok: false, deleted: false, reason: fbErr.message };
     }
 
-    // Delete all records from Supabase / DB
+    // Delete all records from Supabase / DB (all tables wiped completely)
     await db.deleteUser(target.id);
     console.log(`[admin] user ${target.email} (${target.id}) deleted by ${req.appUser ? req.appUser.email : 'admin'} (Firebase deleted: ${firebaseStatus.deleted})`);
+
+    let msg = `User ${target.email} deleted successfully from Supabase database`;
+    if (firebaseStatus.deleted) {
+      msg += ' and Firebase database.';
+    } else if (firebaseStatus.reason === 'admin-sdk-unconfigured') {
+      msg += '. (Notice: Firebase Auth deletion requires FIREBASE_SERVICE_ACCOUNT_KEY on Render).';
+    } else {
+      msg += '.';
+    }
+
     res.json({
       ok: true,
       id: target.id,
       firebaseDeleted: firebaseStatus.deleted,
-      message: `User ${target.email} deleted successfully from Supabase and Firebase.`,
+      firebaseReason: firebaseStatus.reason || null,
+      message: msg,
     });
   } catch (err) {
     safeServerError(res, err);

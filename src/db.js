@@ -1086,6 +1086,11 @@ async function deleteUser(userId) {
     data.attendanceRecords = (data.attendanceRecords || []).filter((a) => a.userId !== userId);
     data.assignmentsTable = (data.assignmentsTable || []).filter((a) => a.userId !== userId);
     data.notificationLogs = (data.notificationLogs || []).filter((n) => n.userId !== userId);
+    data.reconnectEvents = (data.reconnectEvents || []).filter((r) => r.userId !== userId);
+    data.activeErpSessions = (data.activeErpSessions || []).filter((s) => s.userId !== userId);
+    data.newErpTimetable = (data.newErpTimetable || []).filter((t) => t.userId !== userId);
+    data.newErpAttendanceCache = (data.newErpAttendanceCache || []).filter((c) => c.userId !== userId);
+    data.weeklySchedule = (data.weeklySchedule || []).filter((w) => w.userId !== userId);
     if (user && user.email) {
       data.resets = (data.resets || []).filter((r) => r.email !== user.email);
     }
@@ -1096,10 +1101,23 @@ async function deleteUser(userId) {
     return before - data.users.length;
   }
   await init();
+  // Thoroughly delete all user records across all tables in Supabase / Postgres
+  await pool.query('DELETE FROM known_attendance WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM weekly_schedule WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM known_assignments WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM session_expiry_state WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM qums_identities WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM attendance_records WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM assignments WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM notification_log WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM notifications WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM reconnect_events WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM active_erp_sessions WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM new_erp_timetable WHERE user_id=$1', [userId]).catch(() => {});
+  await pool.query('DELETE FROM new_erp_attendance_cache WHERE user_id=$1', [userId]).catch(() => {});
   if (user && user.email) {
     await pool.query('DELETE FROM resets WHERE email=$1', [user.email]).catch(() => {});
   }
-  await pool.query('DELETE FROM notifications WHERE user_id=$1', [userId]).catch(() => {});
   if (user && user.telegramChatId) {
     await pool.query('DELETE FROM scheduled_message_deletions WHERE chat_id=$1', [String(user.telegramChatId)]).catch(() => {});
   }

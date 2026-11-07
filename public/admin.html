@@ -1113,7 +1113,7 @@
           btn.disabled = false;
         }
       } else if (action === 'delete') {
-        if (!confirm(`DANGER: Are you sure you want to permanently delete user "${email}"?\n\nThis will completely remove their account and all data from Supabase (attendance, assignments, sessions) AND delete their login from Firebase Authentication.\n\nThis action cannot be undone.`)) {
+        if (!confirm(`DANGER: Are you sure you want to permanently delete user "${email}"?\n\nThis will completely remove their account and all data from Supabase (attendance, assignments, sessions) AND delete their login from Firebase.\n\nThis action cannot be undone.`)) {
           return;
         }
         btn.disabled = true;
@@ -1127,7 +1127,13 @@
           selectedUserIds.delete(id);
           await loadHealth();
           await loadUsers();
-          showNotification(`User ${email} deleted permanently.`, 'success');
+          if (data.firebaseDeleted) {
+            showNotification(`User ${email} deleted permanently from both Supabase & Firebase.`, 'success');
+          } else if (data.firebaseReason === 'admin-sdk-unconfigured') {
+            showNotification(`User ${email} deleted from Supabase. (Notice: Set FIREBASE_SERVICE_ACCOUNT_KEY in Render to enable automatic Firebase user deletion).`, 'warning');
+          } else {
+            showNotification(`User ${email} deleted permanently.`, 'success');
+          }
         } catch (err) {
           alert(`Error: ${err.message}`);
           btn.disabled = false;
