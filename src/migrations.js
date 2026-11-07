@@ -338,6 +338,17 @@ const MIGRATIONS = [
        )`,
     ],
   },
+  {
+    id: '022_system_settings',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS system_settings (
+         key TEXT PRIMARY KEY,
+         value TEXT NOT NULL,
+         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key)`,
+    ],
+  },
 ];
 
 /**

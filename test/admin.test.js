@@ -392,6 +392,30 @@ async function run() {
 
     bot.sendMessage = origBotSendMessage;
     console.log('PASS  7. Admin bulk reconnect notifications enforce authorization, validate input, correctly skip unlinked accounts, and support retrying failed recipients');
+
+    // --- TEST 8: Firebase Credentials & Direct Deletion Endpoints ---
+    const healthCheck = await apiRequest('GET', '/api/admin/health', null, adminCookie);
+    assert.strictEqual(healthCheck.status, 200);
+    assert(healthCheck.json.firebaseAdmin, 'Health response includes firebaseAdmin status');
+    assert.strictEqual(typeof healthCheck.json.firebaseAdmin.configured, 'boolean');
+
+    // Invalid JSON payload validation
+    const badJson = await apiRequest('POST', '/api/admin/firebase-credentials', { serviceAccountJson: 'not a json' }, adminCookie);
+    assert.strictEqual(badJson.status, 400);
+
+    // Non-admin blocked
+    const studentCreds = await apiRequest('POST', '/api/admin/firebase-credentials', { serviceAccountJson: '{}' }, studentCookie);
+    assert([401, 403].includes(studentCreds.status), 'Non-admin blocked from configuring credentials');
+
+    // Direct deletion requires email or uid
+    const emptyDel = await apiRequest('POST', '/api/admin/firebase-users/delete', {}, adminCookie);
+    assert.strictEqual(emptyDel.status, 400);
+
+    // System settings persistence
+    await db.setSystemSetting('test_key', 'test_value');
+    const readVal = await db.getSystemSetting('test_key');
+    assert.strictEqual(readVal, 'test_value');
+    console.log('PASS  8. Firebase Admin configuration, health status, and direct deletion endpoints verified');
   } finally {
     await stopServer();
     try {

@@ -1073,6 +1073,33 @@ async function getUserByFirebaseUid(firebaseUid) {
   return r.rows[0] ? fromUserRow(r.rows[0]) : null;
 }
 
+async function getSystemSetting(key) {
+  if (!key) return null;
+  if (!USE_PG) {
+    if (!data.systemSettings) data.systemSettings = {};
+    return data.systemSettings[key] || null;
+  }
+  await init();
+  const r = await pool.query('SELECT value FROM system_settings WHERE key=$1 LIMIT 1', [key]);
+  return r.rows[0] ? r.rows[0].value : null;
+}
+
+async function setSystemSetting(key, value) {
+  if (!key) return;
+  if (!USE_PG) {
+    if (!data.systemSettings) data.systemSettings = {};
+    data.systemSettings[key] = String(value);
+    persistJson();
+    return;
+  }
+  await init();
+  await pool.query(
+    `INSERT INTO system_settings(key, value, updated_at) VALUES($1, $2, NOW())
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+    [key, String(value)]
+  );
+}
+
 async function deleteUser(userId) {
   const user = await getUserById(userId);
   if (!USE_PG) {
@@ -2742,4 +2769,5 @@ module.exports={
   SessionConflictError, getActiveErpSession, getActiveErpSessionByUserId, acquireErpSession, releaseErpSession, releaseAllErpSessionsForUser,
   logAdminAudit, listAdminAuditLogs,
   upsertNewErpTimetable, getNewErpTimetable, saveNewErpAttendanceCache, getNewErpAttendanceCache,
+  getSystemSetting, setSystemSetting,
 };

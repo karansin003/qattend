@@ -213,27 +213,48 @@ function friendlyTokenError(err) {
 }
 
 let adminApp = null;
-let adminInitAttempted = false;
+let cachedCredentials = null;
 
-function getFirebaseAdminApp() {
-  if (adminInitAttempted) return adminApp;
-  adminInitAttempted = true;
+function setCachedServiceAccount(raw) {
+  if (!raw) return null;
+  cachedCredentials = typeof raw === 'object' ? JSON.stringify(raw) : String(raw).trim();
+  return getFirebaseAdminApp(true);
+}
+
+async function initFirebaseAdminFromDb() {
+  if (adminApp) return adminApp;
+  try {
+    const db = require('./db');
+    const dbVal = await db.getSystemSetting('firebase_service_account_key').catch(() => null);
+    if (dbVal && typeof dbVal === 'string' && dbVal.trim()) {
+      cachedCredentials = dbVal.trim();
+      return getFirebaseAdminApp(true);
+    }
+  } catch {}
+  return adminApp;
+}
+
+function getFirebaseAdminApp(forceReload = false) {
+  if (!forceReload && adminApp) return adminApp;
   try {
     const admin = require('firebase-admin');
-    const existingApps = admin.getApps ? admin.getApps() : [];
-    if (existingApps && existingApps.length > 0) {
+    const existingApps = (typeof admin.getApps === 'function' ? admin.getApps() : admin.apps) || [];
+    if (!forceReload && existingApps.length > 0) {
       adminApp = existingApps[0];
       return adminApp;
     }
 
     const serviceAccountVar =
+      cachedCredentials ||
       process.env.FIREBASE_SERVICE_ACCOUNT ||
       process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
       process.env.FIREBASE_ADMIN_CREDENTIALS;
 
     if (serviceAccountVar) {
       let parsed = null;
-      let trimmed = serviceAccountVar.trim();
+      let trimmed = String(serviceAccountVar).trim();
+      // Remove wrapping single or double quotes
+      trimmed = trimmed.replace(/^['"]|['"]$/g, '');
       // Support base64 encoded JSON strings (common on Render to prevent multiline mangling)
       if (!trimmed.startsWith('{') && !trimmed.startsWith('/') && !trimmed.startsWith('.')) {
         try {
@@ -249,6 +270,12 @@ function getFirebaseAdminApp() {
         parsed = JSON.parse(fs.readFileSync(trimmed, 'utf8'));
       }
       if (parsed) {
+        if (parsed.private_key) {
+          parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+        }
+        if (forceReload && existingApps.length > 0) {
+          try { admin.app().delete(); } catch {}
+        }
         adminApp = admin.initializeApp({
           credential: admin.cert(parsed),
           projectId: parsed.project_id || FIREBASE_PROJECT_ID,
@@ -271,6 +298,9 @@ function getFirebaseAdminApp() {
         try {
           const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
           if (parsed && (parsed.private_key || parsed.client_email)) {
+            if (parsed.private_key) {
+              parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+            }
             adminApp = admin.initializeApp({
               credential: admin.cert(parsed),
               projectId: parsed.project_id || FIREBASE_PROJECT_ID,
@@ -283,11 +313,11 @@ function getFirebaseAdminApp() {
     }
 
     if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
-      const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+      const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/^['"]|['"]$/g, '').replace(/\\n/g, '\n');
       adminApp = admin.initializeApp({
         credential: admin.cert({
-          projectId: FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          projectId: process.env.FIREBASE_PROJECT_ID || FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL.trim(),
           privateKey,
         }),
       });
@@ -303,11 +333,21 @@ function getFirebaseAdminApp() {
       return adminApp;
     }
 
-    console.warn('[firebase] Admin SDK credentials not configured. Set FIREBASE_SERVICE_ACCOUNT_KEY in .env / Render to enable Firebase user deletion.');
+    console.warn('[firebase] Admin SDK credentials not configured. Set FIREBASE_SERVICE_ACCOUNT_KEY in .env / Render or save it in Admin Dashboard to enable Firebase user deletion.');
   } catch (err) {
     console.warn('[firebase] Could not initialize Firebase Admin SDK:', err.message);
   }
   return null;
+}
+
+function isFirebaseAdminConfigured() {
+  return Boolean(
+    adminApp ||
+    cachedCredentials ||
+    process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)
+  );
 }
 
 /**
@@ -315,7 +355,10 @@ function getFirebaseAdminApp() {
  * deps.auth or deps.app allows injecting mocks for unit testing.
  */
 async function deleteFirebaseUser({ uid, email } = {}, deps = {}) {
-  const app = deps.app || getFirebaseAdminApp();
+  let app = deps.app || getFirebaseAdminApp();
+  if (!app && !deps.auth) {
+    app = await initFirebaseAdminFromDb().catch(() => null);
+  }
   if (!app && !deps.auth) {
     return { ok: false, deleted: false, reason: 'admin-sdk-unconfigured' };
   }
@@ -401,6 +444,9 @@ module.exports = {
   friendlyTokenError,
   resetCertificateCache,
   getFirebaseAdminApp,
+  setCachedServiceAccount,
+  initFirebaseAdminFromDb,
+  isFirebaseAdminConfigured,
   deleteFirebaseUser,
   // exported for tests only:
   parseMaxAge,

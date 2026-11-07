@@ -1702,6 +1702,10 @@ app.get('/api/admin/health', requireAdmin, async (req, res) => {
       scheduler: schedulerStatus,
       watcher: watcherStatus,
       assignments: assignmentStatus,
+      firebaseAdmin: {
+        configured: Boolean(firebaseAuth.getFirebaseAdminApp() || firebaseAuth.isFirebaseAdminConfigured()),
+        projectId: firebaseAuth.firebaseProjectId(),
+      },
       stats: {
         totalUsers: stats.totalUsers,
         newUsers24h: stats.newUsers24h,
@@ -1835,6 +1839,65 @@ async function handleAdminDeleteUser(req, res) {
 
 app.post('/api/admin/users/:id/delete', requireAdmin, handleAdminDeleteUser);
 app.delete('/api/admin/users/:id', requireAdmin, handleAdminDeleteUser);
+
+app.post('/api/admin/firebase-credentials', requireAdmin, async (req, res) => {
+  try {
+    const raw = req.body && req.body.serviceAccountJson;
+    if (!raw || typeof raw !== 'string' || !raw.trim()) {
+      return res.status(400).json({ error: 'Please provide a valid Firebase Service Account JSON string.' });
+    }
+    let parsed = null;
+    let trimmed = raw.trim().replace(/^['"]|['"]$/g, '');
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      try {
+        parsed = JSON.parse(Buffer.from(trimmed, 'base64').toString('utf8'));
+      } catch {
+        return res.status(400).json({ error: 'Invalid JSON format. Please paste the exact JSON downloaded from Firebase Console.' });
+      }
+    }
+    if (!parsed || (!parsed.private_key && !parsed.client_email)) {
+      return res.status(400).json({ error: 'JSON does not appear to be a Firebase service account key (missing private_key or client_email).' });
+    }
+    await db.setSystemSetting('firebase_service_account_key', JSON.stringify(parsed));
+    firebaseAuth.setCachedServiceAccount(JSON.stringify(parsed));
+    const appInstance = firebaseAuth.getFirebaseAdminApp(true);
+    if (!appInstance) {
+      return res.status(500).json({ error: 'Could not initialize Firebase Admin SDK with provided credentials.' });
+    }
+    console.log(`[admin] Firebase Admin SDK credentials successfully saved by ${req.appUser ? req.appUser.email : 'admin'}`);
+    res.json({ ok: true, message: 'Firebase Admin credentials configured successfully in Supabase database!' });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.post('/api/admin/firebase-users/delete', requireAdmin, async (req, res) => {
+  try {
+    const { email, uid } = req.body || {};
+    if (!email && !uid) {
+      return res.status(400).json({ error: 'Email or UID is required.' });
+    }
+    const result = await firebaseAuth.deleteFirebaseUser({ uid, email });
+    if (!result.ok && result.reason === 'admin-sdk-unconfigured') {
+      return res.status(400).json({
+        ok: false,
+        error: 'Firebase Admin SDK is not configured. Please configure FIREBASE_SERVICE_ACCOUNT_KEY first.',
+      });
+    }
+    console.log(`[admin] Direct Firebase deletion for ${email || uid}:`, result);
+    res.json({
+      ok: true,
+      deleted: result.deleted,
+      message: result.deleted
+        ? `User ${email || uid} was successfully deleted from Firebase.`
+        : `User ${email || uid} was not found in Firebase.`,
+    });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
 
 app.post('/api/admin/users/bulk-reconnect-notify', requireAdmin, async (req, res) => {
   try {

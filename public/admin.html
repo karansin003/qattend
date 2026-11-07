@@ -440,6 +440,17 @@
           </div>
           <div class="health-detail" id="healthSchedulerDetail">Asia/Kolkata morning job</div>
         </div>
+        <div class="health-card">
+          <div class="health-head">
+            <span class="health-title">Firebase Admin</span>
+            <span id="healthFirebaseBadge" class="badge-off">checking</span>
+          </div>
+          <div class="health-detail" id="healthFirebaseDetail">Checking Firebase key…</div>
+          <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px; border-radius: 4px;" onclick="openFirebaseConfigModal()">⚙️ Firebase Key Setup</button>
+            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px; border-radius: 4px;" onclick="openFirebaseDeleteModal()">🗑️ Delete in Firebase</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -602,6 +613,52 @@
         <div class="modal-actions">
           <button type="button" class="btn-bulk-secondary" id="bulkResultsCloseActionBtn">Close</button>
           <button type="button" class="btn-bulk" id="bulkRetryFailedBtn" style="display: none; background: #dc2626;">Retry Failed Only</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase Key Setup Modal -->
+    <div id="firebaseConfigModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="fbConfigTitle">
+      <div class="modal-box" style="max-width: 580px;">
+        <div class="modal-header">
+          <h2 id="fbConfigTitle" class="modal-title">🔥 Configure Firebase Service Account Key</h2>
+          <button type="button" class="modal-close-btn" onclick="closeFirebaseConfigModal()">&times;</button>
+        </div>
+        <div style="font-size: 13px; color: #334155; line-height: 1.6;">
+          <p style="margin-top: 0;">To automatically delete accounts from <strong>Firebase Authentication</strong> when deleted in Admin, paste your Firebase Service Account JSON key below:</p>
+          <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+            <div style="font-weight: 600; color: #1e40af; margin-bottom: 6px;">Quick 3 Steps to get the key:</div>
+            <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #1e3a8a;">
+              <li>Open <a href="https://console.firebase.google.com/project/qums-forgot-password-test/settings/serviceaccounts/adminsdk" target="_blank" style="color: #2563eb; font-weight: 600; text-decoration: underline;">Firebase Console ➔ Service Accounts</a></li>
+              <li>Click <strong>"Generate new private key"</strong> and download the <code>.json</code> file</li>
+              <li>Copy and paste the entire JSON text into the box below (it will be saved securely in Supabase):</li>
+            </ol>
+          </div>
+          <label for="firebaseKeyJsonInput" style="display: block; font-weight: 600; font-size: 12px; margin-bottom: 4px;">Service Account JSON content:</label>
+          <textarea id="firebaseKeyJsonInput" rows="6" style="width: 100%; font-family: monospace; font-size: 11px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box;" placeholder='{"type": "service_account", "project_id": "qums-forgot-password-test", ...}'></textarea>
+        </div>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button type="button" class="btn-bulk-secondary" onclick="closeFirebaseConfigModal()">Cancel</button>
+          <button type="button" class="btn-bulk" id="saveFirebaseKeyBtn" onclick="saveFirebaseCredentials()">💾 Save Key to Supabase</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Direct Firebase User Deletion Modal -->
+    <div id="firebaseDeleteModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="fbDelTitle">
+      <div class="modal-box" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2 id="fbDelTitle" class="modal-title">🗑️ Delete User Directly from Firebase</h2>
+          <button type="button" class="modal-close-btn" onclick="closeFirebaseDeleteModal()">&times;</button>
+        </div>
+        <div style="font-size: 13px; color: #334155; line-height: 1.6;">
+          <p style="margin-top: 0;">Use this tool to permanently remove any account directly from Firebase Authentication by its Email or UID (e.g. for users already removed from Supabase):</p>
+          <label for="fbDeleteEmailInput" style="display: block; font-weight: 600; font-size: 12px; margin-bottom: 4px;">Student Email Address or UID:</label>
+          <input type="text" id="fbDeleteEmailInput" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 13px;" placeholder="e.g. sonusin8672@gmail.com" />
+        </div>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button type="button" class="btn-bulk-secondary" onclick="closeFirebaseDeleteModal()">Cancel</button>
+          <button type="button" class="btn-bulk" id="executeFirebaseDeleteBtn" style="background: #dc2626;" onclick="executeDirectFirebaseDelete()">🔴 Delete from Firebase</button>
         </div>
       </div>
     </div>
@@ -774,6 +831,21 @@
       scBadge.className = 'badge-ok';
       scBadge.textContent = 'SCHEDULED';
       document.getElementById('healthSchedulerDetail').textContent = '08:30 IST morning classes (Asia/Kolkata)';
+
+      // Firebase Admin health
+      const fb = data.firebaseAdmin || {};
+      const fbBadge = document.getElementById('healthFirebaseBadge');
+      if (fbBadge) {
+        if (fb.configured) {
+          fbBadge.className = 'badge-ok';
+          fbBadge.textContent = 'CONNECTED';
+          document.getElementById('healthFirebaseDetail').textContent = `Connected to ${fb.projectId || 'Firebase'} (Auto user delete active)`;
+        } else {
+          fbBadge.className = 'badge-warn';
+          fbBadge.textContent = 'KEY NEEDED';
+          document.getElementById('healthFirebaseDetail').textContent = 'Key missing — Click below to configure';
+        }
+      }
     }
 
     async function loadUsers() {
@@ -1130,9 +1202,10 @@
           if (data.firebaseDeleted) {
             showNotification(`User ${email} deleted permanently from both Supabase & Firebase.`, 'success');
           } else if (data.firebaseReason === 'admin-sdk-unconfigured') {
-            showNotification(`User ${email} deleted from Supabase. (Notice: Set FIREBASE_SERVICE_ACCOUNT_KEY in Render to enable automatic Firebase user deletion).`, 'warning');
+            alert(`⚠️ User "${email}" was deleted from Supabase database.\n\nHowever, it was NOT deleted from Firebase because Firebase Admin credentials are not configured.\n\nPlease click "⚙️ Firebase Key Setup" at the top of this dashboard to paste your Service Account Key, or delete the user from Firebase Console.`);
+            showNotification(`User ${email} deleted from Supabase. (Firebase key setup needed).`, 'warning');
           } else {
-            showNotification(`User ${email} deleted permanently.`, 'success');
+            showNotification(`User ${email} deleted permanently from Supabase.`, 'success');
           }
         } catch (err) {
           alert(`Error: ${err.message}`);
@@ -1388,6 +1461,85 @@
     });
 
     document.getElementById('refreshAllBtn').addEventListener('click', handleRefreshAll);
+
+    // Firebase Modals
+    function openFirebaseConfigModal() {
+      document.getElementById('firebaseConfigModal').classList.add('open');
+    }
+
+    function closeFirebaseConfigModal() {
+      document.getElementById('firebaseConfigModal').classList.remove('open');
+    }
+
+    async function saveFirebaseCredentials() {
+      const raw = document.getElementById('firebaseKeyJsonInput').value.trim();
+      if (!raw) {
+        alert('Please paste the Service Account JSON first.');
+        return;
+      }
+      const btn = document.getElementById('saveFirebaseKeyBtn');
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Saving & Verifying...';
+      try {
+        const res = await fetch('/api/admin/firebase-credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ serviceAccountJson: raw }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to configure Firebase key');
+        closeFirebaseConfigModal();
+        await loadHealth();
+        alert('✅ ' + data.message);
+        showNotification('Firebase Admin key configured successfully!', 'success');
+      } catch (err) {
+        alert('❌ Error: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    function openFirebaseDeleteModal() {
+      document.getElementById('firebaseDeleteModal').classList.add('open');
+    }
+
+    function closeFirebaseDeleteModal() {
+      document.getElementById('firebaseDeleteModal').classList.remove('open');
+    }
+
+    async function executeDirectFirebaseDelete() {
+      const target = document.getElementById('fbDeleteEmailInput').value.trim();
+      if (!target) {
+        alert('Please enter an Email or UID to delete.');
+        return;
+      }
+      if (!confirm(`Are you sure you want to delete "${target}" directly from Firebase?`)) {
+        return;
+      }
+      const btn = document.getElementById('executeFirebaseDeleteBtn');
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Deleting...';
+      try {
+        const res = await fetch('/api/admin/firebase-users/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: target.includes('@') ? target : '', uid: !target.includes('@') ? target : '' }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to delete user from Firebase');
+        closeFirebaseDeleteModal();
+        alert('✅ ' + data.message);
+        showNotification(data.message, 'success');
+      } catch (err) {
+        alert('❌ Error: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
 
     // Initial load
     handleRefreshAll();
