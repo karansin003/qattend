@@ -1457,7 +1457,7 @@ async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
         return false; // Newer expiry event occurred concurrently — do not clear
       }
       e.resolvedAt = now;
-      e.lastAlertAt = null;
+      if (!maxExpiredAt) e.lastAlertAt = null;
       e.expiredAt = null;
       e.note = '';
       persistJson();
@@ -1477,7 +1477,7 @@ async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
     const maxTs = Number(maxExpiredAt);
     const r = await pool.query(
       `UPDATE session_expiry_state 
-       SET resolved_at=$2, expired_at=NULL, last_alert_at=NULL, note=''
+       SET resolved_at=$2, expired_at=NULL, note=''
        WHERE user_id=$1 AND (expired_at IS NULL OR expired_at <= $3)`,
       [userId, now, maxTs]
     );
@@ -1604,18 +1604,56 @@ async function recentNotifications(limit = 20) {
 
 /** Public per-user shape for /admin — never includes hashes/secrets. */
 function safeAdminUser(u, expiredUserIds = []) {
-  const hasSession = Boolean(
+  const hasOldSession = Boolean(
     (u.qumsSessionPath && (fs.existsSync(u.qumsSessionPath) || u.qumsSessionData)) ||
     u.qumsSessionData
   );
-  const onDisk = Boolean(u.qumsSessionPath && fs.existsSync(u.qumsSessionPath));
-  const isExpired = Boolean(expiredUserIds.includes(u.id) || u.qumsSessionStatus === 'expired');
+  const hasNewSession = Boolean(
+    (u.newErpSessionPath && (fs.existsSync(u.newErpSessionPath) || u.newErpSessionData)) ||
+    u.newErpSessionData
+  );
+
+  const activeErp = (u.activeErpType || (hasNewSession && !hasOldSession ? 'NEW' : 'OLD')).toUpperCase();
+  const hasSession = activeErp === 'NEW' ? hasNewSession : hasOldSession;
+  const onDisk = activeErp === 'NEW'
+    ? Boolean(u.newErpSessionPath && fs.existsSync(u.newErpSessionPath))
+    : Boolean(u.qumsSessionPath && fs.existsSync(u.qumsSessionPath));
+
+  const isOldExpired = Boolean(expiredUserIds.includes(u.id) || u.qumsSessionStatus === 'expired');
+  const isNewExpired = Boolean(u.newErpSessionStatus === 'expired' || u.newErpSessionStatus === 'EXPIRED');
+  const isExpired = activeErp === 'NEW' ? isNewExpired : isOldExpired;
+
+  // Student name: prefer New ERP name for New ERP users, fallback to Old ERP name
+  const studentName = activeErp === 'NEW'
+    ? (u.newErpStudentName || u.studentName || '')
+    : (u.studentName || u.newErpStudentName || '');
+
+  // QID: clean QID from New ERP or Old ERP
+  const rawQid = activeErp === 'NEW'
+    ? (u.newErpQid || u.qumsQid || '')
+    : (u.qumsQid || u.newErpQid || '');
+  const cleanQid = (rawQid && rawQid.length <= 16 && !/[+/=]/.test(rawQid)) ? rawQid : (rawQid || '');
+
+  // Year / Sem
+  let yearSem = u.qumsYearSem || '';
+  if (activeErp === 'NEW') {
+    const parts = [
+      u.newErpCourse && !u.newErpCourse.includes('{') ? u.newErpCourse : '',
+      u.newErpSemester ? `Sem ${u.newErpSemester}` : '',
+      u.newErpAcademicYear || '',
+    ].filter(Boolean);
+    if (parts.length) {
+      yearSem = parts.join(' • ');
+    }
+  }
+
   return {
     id: u.id,
     email: u.email,
-    studentName: u.studentName || '',   // QUMS profile name cache (source = QUMS)
-    qumsYearSem: u.qumsYearSem || '',
-    qumsQid: u.qumsQid || '',
+    studentName,
+    qumsYearSem: yearSem,
+    qumsQid: cleanQid,
+    rawQid,
     qumsConnected: hasSession,
     qumsSessionOnDisk: onDisk,
     sessionExpired: isExpired,
@@ -1634,11 +1672,15 @@ function safeAdminUser(u, expiredUserIds = []) {
     reconnectCountTelegram: Number(u.reconnectCountTelegram || 0),
     reconnectCountWeb: Number(u.reconnectCountWeb || 0),
     // New ERP metadata
-    activeErpType: u.activeErpType || 'OLD',
+    activeErpType: activeErp,
+    newErpConnected: hasNewSession,
     newErpEmail: u.newErpEmail || '',
     newErpStudentName: u.newErpStudentName || '',
-    newErpQid: u.newErpQid || '',
+    newErpQid: cleanQid,
     newErpSessionStatus: u.newErpSessionStatus || 'not_setup',
+    newErpCourse: u.newErpCourse || '',
+    newErpSemester: u.newErpSemester || '',
+    newErpAcademicYear: u.newErpAcademicYear || '',
   };
 }
 
@@ -1673,6 +1715,8 @@ function applyAdminFilters(rows, {
     if (qumsFilter === 'connected' && (!r.qumsConnected || r.sessionExpired)) return false;
     if (qumsFilter === 'expired' && !r.sessionExpired) return false;
     if (qumsFilter === 'not_setup' && r.qumsConnected) return false;
+    if (qumsFilter === 'new_erp' && r.activeErpType !== 'NEW') return false;
+    if (qumsFilter === 'old_erp' && r.activeErpType !== 'OLD') return false;
 
     // Filter 2: Telegram Status
     if (telegramFilter === 'linked' && !r.telegramConnected) return false;
@@ -1733,7 +1777,14 @@ async function adminStats() {
   const expired = await listSessionExpiredUsers();
   const now = Date.now();
   const day = 86400000;
-  const withSession = users.filter((u) => u.qumsSessionPath);
+  const withSession = users.filter((u) => {
+    if (u.activeErpType === 'NEW') {
+      return Boolean((u.newErpSessionPath && fs.existsSync(u.newErpSessionPath)) || u.newErpSessionData);
+    }
+    return Boolean((u.qumsSessionPath && fs.existsSync(u.qumsSessionPath)) || u.qumsSessionData);
+  });
+  const newErpConnected = users.filter((u) => u.activeErpType === 'NEW' && Boolean((u.newErpSessionPath && fs.existsSync(u.newErpSessionPath)) || u.newErpSessionData)).length;
+  const oldErpConnected = users.filter((u) => u.activeErpType !== 'NEW' && Boolean((u.qumsSessionPath && fs.existsSync(u.qumsSessionPath)) || u.qumsSessionData)).length;
 
   let telegramReconnects = 0;
   let webReconnects = 0;
@@ -1766,6 +1817,8 @@ async function adminStats() {
     newUsers24h: users.filter((u) => u.createdAt && now - Date.parse(u.createdAt) < day).length,
     newUsers7d: users.filter((u) => u.createdAt && now - Date.parse(u.createdAt) < 7 * day).length,
     qumsConnected: withSession.length,
+    newErpConnected,
+    oldErpConnected,
     sessionExpired: users.filter((u) => expired.includes(u.id)).length,
     telegramConnected: users.filter((u) => u.telegramChatId).length,
     suspended: users.filter((u) => u.isSuspended).length,

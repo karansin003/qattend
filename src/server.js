@@ -1590,11 +1590,15 @@ app.get('/api/admin/export/excel', requireAdmin, async (req, res) => {
     const usersData = filtered.map((u, idx) => ({
       'S.No': idx + 1,
       'User ID': u.id,
+      'ERP Type': u.activeErpType === 'NEW' ? 'New ERP' : 'Old ERP',
       'Student Name': u.studentName || '—',
       'Email': u.email || '—',
+      'New ERP Email': u.newErpEmail || '—',
       'QID': u.qumsQid || '—',
       'Year & Semester': u.qumsYearSem || '—',
-      'QUMS Session': u.sessionExpired ? 'EXPIRED' : (u.qumsConnected ? 'CONNECTED' : 'NOT SETUP'),
+      'Session Status': u.activeErpType === 'NEW'
+        ? (u.sessionExpired || u.newErpSessionStatus === 'expired' ? 'NEW ERP EXPIRED' : (u.qumsConnected ? 'NEW ERP ACTIVE' : 'NOT SETUP'))
+        : (u.sessionExpired ? 'OLD ERP EXPIRED' : (u.qumsConnected ? 'CONNECTED' : 'NOT SETUP')),
       'Telegram Connected': u.telegramConnected ? 'LINKED' : 'NOT LINKED',
       'Account Status': u.isSuspended ? 'SUSPENDED' : (!u.emailVerified ? 'UNVERIFIED' : 'ACTIVE'),
       'Last Reconnect Source': u.lastReconnectSource ? (u.lastReconnectSource === 'telegram' ? 'Telegram' : 'Webpage') : 'None',
@@ -1609,8 +1613,10 @@ app.get('/api/admin/export/excel', requireAdmin, async (req, res) => {
     // Sheet 2: System & Reconnect Metrics
     const metricsData = [
       { Metric: 'Total Registered Users', Value: stats.totalUsers },
-      { Metric: 'QUMS Connected (Active Sessions)', Value: stats.qumsConnected },
-      { Metric: 'QUMS Sessions Expired', Value: stats.sessionExpired },
+      { Metric: 'QUMS / ERP Connected (Total)', Value: stats.qumsConnected },
+      { Metric: 'New ERP Connected Users', Value: stats.newErpConnected || 0 },
+      { Metric: 'Old ERP Connected Users', Value: stats.oldErpConnected || 0 },
+      { Metric: 'Sessions Expired', Value: stats.sessionExpired },
       { Metric: 'Telegram Linked Users', Value: stats.telegramConnected },
       { Metric: 'Suspended Users', Value: stats.suspended },
       { Metric: 'Reconnects via Telegram (Total)', Value: (stats.reconnectStats && stats.reconnectStats.telegram) || 0 },

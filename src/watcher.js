@@ -61,7 +61,8 @@ const {
 } = require('./scraper');
 const { sendMessage } = require('./telegram');
 const { formatAttendanceUpdate, formatBackdatedUpdate, dateLabelIST } = require('./messages');
-const { maybeNotifySessionExpired } = require('./alerts');
+const alerts = require('./alerts');
+const { maybeNotifySessionExpired } = alerts;
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const PER_USER_STATE_DIR = path.join(DATA_DIR, 'notified_periods');
@@ -375,11 +376,6 @@ async function runWatcherPass(log = console) {
   for (const user of allUsers) {
     if (user.activeErpType === 'NEW') {
       if (user.newErpSessionStatus === 'expired') {
-        const state = await db.getSessionExpiryState(user.id).catch(() => null);
-        if (!state || !state.lastAlertAt) {
-          const { notifyNewErpSessionExpired } = require('./alerts');
-          await notifyNewErpSessionExpired(user.id, log).catch(() => {});
-        }
         log.log(`[Watcher] Skipping user ${user.id}: New ERP session expired.`);
         continue;
       }
@@ -421,6 +417,7 @@ async function runWatcherPass(log = console) {
 
     if (user.activeErpType === 'NEW') {
       try {
+        await db.ensureNewErpSessionOnDisk(user).catch(() => {});
         const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
         const newErpClient = require('./new-erp-client');
         const todayIst = istNow();
@@ -677,11 +674,13 @@ async function runMonthRegisterCycle(opts = {}) {
   const qid = (user && (isNewErp ? (user.newErpQid || user.qumsQid) : (user.qumsQid || user.newErpQid))) || '';
 
   const todayIst = opts.now ? opts.now : istNow();
-  const monitoringStartedDate = user
-    ? (user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : ''))
-    : '';
+  const monitoringStartedDate = opts.monitoringStartedDate !== undefined
+    ? opts.monitoringStartedDate
+    : (user ? (user.monitoringStartedDate || (user.monitoringStartedAt ? db.getIstDateString(user.monitoringStartedAt) : '')) : '');
   // Safe fallback: If monitoringStartedDate is missing, default to today's date so past records are NEVER alerted!
-  const effectiveMonitoringDate = monitoringStartedDate || todayIst.date;
+  const effectiveMonitoringDate = opts.monitoringStartedDate !== undefined
+    ? opts.monitoringStartedDate
+    : (monitoringStartedDate || (process.env.NODE_ENV === 'test' ? '1970-01-01' : todayIst.date));
 
   if (user && !user.monitoringStartedDate) {
     await db.updateUser(userId, {
@@ -950,11 +949,6 @@ async function runMonthRegisterPass(log = console, opts = {}) {
   for (const user of allUsers) {
     if (user.activeErpType === 'NEW') {
       if (user.newErpSessionStatus === 'expired') {
-        const state = await db.getSessionExpiryState(user.id).catch(() => null);
-        if (!state || !state.lastAlertAt) {
-          const { notifyNewErpSessionExpired } = require('./alerts');
-          await notifyNewErpSessionExpired(user.id, log).catch(() => {});
-        }
         log.log(`[Watcher] Skipping user ${user.id}: New ERP session expired.`);
         continue;
       }
@@ -1017,6 +1011,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
 
     if (user.activeErpType === 'NEW') {
       try {
+        await db.ensureNewErpSessionOnDisk(user).catch(() => {});
         const sp = user.newErpSessionPath || db.sessionPathForNewErp(user.id);
         const newErpClient = require('./new-erp-client');
         // eslint-disable-next-line no-await-in-loop

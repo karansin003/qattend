@@ -450,11 +450,13 @@
         <input type="search" id="searchInput" placeholder="Search by name, email, or QID…" autocomplete="off" />
 
         <!-- 3 Filter Dropdowns -->
-        <select id="qumsFilterSelect" title="Filter by QUMS Status" aria-label="Filter by QUMS Status">
-          <option value="all">QUMS: All Status</option>
-          <option value="connected">QUMS: Connected (Active)</option>
-          <option value="expired">QUMS: Session Expired</option>
-          <option value="not_setup">QUMS: Not Setup</option>
+        <select id="qumsFilterSelect" title="Filter by ERP / QUMS Status" aria-label="Filter by ERP / QUMS Status">
+          <option value="all">ERP / QUMS: All Status</option>
+          <option value="connected">Connected (Active)</option>
+          <option value="expired">Session Expired</option>
+          <option value="not_setup">Not Setup</option>
+          <option value="new_erp">🚀 New ERP Users</option>
+          <option value="old_erp">🏛️ Old ERP Users</option>
         </select>
 
         <select id="telegramFilterSelect" title="Filter by Telegram Status" aria-label="Filter by Telegram Status">
@@ -842,32 +844,64 @@
         tdCheck.appendChild(cb);
         tr.appendChild(tdCheck);
 
-        // Student Name + YearSem
+        // Student Name + ERP Type + YearSem
         const tdName = document.createElement('td');
-        const nameSpan = document.createElement('div');
+        const nameHeader = document.createElement('div');
+        nameHeader.style.display = 'flex';
+        nameHeader.style.alignItems = 'center';
+        nameHeader.style.gap = '6px';
+        nameHeader.style.flexWrap = 'wrap';
+
+        const nameSpan = document.createElement('span');
         nameSpan.style.fontWeight = '600';
         nameSpan.textContent = u.studentName || '—';
-        tdName.appendChild(nameSpan);
+        nameHeader.appendChild(nameSpan);
+
+        const erpTypeBadge = document.createElement('span');
+        if (u.activeErpType === 'NEW') {
+          erpTypeBadge.className = 'badge-ok';
+          erpTypeBadge.style.fontSize = '9px';
+          erpTypeBadge.textContent = '🚀 New ERP';
+        } else {
+          erpTypeBadge.className = 'badge-off';
+          erpTypeBadge.style.fontSize = '9px';
+          erpTypeBadge.textContent = '🏛️ Old ERP';
+        }
+        nameHeader.appendChild(erpTypeBadge);
+        tdName.appendChild(nameHeader);
+
         if (u.qumsYearSem) {
-          const semBadge = document.createElement('span');
+          const semBadge = document.createElement('div');
           semBadge.className = 'badge-off';
           semBadge.style.fontSize = '10px';
-          semBadge.style.marginTop = '2px';
+          semBadge.style.marginTop = '4px';
+          semBadge.style.display = 'inline-block';
           semBadge.textContent = u.qumsYearSem;
           tdName.appendChild(semBadge);
         }
         tr.appendChild(tdName);
 
-        // Email
+        // Email + New ERP Email
         const tdEmail = document.createElement('td');
-        tdEmail.textContent = u.email || '—';
+        const mainEmailDiv = document.createElement('div');
+        mainEmailDiv.textContent = u.email || '—';
         if (u.isAdmin) {
           const adminTag = document.createElement('span');
           adminTag.className = 'badge-warn';
           adminTag.style.marginLeft = '6px';
           adminTag.style.fontSize = '10px';
           adminTag.textContent = 'ADMIN';
-          tdEmail.appendChild(adminTag);
+          mainEmailDiv.appendChild(adminTag);
+        }
+        tdEmail.appendChild(mainEmailDiv);
+
+        if (u.newErpEmail && u.newErpEmail.toLowerCase() !== String(u.email || '').toLowerCase()) {
+          const erpEmailDiv = document.createElement('div');
+          erpEmailDiv.style.fontSize = '11px';
+          erpEmailDiv.style.color = 'var(--muted)';
+          erpEmailDiv.style.marginTop = '2px';
+          erpEmailDiv.textContent = `New ERP: ${u.newErpEmail}`;
+          tdEmail.appendChild(erpEmailDiv);
         }
         tr.appendChild(tdEmail);
 
@@ -892,18 +926,31 @@
         tdQid.textContent = u.qumsQid || '—';
         tr.appendChild(tdQid);
 
-        // QUMS Session
+        // QUMS / ERP Session Status
         const tdQums = document.createElement('td');
         const qumsBadge = document.createElement('span');
-        if (u.sessionExpired) {
-          qumsBadge.className = 'badge-warn';
-          qumsBadge.textContent = '⚠️ EXPIRED';
-        } else if (u.qumsConnected) {
-          qumsBadge.className = 'badge-ok';
-          qumsBadge.textContent = 'CONNECTED';
+        if (u.activeErpType === 'NEW') {
+          if (u.sessionExpired || u.newErpSessionStatus === 'expired') {
+            qumsBadge.className = 'badge-warn';
+            qumsBadge.textContent = '⚠️ NEW ERP EXPIRED';
+          } else if (u.qumsConnected || u.newErpConnected) {
+            qumsBadge.className = 'badge-ok';
+            qumsBadge.textContent = '🟢 NEW ERP ACTIVE';
+          } else {
+            qumsBadge.className = 'badge-off';
+            qumsBadge.textContent = 'NOT SETUP';
+          }
         } else {
-          qumsBadge.className = 'badge-off';
-          qumsBadge.textContent = 'NOT SETUP';
+          if (u.sessionExpired) {
+            qumsBadge.className = 'badge-warn';
+            qumsBadge.textContent = '⚠️ OLD ERP EXPIRED';
+          } else if (u.qumsConnected) {
+            qumsBadge.className = 'badge-ok';
+            qumsBadge.textContent = 'CONNECTED';
+          } else {
+            qumsBadge.className = 'badge-off';
+            qumsBadge.textContent = 'NOT SETUP';
+          }
         }
         tdQums.appendChild(qumsBadge);
         tr.appendChild(tdQums);

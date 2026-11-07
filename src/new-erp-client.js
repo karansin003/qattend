@@ -27,6 +27,8 @@ const ASSESSMENTS_URL = `${NEW_ERP_BASE_URL}/Student/Student/Assessments`;
 const ASSIGNMENTS_URL = `${NEW_ERP_BASE_URL}/Student/Student/Assignments`;
 const LOGOUT_ALL_URL = `${NEW_ERP_BASE_URL}/Login/LogoutAllSessions`;
 
+const SHARED_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 class NewErpAuthError extends Error {
   constructor(message = 'Invalid email or password on New ERP.') {
     super(message);
@@ -728,7 +730,7 @@ async function loginNewErp({ email, password, logoutOtherSessions = false }, log
     context = await browser.newContext({
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -940,6 +942,7 @@ async function verifyNewErpSession(sessionPath, log = console) {
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -979,7 +982,7 @@ async function verifyNewErpSession(sessionPath, log = console) {
  */
 async function scrapeNewErpTimetable({ sessionPath, startDate = null, endDate = null }, log = console) {
   if (!sessionPath || !fs.existsSync(sessionPath)) {
-    throw new NewErpSessionExpiredError('New ERP session not found on disk.');
+    throw new Error('New ERP session not found on disk.');
   }
 
   let browser = null;
@@ -995,6 +998,7 @@ async function scrapeNewErpTimetable({ sessionPath, startDate = null, endDate = 
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -1126,7 +1130,7 @@ function parseNewErpLectureCards(html, subjectName = '', subjectCode = '') {
  */
 async function scrapeAllNewErpLectureRecords({ sessionPath, startDate = '2026-01-01', endDate = '2026-12-31' }, log = console) {
   if (!sessionPath || !fs.existsSync(sessionPath)) {
-    throw new NewErpSessionExpiredError('New ERP session not found on disk.');
+    throw new Error('New ERP session not found on disk.');
   }
 
   let browser = null;
@@ -1142,6 +1146,7 @@ async function scrapeAllNewErpLectureRecords({ sessionPath, startDate = '2026-01
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -1227,7 +1232,7 @@ async function scrapeAllNewErpLectureRecords({ sessionPath, startDate = '2026-01
  */
 async function scrapeNewErpAttendance({ sessionPath, startDate = null, endDate = null }, log = console) {
   if (!sessionPath || !fs.existsSync(sessionPath)) {
-    throw new NewErpSessionExpiredError('New ERP session not found on disk.');
+    throw new Error('New ERP session not found on disk.');
   }
 
   let browser = null;
@@ -1243,6 +1248,7 @@ async function scrapeNewErpAttendance({ sessionPath, startDate = null, endDate =
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -1357,7 +1363,7 @@ async function scrapeNewErpAttendance({ sessionPath, startDate = null, endDate =
  */
 async function scrapeNewErpSubjectLectures({ sessionPath, courseId, pbsm, startDate, endDate, subjectName = '', subjectCode = '' }, log = console) {
   if (!sessionPath || !fs.existsSync(sessionPath)) {
-    throw new NewErpSessionExpiredError('New ERP session not found on disk.');
+    throw new Error('New ERP session not found on disk.');
   }
 
   let browser = null;
@@ -1373,6 +1379,7 @@ async function scrapeNewErpSubjectLectures({ sessionPath, courseId, pbsm, startD
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
@@ -1427,7 +1434,7 @@ async function scrapeNewErpSubjectLectures({ sessionPath, courseId, pbsm, startD
  */
 async function scrapeNewErpAssignments({ sessionPath }, log = console) {
   if (!sessionPath || !fs.existsSync(sessionPath)) {
-    throw new NewErpSessionExpiredError('New ERP session not found on disk.');
+    throw new Error('New ERP session not found on disk.');
   }
 
   let browser = null;
@@ -1443,6 +1450,7 @@ async function scrapeNewErpAssignments({ sessionPath }, log = console) {
       storageState: sessionPath,
       ignoreHTTPSErrors: true,
       viewport: { width: 1280, height: 800 },
+      userAgent: SHARED_USER_AGENT,
     });
 
     const page = await context.newPage();
