@@ -12,8 +12,118 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
   <link rel="shortcut icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=20261107-1" />
   <script src="/site.js" defer></script>
+  <style>
+    /* Scoped styles for ERP Segmented Control */
+    .erp-segmented-control {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: stretch !important;
+      background: #f1f5f9 !important;
+      border: 1.5px solid #e2e8f0 !important;
+      border-radius: 12px !important;
+      padding: 4px !important;
+      gap: 6px !important;
+      margin: 16px 0 18px 0 !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn {
+      flex: 1 1 50% !important;
+      width: 50% !important;
+      min-width: 0 !important;
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 10px !important;
+      padding: 10px 14px !important;
+      border: 1.5px solid transparent !important;
+      border-radius: 9px !important;
+      background: transparent !important;
+      color: #64748b !important;
+      cursor: pointer !important;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+      text-decoration: none !important;
+      outline: none !important;
+      box-shadow: none !important;
+      margin: 0 !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn:hover:not(.active) {
+      background: rgba(255, 255, 255, 0.7) !important;
+      color: #1e293b !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn.active {
+      background: #ffffff !important;
+      color: #1e3a8a !important;
+      border-color: rgba(30, 58, 138, 0.12) !important;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08) !important;
+    }
+
+    .erp-tab-icon {
+      font-size: 20px !important;
+      line-height: 1 !important;
+      flex-shrink: 0 !important;
+    }
+
+    .erp-tab-content {
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: flex-start !important;
+      text-align: left !important;
+      line-height: 1.25 !important;
+      min-width: 0 !important;
+    }
+
+    .erp-tab-title {
+      font-size: 14px !important;
+      font-weight: 700 !important;
+      letter-spacing: -0.01em !important;
+      white-space: nowrap !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn.active .erp-tab-title {
+      color: #1e3a8a !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn:not(.active) .erp-tab-title {
+      color: #475569 !important;
+    }
+
+    .erp-tab-subtitle {
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      white-space: nowrap !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn.active .erp-tab-subtitle {
+      color: #2563eb !important;
+    }
+
+    .erp-segmented-control .erp-tab-btn:not(.active) .erp-tab-subtitle {
+      color: #94a3b8 !important;
+    }
+
+    @media (max-width: 480px) {
+      .erp-tab-subtitle {
+        display: none !important;
+      }
+      .erp-tab-title {
+        font-size: 13px !important;
+      }
+      .erp-tab-icon {
+        font-size: 18px !important;
+      }
+      .erp-segmented-control .erp-tab-btn {
+        padding: 9px 8px !important;
+        gap: 6px !important;
+      }
+    }
+  </style>
 </head>
 <body>
   <header class="nav">
@@ -57,10 +167,18 @@
       <!-- ERP Selector Tabs -->
       <div class="erp-segmented-control" role="tablist" aria-label="Select ERP Integration">
         <button type="button" id="tabOldErp" class="erp-tab-btn active" role="tab" aria-selected="true">
-          🏛️ Old ERP (qums.quantumuniversity.edu.in)
+          <span class="erp-tab-icon">🏛️</span>
+          <span class="erp-tab-content">
+            <span class="erp-tab-title">Old ERP</span>
+            <span class="erp-tab-subtitle">qums portal (CAPTCHA)</span>
+          </span>
         </button>
         <button type="button" id="tabNewErp" class="erp-tab-btn" role="tab" aria-selected="false">
-          🚀 New ERP (No CAPTCHA)
+          <span class="erp-tab-icon">🚀</span>
+          <span class="erp-tab-content">
+            <span class="erp-tab-title">New ERP</span>
+            <span class="erp-tab-subtitle">my.quantum (No CAPTCHA)</span>
+          </span>
         </button>
       </div>
 
@@ -624,20 +742,21 @@
         $('userName').textContent = me.studentName || 'Student';
         const badge = $('qumsConnBadge');
 
-        // Check active ERP type
-        const isActiveNew = me.activeErpType === 'NEW' || (me.newErpConfigured && me.newErpSessionStatus === 'ACTIVE');
-        const isActiveOld = me.activeErpType === 'OLD' || me.qumsConfigured;
+        // Check active ERP status accurately
+        const isNewActive = (me.activeErpType === 'NEW' || me.newErpConfigured) && (me.newErpSessionStatus === 'active' || me.newErpSessionStatus === 'ACTIVE');
+        const isNewExpired = me.newErpConfigured && (me.newErpSessionStatus === 'expired' || me.newErpSessionStatus === 'EXPIRED');
+        const isOldActive = me.qumsConfigured && me.qumsSessionStatus === 'active';
+        const isOldExpired = me.qumsConfigured && me.qumsSessionStatus === 'expired';
 
-        if (forceNewErp || (isActiveNew && !isActiveOld)) {
+        if (forceNewErp || isNewActive || (me.activeErpType === 'NEW' && !me.qumsConfigured)) {
           selectErpTab('new');
         } else {
           selectErpTab('old');
         }
 
-        if (isActiveNew) {
+        if (isNewActive) {
           badge.className = 'badge-soft on';
-          badge.textContent = 'New ERP Connected';
-          if ($('oldErpBlockedNotice')) $('oldErpBlockedNotice').classList.remove('hidden');
+          badge.textContent = '🟢 New ERP Connected';
           $('newErpConnectedBox').classList.remove('hidden');
           $('newErpFormBox').classList.add('hidden');
 
@@ -656,13 +775,18 @@
           const semText = me.newErpSemester ? 'Sem ' + me.newErpSemester : '';
           const acadText = me.newErpAcademicYear ? me.newErpAcademicYear : '';
           $('newErpCourseSemText').textContent = [courseText, semText, acadText].filter(Boolean).join(' • ') || '—';
-        } else if (isActiveOld) {
+        } else if (isNewExpired) {
+          badge.className = 'badge-soft off';
+          badge.textContent = '⚠️ New ERP: Session Expired';
+        } else if (isOldActive) {
           badge.className = 'badge-soft on';
-          badge.textContent = 'Old ERP Connected';
-          if ($('newErpBlockedNotice')) $('newErpBlockedNotice').classList.remove('hidden');
+          badge.textContent = '🟢 Old ERP Connected';
+        } else if (isOldExpired) {
+          badge.className = 'badge-soft off';
+          badge.textContent = '⚠️ Old ERP: Session Expired';
         } else {
           badge.className = 'badge-soft off';
-          badge.textContent = 'Not Connected';
+          badge.textContent = '⚪ Not Connected';
         }
 
         hasSavedCredentials = Boolean(me.qumsCredentialsSaved || me.qumsQid);

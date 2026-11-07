@@ -62,8 +62,8 @@ async function checkSessionEligibility(identity, userId, targetErp) {
   // 1. Check user record directly
   const user = userId ? await db.getUserById(userId) : null;
   if (user) {
-    const isOldActive = Boolean(user.qumsSessionPath && (user.qumsSessionStatus === 'active' || user.activeErpType === 'OLD'));
-    const isNewActive = Boolean(user.newErpSessionPath && (user.newErpSessionStatus === 'ACTIVE' || user.newErpSessionStatus === 'active' || user.activeErpType === 'NEW'));
+    const isOldActive = Boolean(user.qumsSessionPath && user.qumsSessionStatus === 'active' && user.activeErpType === 'OLD');
+    const isNewActive = Boolean(user.newErpSessionPath && (user.newErpSessionStatus === 'ACTIVE' || user.newErpSessionStatus === 'active') && user.activeErpType === 'NEW');
 
     if (target === 'OLD' && isNewActive) {
       return {

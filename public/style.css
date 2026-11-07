@@ -2113,43 +2113,111 @@ a.btn-danger:hover {
 
 /* Segmented Control for Old ERP / New ERP */
 .erp-segmented-control {
-  display: flex;
-  background: rgba(30, 58, 138, 0.06);
-  border-radius: 12px;
-  padding: 4px;
-  gap: 6px;
-  margin-bottom: 20px;
-  border: 1px solid var(--line);
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: stretch !important;
+  background: #f1f5f9 !important;
+  border: 1.5px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+  gap: 6px !important;
+  margin: 16px 0 18px 0 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
 }
 
-.erp-tab-btn {
-  flex: 1;
-  padding: 10px 14px;
-  font-size: 13.5px;
-  font-weight: 600;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  text-align: center;
+.erp-segmented-control .erp-tab-btn {
+  flex: 1 1 50% !important;
+  width: 50% !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  padding: 10px 14px !important;
+  border: 1.5px solid transparent !important;
+  border-radius: 9px !important;
+  background: transparent !important;
+  color: #64748b !important;
+  cursor: pointer !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  text-decoration: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  margin: 0 !important;
 }
 
-.erp-tab-btn:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.5);
+.erp-segmented-control .erp-tab-btn:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.7) !important;
+  color: #1e293b !important;
 }
 
-.erp-tab-btn.active {
-  background: #ffffff;
-  color: var(--navy);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
-  font-weight: 700;
+.erp-segmented-control .erp-tab-btn.active {
+  background: #ffffff !important;
+  color: #1e3a8a !important;
+  border-color: rgba(30, 58, 138, 0.12) !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08) !important;
+}
+
+.erp-tab-icon {
+  font-size: 20px !important;
+  line-height: 1 !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-tab-content {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  text-align: left !important;
+  line-height: 1.25 !important;
+  min-width: 0 !important;
+}
+
+.erp-tab-title {
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  white-space: nowrap !important;
+}
+
+.erp-segmented-control .erp-tab-btn.active .erp-tab-title {
+  color: #1e3a8a !important;
+}
+
+.erp-segmented-control .erp-tab-btn:not(.active) .erp-tab-title {
+  color: #475569 !important;
+}
+
+.erp-tab-subtitle {
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  white-space: nowrap !important;
+}
+
+.erp-segmented-control .erp-tab-btn.active .erp-tab-subtitle {
+  color: #2563eb !important;
+}
+
+.erp-segmented-control .erp-tab-btn:not(.active) .erp-tab-subtitle {
+  color: #94a3b8 !important;
+}
+
+@media (max-width: 480px) {
+  .erp-tab-subtitle {
+    display: none !important;
+  }
+  .erp-tab-title {
+    font-size: 13px !important;
+  }
+  .erp-tab-icon {
+    font-size: 18px !important;
+  }
+  .erp-segmented-control .erp-tab-btn {
+    padding: 9px 8px !important;
+    gap: 6px !important;
+  }
 }
 
 /* Two-Month Date Range Picker */
