@@ -91,6 +91,7 @@ async function deleteSessionExpiredAlert(userId, log = console) {
     if (!userId) return false;
     const { deleteMessage } = require('./telegram');
     const messageIds = await db.getSessionExpiryMessageIds(userId).catch(() => []);
+    if (!messageIds || messageIds.length === 0) return false;
     let deletedCount = 0;
     for (const msgId of messageIds) {
       if (msgId && typeof deleteMessage === 'function') {
@@ -98,8 +99,8 @@ async function deleteSessionExpiredAlert(userId, log = console) {
         if (res) deletedCount++;
       }
     }
-    await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
     if (deletedCount > 0) {
+      await db.clearSessionExpiryTelegramMessage(userId).catch(() => {});
       log.log(`[alerts] 🗑️ Deleted ${deletedCount} session-expired message(s) for user=${userId}.`);
       return true;
     }

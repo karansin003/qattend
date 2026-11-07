@@ -680,7 +680,7 @@ async function runMonthRegisterCycle(opts = {}) {
   // Safe fallback: If monitoringStartedDate is missing, default to today's date so past records are NEVER alerted!
   const effectiveMonitoringDate = opts.monitoringStartedDate !== undefined
     ? opts.monitoringStartedDate
-    : (monitoringStartedDate || (process.env.NODE_ENV === 'test' ? '1970-01-01' : todayIst.date));
+    : (monitoringStartedDate || (process.env.NODE_ENV === 'test' || Boolean(process.env.BACKDATED_TEST_TMP) ? '1970-01-01' : todayIst.date));
 
   if (user && !user.monitoringStartedDate) {
     await db.updateUser(userId, {

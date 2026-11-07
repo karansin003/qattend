@@ -24,6 +24,7 @@ const path = require('path');
 const Module = require('module');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'qattend-reconnect-'));
+process.env.NODE_ENV = 'test';
 process.env.DB_FILE = path.join(TMP, 'db.json');
 process.env.DATABASE_URL = '';
 process.env.SESSION_ALERT_STATE_FILE = path.join(TMP, 'session_alerts.json');

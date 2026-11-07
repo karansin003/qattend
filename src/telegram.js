@@ -956,6 +956,7 @@ async function executeNewErp1ClickReconnect(user, chatId, log = console, alertMe
       fs.writeFileSync(sessionPath, JSON.stringify(result.storageState, null, 2), { mode: 0o600 });
       await db.saveNewErpSessionData(user.id, JSON.stringify(result.storageState));
       await db.updateUser(user.id, { newErpSessionStatus: 'active', activeErpType: 'NEW' });
+      await db.recordUserReconnect(user.id, 'telegram', log).catch(() => {});
 
       const { acquireSession } = require('./erp-session-registry');
       await acquireSession({ identity: email, userId: user.id, targetErp: 'NEW', sessionId: sessionPath }).catch(() => {});

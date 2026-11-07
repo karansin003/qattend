@@ -1166,6 +1166,9 @@ app.post('/api/new-erp/login', requireAuth, rateLimit('/api/login'), async (req,
 
       await db.updateUser(req.session.userId, userPatch);
       await alerts.clearSessionAlert(req.session.userId).catch(() => {});
+      if (req.appUser.newErpSessionStatus === 'expired' || req.query.reconnect || (req.body && req.body.isReconnect)) {
+        await db.recordUserReconnect(req.session.userId, 'web', console).catch(() => {});
+      }
 
       // Acquire active session in registry
       await acquireSession({
@@ -1704,9 +1707,12 @@ app.get('/api/admin/health', requireAdmin, async (req, res) => {
         newUsers24h: stats.newUsers24h,
         newUsers7d: stats.newUsers7d,
         qumsConnected: stats.qumsConnected,
+        newErpConnected: stats.newErpConnected,
+        oldErpConnected: stats.oldErpConnected,
         sessionExpired: stats.sessionExpired,
         telegramConnected: stats.telegramConnected,
         suspended: stats.suspended,
+        reconnectStats: stats.reconnectStats,
         notificationsSent: notifs,
       },
       serverTime: new Date().toISOString(),

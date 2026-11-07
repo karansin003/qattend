@@ -28,6 +28,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const TMP = process.env.BACKDATED_TEST_TMP || fs.mkdtempSync(path.join(os.tmpdir(), 'qattend-backdated-'));
+process.env.NODE_ENV = 'test';
 process.env.BACKDATED_TEST_TMP = TMP;
 process.env.DB_FILE = process.env.DB_FILE || path.join(TMP, 'db.json');
 process.env.DATABASE_URL = '';
