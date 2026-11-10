@@ -18,6 +18,31 @@
   <link rel="shortcut icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/style.css" />
   <script src="/site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "QAttend 75% Attendance Calculator",
+        "url": "https://qattend.onrender.com/attendance-calculator-guide",
+        "applicationCategory": "EducationalApplication",
+        "browserRequirements": "Requires JavaScript. Requires HTML5.",
+        "description": "Interactive student attendance calculator that computes attendance percentage, classes needed to reach 75%, and skippable class buffer."
+      },
+      {
+        "@type": "TechArticle",
+        "headline": "Attendance Calculator & 75% Attendance Rule Guide",
+        "description": "Mathematical derivations, inequality proofs, and worked example tables for university attendance calculations.",
+        "url": "https://qattend.onrender.com/attendance-calculator-guide",
+        "author": {
+          "@type": "Person",
+          "name": "Karan Kumar"
+        }
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
   <header class="nav">
@@ -70,14 +95,6 @@
         A comprehensive guide to understanding attendance formulas, calculating how many classes you must attend to cross 75%, and knowing how many you can safely miss.
       </p>
     </section>
-
-    <!-- Advertisement — introductory placement -->
-    <aside class="ad-slot" aria-label="Advertisement">
-      <span class="ad-slot-label">Advertisement</span>
-      <div class="ad-slot-content">
-        Advertisement
-      </div>
-    </aside>
 
     <section class="section">
       <div class="section-inner">
@@ -370,9 +387,7 @@
   <!-- Advertisement — small reserved slot near the footer -->
   <aside class="ad-slot" aria-label="Advertisement">
     <span class="ad-slot-label">Advertisement</span>
-    <div class="ad-slot-body" data-ad-slot="qattend-footer">
-      Ad space — reserved for a future approved ad unit
-    </div>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer"></div>
   </aside>
 
   <footer class="site-footer">

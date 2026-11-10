@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#1e3a8a" />
   <meta property="og:site_name" content="QAttend" />
   <meta property="og:title" content="Features — QAttend" />
-  <meta property="og:description" content="What QAttend actually does: attendance tracking, Telegram alerts, backdated detection, assignment updates and reminders." />
+  <meta property="og:description" content="In-depth breakdown of QAttend capabilities: attendance tracking, 75% rule calculators, Telegram alerts, backdated mark detection, and coursework reminders." />
   <meta property="og:type" content="website" />
   <link rel="canonical" href="https://qattend.onrender.com/features" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -18,6 +18,28 @@
   <link rel="shortcut icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/style.css" />
   <script src="/site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "QAttend",
+    "applicationCategory": "EducationalApplication",
+    "operatingSystem": "Web, Telegram",
+    "description": "Student attendance tracking and notification platform featuring automated QUMS timetable updates, 75% examination eligibility calculators, live lecture mark alerts, and assignment deadline reminders.",
+    "url": "https://qattend.onrender.com/features",
+    "featureList": [
+      "Subject-by-subject attendance tracking with official portal percentage fidelity",
+      "Exact mathematical guidance for recovering to 75% exam eligibility threshold",
+      "Skippable class margin calculation for safe planning",
+      "8:30 AM daily timetable push with lecture timings, room venues, and teacher names",
+      "Real-time period mark detection every 5 minutes during academic hours",
+      "Backdated month register scans to detect retroactive attendance modifications",
+      "Assignment discovery and 7:00 PM evening deadline reminders",
+      "On-demand historical date lookups via Telegram bot",
+      "AES-256-GCM encrypted credential storage and isolated multi-tenant architecture"
+    ]
+  }
+  </script>
 </head>
 <body>
   <header class="nav">
@@ -67,36 +89,40 @@
       <h1>QAttend Features</h1>
       <p class="hero-tagline">Track. Alert. Stay Updated.</p>
       <p style="margin-top:10px;">
-        An in-depth breakdown of every active capability in QAttend. Each feature is grounded directly in our production implementation.
+        An in-depth breakdown of every active capability in QAttend. Each feature is designed to solve real academic problems faced by university students.
       </p>
     </section>
 
-    <!-- Advertisement — introductory placement -->
-    <aside class="ad-slot" aria-label="Advertisement">
-      <span class="ad-slot-label">Advertisement</span>
-      <div class="ad-slot-content">
-        Advertisement
-      </div>
-    </aside>
-
     <section class="section">
       <div class="section-inner">
-        <h2 class="section-title-lg">Attendance Intelligence &amp; Analysis</h2>
-        <p class="section-lead">Transform raw university records into actionable academic insight.</p>
+        <!-- Section 1: Attendance Intelligence -->
+        <h2 class="section-title-lg">1. Attendance Intelligence &amp; Exam Eligibility</h2>
+        <p class="section-lead">
+          University examination regulations enforce a strict 75% attendance threshold across all registered courses. QAttend transforms raw portal numbers into clear mathematical clarity so you always know where you stand.
+        </p>
+
+        <div class="prose" style="margin-bottom:20px;">
+          <p>
+            When students check university portals manually, they are presented with isolated tables of attended versus held classes. What is frequently missing is the forward-looking calculation: <em>"If I fall sick today, will I still be permitted to sit for my end-term examinations?"</em> or <em>"How many consecutive classes must I attend without missing a single one to reach 75% again?"</em>
+          </p>
+          <p>
+            QAttend answers these questions continuously through automated parsing and exact mathematical algorithms directly aligned with official university metrics.
+          </p>
+        </div>
 
         <div class="grid grid-3">
           <div class="feature-card">
             <div class="feature-icon" aria-hidden="true">📊</div>
             <h3>Subject-by-Subject Tracking</h3>
             <p>
-              QAttend extracts your authenticated attendance table from the QUMS portal, categorizing records by subject name, course code, attended lectures, and total classes held. It shows current percentages alongside your official portal overall percentage.
+              QAttend extracts your authenticated attendance records from the QUMS portal, categorizing data by subject name, course code, attended lectures, and total classes held. It reports current percentages alongside your official portal overall percentage.
             </p>
           </div>
           <div class="feature-card">
             <div class="feature-icon" aria-hidden="true">🎯</div>
             <h3>75% Recovery Guidance</h3>
             <p>
-              If a subject falls below the required 75% examination threshold, QAttend calculates the exact number of consecutive future lectures you must attend using the formula <code>Math.ceil((0.75 * Total - Attended) / 0.25)</code>.
+              If a subject falls below the required 75% threshold, QAttend computes the exact number of future consecutive lectures you must attend using the formula <code>k = Math.ceil((0.75 * Total - Attended) / 0.25)</code>.
             </p>
             <p style="margin-top:8px;">
               <a href="/attendance-calculator-guide" style="font-size:0.85rem; font-weight:600; color:var(--navy-2,#1e3a8a);">Read Calculator Guide →</a>
@@ -104,22 +130,31 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon" aria-hidden="true">🛡️</div>
-            <h3>Safe Bunk / Margin Margin</h3>
+            <h3>Safe Margin / Skippable Count</h3>
             <p>
-              When attendance is healthy (≥ 75%), QAttend computes your skippable buffer using <code>Math.floor((Attended - 0.75 * Total) / 0.75)</code>, telling you precisely how many classes you can afford to miss without falling below the regulatory limit.
+              When attendance is healthy (≥ 75%), QAttend computes your skippable buffer using <code>k = Math.floor((Attended - 0.75 * Total) / 0.75)</code>, telling you precisely how many classes you can afford to miss without falling below the regulatory limit.
             </p>
           </div>
         </div>
 
-        <h2 class="section-title-lg" style="margin-top:40px;">Real-Time Telegram Automation</h2>
-        <p class="section-lead">Automated notifications delivered directly to your personal Telegram conversation.</p>
+        <!-- Section 2: Real-Time Telegram Automation -->
+        <h2 class="section-title-lg" style="margin-top:48px;">2. Real-Time Telegram Automation</h2>
+        <p class="section-lead">
+          Automated academic notifications delivered straight to your personal Telegram conversation—no more manually refreshing web portals.
+        </p>
+
+        <div class="prose" style="margin-bottom:20px;">
+          <p>
+            Students typically check their attendance portal multiple times per day because lecture marks are submitted unpredictably. Faculty members frequently log attendance hours after the lecture has ended, or in late evening batches. QAttend takes over this repetitive monitoring through dedicated, asynchronous background workers.
+          </p>
+        </div>
 
         <div class="grid grid-3">
           <div class="feature-card">
             <div class="feature-icon" aria-hidden="true">🌅</div>
             <h3>8:30 AM Daily Timetable</h3>
             <p>
-              Every morning at 8:30 AM IST (before 9:00 AM lectures begin), QAttend pushes your complete daily schedule to Telegram with room numbers, period timings, and assigned faculty members.
+              Every morning at 8:30 AM IST (before 9:00 AM lectures commence), QAttend pushes your complete daily schedule to Telegram with classroom numbers, period timings, and assigned faculty members.
             </p>
           </div>
           <div class="feature-card">
@@ -138,8 +173,17 @@
           </div>
         </div>
 
-        <h2 class="section-title-lg" style="margin-top:40px;">Academic Deadlines &amp; Bot Commands</h2>
-        <p class="section-lead">Never lose track of assignments, due dates, or historical records.</p>
+        <!-- Section 3: Academic Deadlines & Commands -->
+        <h2 class="section-title-lg" style="margin-top:48px;">3. Academic Deadlines &amp; Interactive Bot Commands</h2>
+        <p class="section-lead">
+          Never lose track of assignments, practical submissions, or historical academic records.
+        </p>
+
+        <div class="prose" style="margin-bottom:20px;">
+          <p>
+            University coursework often carries tight submission deadlines. Instructors upload homework assignments, laboratory files, and project requirements to the portal without broadcasting push notifications. QAttend bridges this gap by discovering newly posted assignments and delivering timely evening reminders.
+          </p>
+        </div>
 
         <div class="grid grid-3">
           <div class="feature-card">
@@ -168,8 +212,17 @@
           </div>
         </div>
 
-        <h2 class="section-title-lg" style="margin-top:40px;">Security &amp; Student Privacy</h2>
-        <p class="section-lead">Engineering practices designed to safeguard student accounts.</p>
+        <!-- Section 4: Security & Student Privacy -->
+        <h2 class="section-title-lg" style="margin-top:48px;">4. Security &amp; Student Data Privacy</h2>
+        <p class="section-lead">
+          Architectural and engineering practices designed specifically to safeguard student credentials and academic data.
+        </p>
+
+        <div class="prose" style="margin-bottom:20px;">
+          <p>
+            Handling university portal credentials demands rigorous cryptographic standards. QAttend was built with privacy by design: your credentials are never exposed in readable text, never displayed on public pages, and never shared across student accounts.
+          </p>
+        </div>
 
         <div class="grid grid-3">
           <div class="feature-card">
@@ -201,8 +254,8 @@
     </section>
 
     <section class="cta-band">
-      <h2>Ready to Stay Updated?</h2>
-      <p>Create your free account, connect QUMS and Telegram, and let the updates come to you.</p>
+      <h2>Ready to Experience Automated Tracking?</h2>
+      <p>Create your free account, connect your university portal, and stay effortlessly updated.</p>
       <div class="cta-actions">
         <a class="btn btn-lg" href="/register">Create Account</a>
         <a class="btn btn-lg btn-ghost" href="/login">Login</a>
@@ -210,12 +263,9 @@
     </section>
   </main>
 
-  <!-- Advertisement — small reserved slot near the footer -->
   <aside class="ad-slot" aria-label="Advertisement">
     <span class="ad-slot-label">Advertisement</span>
-    <div class="ad-slot-body" data-ad-slot="qattend-footer">
-      Ad space — reserved for a future approved ad unit
-    </div>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer"></div>
   </aside>
 
   <footer class="site-footer">

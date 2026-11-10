@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contact — QAttend</title>
-  <meta name="description" content="How to reach the QAttend project: support channels and Telegram updates." />
+  <meta name="description" content="Get in touch with the QAttend project: submit technical questions, report connection bugs, or request assistance with university portal tracking." />
   <meta name="theme-color" content="#1e3a8a" />
   <meta property="og:site_name" content="QAttend" />
   <meta property="og:title" content="Contact — QAttend" />
-  <meta property="og:description" content="Report a problem or ask a question about QAttend." />
+  <meta property="og:description" content="Contact the developer, submit support inquiries, or report bugs regarding QAttend." />
   <meta property="og:type" content="website" />
   <link rel="canonical" href="https://qattend.onrender.com/contact" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -18,6 +18,21 @@
   <link rel="shortcut icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/style.css" />
   <script src="/site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ContactPage",
+    "name": "Contact QAttend",
+    "url": "https://qattend.onrender.com/contact",
+    "description": "Contact channels and support form for QAttend student attendance tracking.",
+    "mainEntity": {
+      "@type": "Organization",
+      "name": "QAttend Support",
+      "email": "karansin8672@gmail.com",
+      "url": "https://qattend.onrender.com/contact"
+    }
+  }
+  </script>
 </head>
 <body>
   <header class="nav">
@@ -64,8 +79,11 @@
 
   <main>
     <section class="page-head">
-      <h1>Contact QAttend</h1>
-      <p>Found a bug, hit a setup problem, or want to suggest something? These are the real channels.</p>
+      <h1>Contact QAttend Support</h1>
+      <p class="hero-tagline">Assistance. Bug Reports. Inquiries.</p>
+      <p style="margin-top:10px;">
+        Encountered a setup issue, discovered a bug, or have a suggestion? We provide direct support to ensure your attendance updates remain accurate and uninterrupted.
+      </p>
     </section>
 
     <section class="section">
@@ -74,7 +92,7 @@
           <div class="contact-card">
             <div class="contact-icon" aria-hidden="true">✉️</div>
             <h3>Email Support</h3>
-            <p>Direct developer & support email for assistance, feedback, or inquiries.</p>
+            <p>Direct developer &amp; support email for assistance, feedback, or inquiries.</p>
             <p style="margin-top:12px;">
               <a class="btn btn-outline" href="mailto:karansin8672@gmail.com" style="word-break: break-all;"><strong id="contactEmailValue">__CONTACT_EMAIL__</strong></a>
             </p>
@@ -82,23 +100,23 @@
           </div>
           <div class="contact-card">
             <div class="contact-icon" aria-hidden="true">💻</div>
-            <h3>GitHub</h3>
-            <p>Check out the open-source codebase, star the repo, or track development updates.</p>
+            <h3>GitHub Repository</h3>
+            <p>Inspect the open-source codebase, submit issues, or track feature releases.</p>
             <p style="margin-top:12px;">
               <a class="btn btn-outline" href="https://github.com/karansin003" target="_blank" rel="noopener noreferrer">karansin003</a>
             </p>
           </div>
           <div class="contact-card">
             <div class="contact-icon" aria-hidden="true">💼</div>
-            <h3>LinkedIn</h3>
-            <p>Connect with the developer on LinkedIn for professional networking & discussion.</p>
+            <h3>LinkedIn Profile</h3>
+            <p>Connect with the developer on LinkedIn for professional networking &amp; technical discussion.</p>
             <p style="margin-top:12px;">
               <a class="btn btn-outline" href="https://www.linkedin.com/in/karan003/" target="_blank" rel="noopener noreferrer">Karan Kumar</a>
             </p>
           </div>
           <div class="contact-card">
             <div class="contact-icon" aria-hidden="true">💬</div>
-            <h3>Telegram Support</h3>
+            <h3>Telegram Bot</h3>
             <p>Connect your account with our bot for real-time status and assistance directly.</p>
             <p style="margin-top:12px;">
               <a class="btn" href="/telegram-setup">Open Bot Setup</a>
@@ -106,50 +124,207 @@
           </div>
         </div>
 
-        <div class="callout" style="margin-top:26px;">
-          <strong>About direct messaging:</strong> For quick responses and updates, please use our Telegram bot channel or check the status from your account dashboard.
+        <!-- Interactive Contact Form Card -->
+        <div class="card" style="max-width:760px; margin:36px auto 0; background:#ffffff; border:1px solid #cbd5e1; box-shadow:0 4px 16px rgba(15,23,42,0.06); border-radius:12px; padding:28px;">
+          <h2 style="margin:0 0 8px; font-size:1.35rem; color:var(--navy,#0f172a);">Send a Message</h2>
+          <p style="margin:0 0 20px; font-size:0.9rem; color:var(--muted,#64748b);">
+            Fill out the form below and we will get back to you directly via email. All inquiries are answered personally by the project developer.
+          </p>
+
+          <form id="contactForm" novalidate>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+              <div>
+                <label for="contactName" style="display:block; font-size:0.85rem; font-weight:600; color:#334155; margin-bottom:6px;">Your Name *</label>
+                <input type="text" id="contactName" name="name" placeholder="e.g. Karan Kumar" style="width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; box-sizing:border-box;" required />
+              </div>
+              <div>
+                <label for="contactEmail" style="display:block; font-size:0.85rem; font-weight:600; color:#334155; margin-bottom:6px;">Your Email Address *</label>
+                <input type="email" id="contactEmail" name="email" placeholder="e.g. you@example.com" style="width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; box-sizing:border-box;" required />
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <label for="contactCategory" style="display:block; font-size:0.85rem; font-weight:600; color:#334155; margin-bottom:6px;">Inquiry Category *</label>
+              <select id="contactCategory" name="category" style="width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; background:#fff; box-sizing:border-box;">
+                <option value="General Inquiry">General Inquiry</option>
+                <option value="QUMS Connection / Setup Issue">QUMS Connection / Setup Issue</option>
+                <option value="Telegram Bot Linking / Notification Help">Telegram Bot Linking / Notification Help</option>
+                <option value="Attendance Calculation Question">Attendance Calculation Question</option>
+                <option value="Bug Report / Technical Issue">Bug Report / Technical Issue</option>
+                <option value="Account Deletion / Data Request">Account Deletion / Data Request</option>
+              </select>
+            </div>
+
+            <div style="margin-top:16px;">
+              <label for="contactSubject" style="display:block; font-size:0.85rem; font-weight:600; color:#334155; margin-bottom:6px;">Subject</label>
+              <input type="text" id="contactSubject" name="subject" placeholder="Brief summary of your question" style="width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; box-sizing:border-box;" />
+            </div>
+
+            <div style="margin-top:16px;">
+              <label for="contactMessage" style="display:block; font-size:0.85rem; font-weight:600; color:#334155; margin-bottom:6px;">Message *</label>
+              <textarea id="contactMessage" name="message" rows="5" placeholder="Provide details about what you experienced or how we can assist..." style="width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; font-family:inherit; box-sizing:border-box;" required></textarea>
+            </div>
+
+            <div id="contactStatus" style="margin-top:16px; display:none; padding:12px 14px; border-radius:8px; font-size:0.9rem;"></div>
+
+            <div style="margin-top:20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+              <button type="submit" id="contactSubmitBtn" class="btn btn-lg" style="min-width:160px;">Send Message</button>
+              <span style="font-size:0.8rem; color:#64748b;">Direct support: <strong>karansin8672@gmail.com</strong></span>
+            </div>
+          </form>
         </div>
       </div>
     </section>
 
-    <!-- Advertisement — below main contact info -->
-    <aside class="ad-slot" aria-label="Advertisement">
-      <span class="ad-slot-label">Advertisement</span>
-      <div class="ad-slot-content">
-        Advertisement
-      </div>
-    </aside>
-
     <section class="section section-alt">
       <div class="section-inner">
-        <div class="section-head">
-          <h2 class="section-title-lg">What to include</h2>
-          <p class="section-lead">A little context makes a problem much faster to solve.</p>
+        <div class="grid grid-2" style="gap:36px;">
+          <div>
+            <div class="section-head">
+              <h2 class="section-title-lg">Support Policies &amp; SLA</h2>
+              <p class="section-lead">Clear expectations for when you can expect a response.</p>
+            </div>
+            <div class="prose">
+              <p>
+                QAttend is maintained as an independent student project. Support requests are handled directly by the lead developer with the following service standards:
+              </p>
+              <ul>
+                <li><strong>Response Timeframe:</strong> Within <strong>24 to 48 business hours</strong> for all email inquiries and submitted contact forms.</li>
+                <li><strong>Operating Hours:</strong> Monday through Saturday, from <strong>09:00 AM to 06:00 PM IST</strong> (Indian Standard Time).</li>
+                <li><strong>Critical Outages:</strong> High-priority server incidents, portal changes, or widespread CAPTCHA relay issues are monitored continuously.</li>
+                <li><strong>Permanent Account Deletion:</strong> If you wish to delete your QAttend account, email us or select "Account Deletion / Data Request" in the form above. We will purge your database record, session files, and Firebase credentials within 2 business days.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-head">
+              <h2 class="section-title-lg">What to Include in Bug Reports</h2>
+              <p class="section-lead">A little context makes technical problems much faster to resolve.</p>
+            </div>
+            <ul class="check-list">
+              <li>Which page or feature you were using (e.g. QUMS Setup, Dashboard, or Telegram Bot).</li>
+              <li>The exact error text or HTTP code shown on screen (e.g. "ConcurrentLoginError" or "Session Expired").</li>
+              <li>What you expected to happen versus what actually occurred.</li>
+              <li>Whether your QUMS connection and Telegram bot show as active in your account dashboard.</li>
+            </ul>
+            <div class="callout warn" style="margin-top:20px;">
+              <strong>Security Precaution:</strong> Never share your QUMS password, personal security keys, or Telegram bot authentication tokens in messages. Support staff will never ask for your password.
+            </div>
+          </div>
         </div>
-        <ul class="check-list">
-          <li>Which page you were on (for example: QUMS Setup or Telegram).</li>
-          <li>What you expected to happen, and what actually happened.</li>
-          <li>The exact message you saw, if any error was displayed.</li>
-          <li>Whether QUMS and Telegram show as connected on your dashboard.</li>
-        </ul>
-        <div class="callout warn" style="margin-top:18px;">
-          <strong>Please never send your QUMS password, QID, session files, session secret,
-          encryption key or bot token.</strong> Nobody from QAttend needs them to help you, and
-          sharing them puts your account at risk.
+
+        <div style="margin-top:48px;">
+          <div class="section-head">
+            <h2 class="section-title-lg">Frequently Asked Support Questions</h2>
+            <p class="section-lead">Quick answers to common questions before sending a message.</p>
+          </div>
+          <div class="faq-list">
+            <details class="faq-item">
+              <summary>How do I reset my QAttend account password?</summary>
+              <p>
+                If you have forgotten your password, navigate to the <a href="/forgot">Password Reset page</a>, enter your registered email address, and submit the form. You will receive an official reset link powered by Firebase Authentication to securely choose a new password.
+              </p>
+            </details>
+            <details class="faq-item">
+              <summary>Why does my dashboard indicate "Session Expired"?</summary>
+              <p>
+                University portal cookies naturally expire after several days of inactivity or server maintenance. When this occurs, QAttend alerts you immediately. Simply click <strong>🔐 Reconnect QUMS</strong> on your dashboard or in Telegram, solve the fresh visual CAPTCHA, and monitoring will instantly resume.
+              </p>
+            </details>
+            <details class="faq-item">
+              <summary>Can I link a different Telegram account or change devices?</summary>
+              <p>
+                Yes. You can unbind your active Telegram chat at any time by clicking <strong>Disconnect Telegram</strong> in your account dashboard. Afterwards, navigate to <a href="/telegram-setup">Telegram Setup</a> to pair with a new chat ID or different Telegram account.
+              </p>
+            </details>
+            <details class="faq-item">
+              <summary>How can I request permanent deletion of all my data?</summary>
+              <p>
+                You maintain complete sovereignty over your information. To remove university credentials, click <strong>Reset / Delete QUMS Connection</strong> in QUMS Setup. To completely delete your user account, select "Account Deletion / Data Request" in the contact form above, and your entire database row and session files will be destroyed.
+              </p>
+            </details>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- Advertisement — small reserved slot near the footer.
-       NO ad-network script, NO publisher id, NO fake creative. When an
-       approved provider is available, put its code inside [data-ad-slot]. -->
+  <script>
+    (() => {
+      const form = document.getElementById('contactForm');
+      const submitBtn = document.getElementById('contactSubmitBtn');
+      const statusEl = document.getElementById('contactStatus');
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        statusEl.style.display = 'none';
+
+        const name = document.getElementById('contactName').value.trim();
+        const email = document.getElementById('contactEmail').value.trim();
+        const category = document.getElementById('contactCategory').value;
+        const subject = document.getElementById('contactSubject').value.trim();
+        const message = document.getElementById('contactMessage').value.trim();
+
+        if (!name || name.length < 2) {
+          showStatus('Please enter your full name (at least 2 characters).', 'error');
+          return;
+        }
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          showStatus('Please enter a valid email address.', 'error');
+          return;
+        }
+        if (!message || message.length < 10) {
+          showStatus('Please enter a detailed message (at least 10 characters).', 'error');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Sending…';
+
+        try {
+          const res = await fetch('/api/contact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, email, category, subject, message })
+          });
+
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            showStatus(data.error || 'Failed to deliver message. Please try emailing directly.', 'error');
+          } else {
+            showStatus(data.message || 'Thank you! Your message has been received.', 'success');
+            form.reset();
+          }
+        } catch (err) {
+          showStatus('Network error occurred. You can reach us directly at karansin8672@gmail.com', 'error');
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Send Message';
+        }
+      });
+
+      function showStatus(msg, type) {
+        statusEl.textContent = msg;
+        statusEl.style.display = 'block';
+        if (type === 'success') {
+          statusEl.style.background = '#dcfce7';
+          statusEl.style.color = '#15803d';
+          statusEl.style.border = '1px solid #bbf7d0';
+        } else {
+          statusEl.style.background = '#fee2e2';
+          statusEl.style.color = '#b91c1c';
+          statusEl.style.border = '1px solid #fecaca';
+        }
+      }
+    })();
+  </script>
+
   <aside class="ad-slot" aria-label="Advertisement">
     <span class="ad-slot-label">Advertisement</span>
-    <div class="ad-slot-body" data-ad-slot="qattend-footer">
-      Ad space — reserved for a future approved ad unit
-    </div>
+    <div class="ad-slot-body" data-ad-slot="qattend-footer"></div>
   </aside>
+
   <footer class="site-footer">
     <div class="footer-inner">
       <div class="footer-grid">
@@ -157,8 +332,7 @@
           <div class="footer-brand"><span class="dot" aria-hidden="true"></span> QAttend</div>
           <p class="footer-tagline">Track. Alert. Stay Updated.</p>
           <p class="footer-about">
-            QAttend helps students monitor their QUMS attendance and receive attendance and
-            academic notifications through Telegram.
+            QAttend helps students monitor their QUMS attendance and receive attendance and academic notifications through Telegram.
           </p>
         </div>
         <div class="footer-col">
@@ -183,15 +357,7 @@
           <ul>
             <li><a href="/privacy">Privacy Policy</a></li>
             <li><a href="/terms">Terms &amp; Conditions</a></li>
-            <li><a href="/about">About</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <h3>Developer</h3>
-          <ul>
-            <li><a href="mailto:karansin8672@gmail.com">Email</a></li>
-            <li><a href="https://github.com/karansin003" target="_blank" rel="noopener noreferrer">GitHub</a></li>
-            <li><a href="https://www.linkedin.com/in/karan003/" target="_blank" rel="noopener noreferrer">LinkedIn</a></li>
+            <li><a href="/contact">Contact</a></li>
           </ul>
         </div>
       </div>

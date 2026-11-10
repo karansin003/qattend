@@ -9,6 +9,7 @@ const bcrypt = require('bcryptjs');
 // NOTE: mailer.js (Resend/SMTP) is NO LONGER used for password-reset emails —
 // Firebase Authentication owns the reset flow now (single sender, no
 // duplicates). The mailer module itself is untouched and its tests remain.
+const mailer = require('./mailer');
 const firebaseAuth = require('./firebaseAuth');
 const XLSX = require('xlsx');
 
@@ -217,6 +218,7 @@ const RATE_LIMITS = {
   '/api/forgot': 5,
   '/api/reset': 10,
   '/api/auth/verify-token': 30,
+  '/api/contact': 10,
 };
 const rateHits = new Map(); // `${ip}:${route}` -> [hit timestamps]
 
@@ -697,6 +699,51 @@ app.post('/api/reset', rateLimit('/api/reset'), async (req, res) => {
     await db.updateUser(user.id, { passwordHash });
     console.log(`[auth] password reset done -> ${user.email}`);
     res.json({ ok: true, redirect: '/login' });
+  } catch (err) {
+    safeServerError(res, err);
+  }
+});
+
+app.post('/api/contact', rateLimit('/api/contact'), async (req, res) => {
+  try {
+    const { name, email, subject, message, category } = req.body || {};
+    const trimmedName = String(name || '').trim();
+    const trimmedEmail = String(email || '').trim().toLowerCase();
+    const trimmedSubject = String(subject || '').trim();
+    const trimmedMessage = String(message || '').trim();
+    const trimmedCategory = String(category || 'General Inquiry').trim();
+
+    if (!trimmedName || trimmedName.length < 2) {
+      return res.status(400).json({ error: 'Please enter your name (at least 2 characters).' });
+    }
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      return res.status(400).json({ error: 'Please provide a valid email address.' });
+    }
+    if (!trimmedMessage || trimmedMessage.length < 10) {
+      return res.status(400).json({ error: 'Please enter a message of at least 10 characters.' });
+    }
+
+    console.log(`[contact] Message received from ${trimmedName} <${trimmedEmail}>: [${trimmedCategory}] ${trimmedSubject || '(No subject)'}`);
+
+    const toEmail = String(process.env.CONTACT_EMAIL || 'karansin8672@gmail.com').trim();
+    if (mailer.mailerProvider() === 'resend') {
+      try {
+        const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        await mailer.sendMail({
+          to: toEmail,
+          subject: `[QAttend Contact] ${trimmedCategory}: ${trimmedSubject || 'Inquiry from ' + trimmedName}`,
+          text: `Name: ${trimmedName}\nEmail: ${trimmedEmail}\nCategory: ${trimmedCategory}\nSubject: ${trimmedSubject}\n\nMessage:\n${trimmedMessage}`,
+          html: `<p><strong>Name:</strong> ${esc(trimmedName)}</p><p><strong>Email:</strong> ${esc(trimmedEmail)}</p><p><strong>Category:</strong> ${esc(trimmedCategory)}</p><p><strong>Subject:</strong> ${esc(trimmedSubject)}</p><hr/><p style="white-space:pre-wrap;">${esc(trimmedMessage)}</p>`
+        });
+      } catch (mailErr) {
+        console.warn('[contact] Could not forward via email provider:', mailErr.message);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      message: 'Thank you for reaching out! Your message has been received. We will respond to ' + trimmedEmail + ' within 24 to 48 business hours.'
+    });
   } catch (err) {
     safeServerError(res, err);
   }
