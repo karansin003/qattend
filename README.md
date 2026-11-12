@@ -279,7 +279,17 @@ Specialization: Artificial Intelligence & Machine Learning
 QAttend automates that workflow by connecting QUMS, PostgreSQL,
 Firebase, and Telegram into one student-focused platform.
 
-## 📄 License
+## License & Copyright
 
-Add the project's chosen license before publishing the repository
-publicly.
+Copyright © 2026 Karan Kumar.
+
+QAttend is proprietary software. All rights
+reserved.
+
+Unauthorized reproduction, redistribution,
+modification, or commercial use of original
+QAttend materials is prohibited without prior
+written authorization.
+
+Original Repository:
+https://github.com/karansin003/qattend
