@@ -7,11 +7,34 @@ University Management System (QUMS)** to monitor attendance and
 assignments, store student data securely, and send timely updates
 through **Telegram**.
 
+## Screenshots
+
+> Note: Personal student and faculty details have been redacted from these screenshots.
+
+### QAttend Main Dashboard
+
+Displays overall attendance percentage, QUMS and Telegram connection status, today's classes section, and the subject-wise attendance table.
+
+![QAttend Main Dashboard](docs/screenshots/dashboard.png)
+
+### Old ERP and New ERP Connection Setup
+
+Displays the Old ERP and New ERP selection interface along with the QUMS connection and reconnect controls.
+
+![Old ERP and New ERP Connection Setup](docs/screenshots/qums-setup.png)
+
+### Telegram Attendance Notifications
+
+Displays daily class schedule messages and attendance update alerts sent by the Telegram bot.
+
+![Telegram Attendance Notifications](docs/screenshots/telegram-notifications.png)
+
 ## ✨ Features
 
 ### 🎓 QUMS Integration
 
 -   Secure QUMS login flow with manual CAPTCHA support.
+-   Old ERP and New ERP selection with connection and reconnect controls (see [Old ERP and New ERP Connection Setup](#old-erp-and-new-erp-connection-setup)).
 -   Fetches the student's actual **name, QID/RegID and Year/Semester**
     from QUMS.
 -   QUMS is the source of truth for academic identity.
@@ -20,12 +43,13 @@ through **Telegram**.
 
 ### 📊 Automatic Attendance Monitoring
 
+-   Web dashboard displaying overall attendance percentage, connection status, today's classes, and subject-wise attendance breakdown (see [QAttend Main Dashboard](#qattend-main-dashboard)).
 -   Automatic attendance monitoring during configured college hours.
 -   Detects meaningful attendance transitions such as `N → P`, `N → A`,
     `P → A`, and `A → P`.
 -   Handles delayed/backdated teacher updates.
 -   Telegram notifications show the **actual class date**, not the
-    detection date.
+    detection date (see [Telegram Attendance Notifications](#telegram-attendance-notifications)).
 -   Attendance before a user's monitoring start date never generates a
     new notification.
 -   Persistent PostgreSQL deduplication prevents duplicate alerts.
@@ -51,8 +75,9 @@ through **Telegram**.
 
 ### 🤖 Telegram Bot
 
-Provides attendance updates, assignment notifications, deadline
-reminders, QUMS session-expiry alerts and reconnect notifications.
+Provides daily class schedule messages, attendance updates, assignment
+notifications, deadline reminders, QUMS session-expiry alerts and
+reconnect notifications (see [Telegram Attendance Notifications](#telegram-attendance-notifications)).
 
 ### 👥 Multi-User Architecture
 
