@@ -628,10 +628,55 @@ async function hasUsers() {
   return r.rows[0].exists;
 }
 
+const ALL_USERS_COLUMNS = [
+  'id',
+  'email',
+  'password_hash',
+  'qums_qid',
+  'qums_session_path',
+  "CASE WHEN (qums_session_data IS NOT NULL AND qums_session_data != '') THEN '__HAS_SESSION__' ELSE '' END AS qums_session_data",
+  'telegram_link_code',
+  'telegram_chat_id',
+  'firebase_uid',
+  'student_name',
+  'qums_year_sem',
+  'is_admin',
+  'email_verified',
+  'is_suspended',
+  'qums_session_status',
+  'active_erp_type',
+  'new_erp_email',
+  'new_erp_password_encrypted',
+  'new_erp_session_path',
+  "CASE WHEN (new_erp_session_data IS NOT NULL AND new_erp_session_data != '') THEN '__HAS_SESSION__' ELSE '' END AS new_erp_session_data",
+  'new_erp_session_status',
+  'new_erp_student_name',
+  'new_erp_qid',
+  'new_erp_academic_year',
+  'new_erp_semester',
+  'new_erp_course',
+  'new_erp_last_synced_at',
+  'monitoring_started_date',
+  'monitoring_started_at',
+  'last_attendance_sync_at',
+  'last_assignment_sync_at',
+  'attendance_last_checked_at',
+  'assignment_last_checked_at',
+  'profile_synced_at',
+  'last_error',
+  'last_reconnect_source',
+  'last_reconnected_at',
+  'reconnect_count_telegram',
+  'reconnect_count_web',
+  'created_at',
+  'updated_at',
+  'qums_password_encrypted',
+].join(', ');
+
 async function allUsers() {
   if (!USE_PG) return data.users.slice();
   await init();
-  const r = await pool.query('SELECT * FROM users ORDER BY created_at');
+  const r = await pool.query(`SELECT ${ALL_USERS_COLUMNS} FROM users ORDER BY created_at`);
   return r.rows.map(fromUserRow);
 }
 
@@ -689,7 +734,7 @@ async function ensureSessionOnDisk(userOrId) {
   }
 
   let sessionData = user.qumsSessionData;
-  if (!sessionData && USE_PG) {
+  if ((!sessionData || sessionData === '__HAS_SESSION__') && USE_PG) {
     try {
       await init();
       const r = await pool.query('SELECT qums_session_data FROM users WHERE id=$1', [user.id]);
@@ -739,7 +784,7 @@ async function ensureNewErpSessionOnDisk(userOrId) {
   }
 
   let sessionData = user.newErpSessionData;
-  if (!sessionData && USE_PG) {
+  if ((!sessionData || sessionData === '__HAS_SESSION__') && USE_PG) {
     try {
       await init();
       const r = await pool.query('SELECT new_erp_session_data FROM users WHERE id=$1', [user.id]);
@@ -777,6 +822,18 @@ async function saveNewErpSessionData(userId, rawJson) {
   return true;
 }
 
+async function getUserSessionData(userId, erpType = 'OLD') {
+  if (!userId) return null;
+  if (!USE_PG) {
+    const u = data.users.find((x) => x.id === userId);
+    return u ? (erpType === 'NEW' ? u.newErpSessionData : u.qumsSessionData) || null : null;
+  }
+  await init();
+  const col = erpType === 'NEW' ? 'new_erp_session_data' : 'qums_session_data';
+  const r = await pool.query(`SELECT ${col} AS session_data FROM users WHERE id=$1`, [userId]);
+  return (r.rows[0] && r.rows[0].session_data) || null;
+}
+
 function fromUserRow(r) {
   let mDate = '';
   if (r.monitoring_started_date) {
@@ -793,7 +850,7 @@ function fromUserRow(r) {
   let resolvedSessionPath = r.qums_session_path || '';
   if (r.id && (r.qums_session_path || r.qums_session_data)) {
     resolvedSessionPath = canonicalSession;
-    if (r.qums_session_data && !fs.existsSync(canonicalSession)) {
+    if (r.qums_session_data && r.qums_session_data !== '__HAS_SESSION__' && !fs.existsSync(canonicalSession)) {
       try {
         const plainJson = decodeSessionData(r.qums_session_data);
         if (plainJson) {
@@ -808,7 +865,7 @@ function fromUserRow(r) {
   let resolvedNewErpSessionPath = r.new_erp_session_path || '';
   if (r.id && (r.new_erp_session_path || r.new_erp_session_data)) {
     resolvedNewErpSessionPath = canonicalNewErpSession;
-    if (r.new_erp_session_data && !fs.existsSync(canonicalNewErpSession)) {
+    if (r.new_erp_session_data && r.new_erp_session_data !== '__HAS_SESSION__' && !fs.existsSync(canonicalNewErpSession)) {
       try {
         const plainJson = decodeSessionData(r.new_erp_session_data);
         if (plainJson) {
@@ -1012,14 +1069,14 @@ async function updateUser(id, patch) {
 async function touchUserSync(userId, { attendance, assignment, profile, error } = {}) {
   if (!USE_PG) {
     const u = data.users.find((x) => x.id === userId);
-    if (!u) return null;
+    if (!u) return { ok: false, error: 'User not found' };
     const now = new Date().toISOString();
     if (attendance) { u.attendanceLastCheckedAt = now; u.lastAttendanceSyncAt = now; u.updatedAt = now; }
     if (assignment) { u.assignmentLastCheckedAt = now; u.lastAssignmentSyncAt = now; u.updatedAt = now; }
     if (profile) { u.profileSyncedAt = now; u.updatedAt = now; }
     if (error !== undefined) { u.lastError = String(error || ''); u.updatedAt = now; }
     persistJson();
-    return u;
+    return { ok: true, touched: true };
   }
   const sets = [];
   const values = [userId];
@@ -1038,11 +1095,11 @@ async function touchUserSync(userId, { attendance, assignment, profile, error } 
     values.push(String(error || ''));
     sets.push(`last_error=$${values.length}`);
   }
-  if (!sets.length) return getUserById(userId);
+  if (!sets.length) return { ok: true, touched: false };
   sets.push('updated_at=NOW()');
   await init();
-  await pool.query(`UPDATE users SET ${sets.join(',')} WHERE id=$1`, values);
-  return getUserById(userId);
+  const r = await pool.query(`UPDATE users SET ${sets.join(',')} WHERE id=$1`, values);
+  return { ok: true, touched: (r.rowCount || 0) > 0 };
 }
 
 async function setUserAdmin(userId, isAdmin) {
@@ -2742,8 +2799,8 @@ async function recordUserReconnect(userId, source = 'web', log = console) {
 }
 
 module.exports={
-  DB_FILE,QUMS_SESSION_DIR,NEW_ERP_SESSION_DIR,USE_PG,init,hasUsers,allUsers,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,sessionPathForNewErp,
-  ensureSessionOnDisk,saveUserSessionData,ensureNewErpSessionOnDisk,saveNewErpSessionData,decodeSessionData,
+  DB_FILE,QUMS_SESSION_DIR,NEW_ERP_SESSION_DIR,USE_PG,init,hasUsers,allUsers,ALL_USERS_COLUMNS,getUserByEmail,getUserById,getUserByFirebaseUid,createUser,updateUser,deleteUser,sessionPathFor,sessionPathForNewErp,
+  ensureSessionOnDisk,saveUserSessionData,ensureNewErpSessionOnDisk,saveNewErpSessionData,decodeSessionData,getUserSessionData,
   storeResetToken,consumeResetToken,listKnownAttendance,addKnownAttendance,upsertKnownAttendance,removeKnownAttendance,upsertWeeklySchedule,getWeeklySchedule,clearWeeklySchedule,
   telegramLinkCodeFor,getUserByTelegramLinkCode,getUserByTelegramChatId,setTelegramChatId,clearTelegramChatForChat,clearTelegramChatId,
   listKnownAssignments,addKnownAssignments,removeKnownAssignment,updateKnownAssignmentMessageId,

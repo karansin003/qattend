@@ -791,7 +791,18 @@ async function runMonthRegisterCycle(opts = {}) {
   // very next real change is detected exactly once.
   if (diff.reseed.length) await db.upsertKnownAttendance(userId, diff.reseed);
 
-  const knownByKey = new Map((await db.listKnownAttendance(userId)).filter((r) => r && r.key).map((r) => [r.key, r]));
+  // Reuse already-fetched known attendance array (Phase 1 egress optimization)
+  const knownByKey = new Map((known || []).filter((r) => r && r.key).map((r) => [r.key, r]));
+  if (olderToSilentlyStore.length) {
+    for (const r of olderToSilentlyStore) {
+      if (r && r.key) knownByKey.set(r.key, r);
+    }
+  }
+  if (diff.reseed.length) {
+    for (const r of diff.reseed) {
+      if (r && r.key) knownByKey.set(r.key, r);
+    }
+  }
 
   const sent = [];
   for (const rec of pending) {
