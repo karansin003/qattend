@@ -1544,6 +1544,12 @@ app.post('/api/new-erp/reconnect', requireAuth, async (req, res) => {
         await alerts.notifyNewErpReconnected(console, user.id).catch(() => {});
       }
 
+      // Controlled post-reconnect reconciliation of missed attendance & assignments
+      const catchup = require('./catchup');
+      catchup.runReconnectCatchup(user.id, sessionPath, console, { skipConfirmation: true }).catch((cErr) => {
+        console.log(`[new-erp-reconnect] post-reconnect catchup warning: ${cErr.message}`);
+      });
+
       return res.json({ ok: true, message: 'New ERP session reconnected successfully.' });
     }
 

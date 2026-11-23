@@ -113,6 +113,10 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       fetched = opts.attendanceRecords;
     } else if (opts.monthFetcher) {
       fetched = await opts.monthFetcher();
+    } else if (isNewErp) {
+      const newErpClient = require('./new-erp-client');
+      const attData = await newErpClient.scrapeNewErpAttendance({ sessionPath }, log).catch(() => null);
+      fetched = (attData && attData.dailyRecords) ? attData.dailyRecords : [];
     } else {
       const [, curMonth, curYear] = istDateString().split('/').map(Number);
       const prevMonth = curMonth === 1 ? 12 : curMonth - 1;
@@ -163,6 +167,7 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       }
     }
 
+    const itemsToNotify = [];
     for (const item of pending) {
       const { rec, prev } = item;
 
@@ -210,11 +215,43 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       });
 
       if (isNew) {
-        const text = formatBackdatedUpdate(rec, prev);
-        if (user.telegramChatId) {
-          await sendMessage(userId, text, log, { category: 'ATTENDANCE' }).catch(() => {});
-          attendanceAlertsSent++;
+        itemsToNotify.push({ rec, prev });
+      }
+    }
+
+    if (itemsToNotify.length === 1) {
+      const { rec, prev } = itemsToNotify[0];
+      const text = formatBackdatedUpdate(rec, prev);
+      if (user.telegramChatId) {
+        await sendMessage(userId, text, log, { category: 'ATTENDANCE' }).catch(() => {});
+        attendanceAlertsSent++;
+      }
+      await db.upsertKnownAttendance(userId, [rec]);
+      if (rec.date && rec.subjectCode) {
+        await db.saveAttendanceRecord(userId, qid, rec);
+      }
+    } else if (itemsToNotify.length > 1) {
+      const lines = [
+        '📌 *Missed Attendance Updates (While Disconnected)*',
+        'The following attendance updates occurred while your session was disconnected:\n',
+      ];
+      for (const { rec, prev } of itemsToNotify) {
+        const statusEmoji = rec.status === 'present' ? '✅' : (rec.status === 'absent' ? '❌' : 'ℹ️');
+        const statusText = rec.status ? (rec.status.charAt(0).toUpperCase() + rec.status.slice(1)) : 'Unknown';
+        const subj = rec.subject || rec.subjectCode || 'General';
+        const d = rec.date || '';
+        if (prev && prev.status) {
+          lines.push(`• *${subj}* (${d}): ${prev.status} ➔ ${statusEmoji} *${statusText}*`);
+        } else {
+          lines.push(`• *${subj}* (${d}): ${statusEmoji} *${statusText}*`);
         }
+      }
+      const text = lines.join('\n');
+      if (user.telegramChatId) {
+        await sendMessage(userId, text, log, { category: 'ATTENDANCE' }).catch(() => {});
+        attendanceAlertsSent += itemsToNotify.length;
+      }
+      for (const { rec } of itemsToNotify) {
         await db.upsertKnownAttendance(userId, [rec]);
         if (rec.date && rec.subjectCode) {
           await db.saveAttendanceRecord(userId, qid, rec);
@@ -235,6 +272,10 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       freshAssignments = opts.assignments;
     } else if (opts.skipAssignments || !sessionPath) {
       freshAssignments = [];
+    } else if (isNewErp) {
+      const newErpClient = require('./new-erp-client');
+      const res = await newErpClient.scrapeNewErpAssignments({ sessionPath }, log).catch(() => null);
+      freshAssignments = (res && res.items) ? res.items : [];
     } else {
       freshAssignments = await scrapeAssignments(sessionPath, { log });
     }
@@ -250,7 +291,8 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
       }
     }
 
-    for (const a of newAssignments) {
+    if (newAssignments.length === 1) {
+      const a = newAssignments[0];
       const dedupeKey = `assignment_catchup:${a.key}`;
       const isNew = await db.tryRecordNotificationLog(userId, 'assignment_catchup', dedupeKey, {
         title: a.title,
@@ -267,6 +309,38 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
         await db.addKnownAssignments(userId, [a]);
         await db.saveAssignmentRecord(userId, qid, a);
       }
+    } else if (newAssignments.length > 1) {
+      const validNew = [];
+      for (const a of newAssignments) {
+        const dedupeKey = `assignment_catchup:${a.key}`;
+        const isNew = await db.tryRecordNotificationLog(userId, 'assignment_catchup', dedupeKey, {
+          title: a.title,
+          subject: a.subject,
+          deadline: a.deadlineYMD || '',
+        });
+        if (isNew) {
+          validNew.push(a);
+        }
+      }
+      if (validNew.length) {
+        const lines = [
+          '📝 *New Assignments (While Disconnected)*',
+          'The following assignments were posted while your session was disconnected:\n',
+        ];
+        for (const a of validNew) {
+          const due = a.deadlineYMD || a.deadline || 'No deadline';
+          lines.push(`• *${a.subject || 'General'}:* ${a.title} (Due: ${due})`);
+        }
+        const text = lines.join('\n');
+        if (user.telegramChatId) {
+          await sendMessage(userId, text, log, { category: 'ASSIGNMENT' }).catch(() => {});
+          assignmentAlertsSent += validNew.length;
+        }
+        for (const a of validNew) {
+          await db.addKnownAssignments(userId, [a]);
+          await db.saveAssignmentRecord(userId, qid, a);
+        }
+      }
     }
 
     await db.touchUserSync(userId, { assignment: true });
@@ -275,10 +349,20 @@ async function runReconnectCatchup(userId, sessionPath, log = console, opts = {}
     log.log(`[catchup] assignment catchup error for user=${userId}: ${err.message}`);
   }
 
-  // 3. Send QUMS Reconnected confirmation message to Telegram
-  await notifyQumsReconnected(log, userId).catch(() => {});
-
-  await db.updateUser(userId, { qumsSessionStatus: 'active' });
+  // 3. Send Reconnected confirmation message to Telegram & restore active state
+  if (!opts.skipConfirmation) {
+    if (isNewErp) {
+      const { notifyNewErpReconnected } = require('./alerts');
+      await notifyNewErpReconnected(log, userId).catch(() => {});
+    } else {
+      await notifyQumsReconnected(log, userId).catch(() => {});
+    }
+  }
+  if (isNewErp) {
+    await db.updateUser(userId, { newErpSessionStatus: 'active' });
+  } else {
+    await db.updateUser(userId, { qumsSessionStatus: 'active' });
+  }
   await db.clearSessionExpiry(userId);
   return { attendanceAlertsSent, assignmentAlertsSent };
 }

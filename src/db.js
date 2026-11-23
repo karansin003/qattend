@@ -673,11 +673,26 @@ const ALL_USERS_COLUMNS = [
   'qums_password_encrypted',
 ].join(', ');
 
+const usersMapCache = new Map();
+let usersMapCacheAt = 0;
+const USERS_CACHE_TTL_MS = Number(process.env.USERS_CACHE_TTL_MS || 30 * 1000); // 30 seconds
+
+function invalidateUsersCache() {
+  usersMapCache.clear();
+  usersMapCacheAt = 0;
+}
+
 async function allUsers() {
   if (!USE_PG) return data.users.slice();
   await init();
   const r = await pool.query(`SELECT ${ALL_USERS_COLUMNS} FROM users ORDER BY created_at`);
-  return r.rows.map(fromUserRow);
+  const list = r.rows.map(fromUserRow);
+  usersMapCache.clear();
+  for (const u of list) {
+    if (u && u.id) usersMapCache.set(u.id, u);
+  }
+  usersMapCacheAt = Date.now();
+  return list;
 }
 
 /**
@@ -978,11 +993,17 @@ async function getUserByEmail(email) {
   return r.rows[0] ? fromUserRow(r.rows[0]) : null;
 }
 
-async function getUserById(id) {
+async function getUserById(id, { useCache = true } = {}) {
+  if (!id) return null;
+  if (useCache && usersMapCache.has(id) && (Date.now() - usersMapCacheAt < USERS_CACHE_TTL_MS)) {
+    return usersMapCache.get(id);
+  }
   if (!USE_PG) return data.users.find((u) => u.id === id) || null;
   await init();
   const r = await pool.query('SELECT * FROM users WHERE id=$1 LIMIT 1', [id]);
-  return r.rows[0] ? fromUserRow(r.rows[0]) : null;
+  const user = r.rows[0] ? fromUserRow(r.rows[0]) : null;
+  if (user) usersMapCache.set(id, user);
+  return user;
 }
 
 async function createUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended }) {
@@ -1041,6 +1062,7 @@ const WRITABLE_USER_COLUMNS = {
 };
 
 async function updateUser(id, patch) {
+  invalidateUsersCache();
   const user = await getUserById(id);
   if (!user) return null;
   const merged = { ...user, ...patch, updatedAt: new Date().toISOString() };
@@ -1402,6 +1424,67 @@ async function clearWeeklySchedule(userId, dayOfWeek) {
 // ---------------------------------------------------------------------------
 
 const SESSION_ALERT_COOLDOWN_MS = Number(process.env.SESSION_ALERT_COOLDOWN_MS || 12 * 60 * 60 * 1000);
+const SESSION_EXPIRY_CACHE_TTL_MS = Number(process.env.SESSION_EXPIRY_CACHE_TTL_MS || 60 * 1000); // 60 seconds
+
+let sessionExpiryCache = null;
+let sessionExpiryCacheAt = 0;
+
+function invalidateSessionExpiryCache() {
+  sessionExpiryCache = null;
+  sessionExpiryCacheAt = 0;
+}
+
+/**
+ * Batch-fetch all session expiry states in ONE query.
+ * Cached in-memory with a short TTL (default 60s) for high efficiency across watcher loops.
+ */
+async function getAllSessionExpiryStates({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && sessionExpiryCache && (now - sessionExpiryCacheAt < SESSION_EXPIRY_CACHE_TTL_MS)) {
+    return Array.from(sessionExpiryCache.values());
+  }
+  if (!USE_PG) {
+    const list = (data.sessionExpiry || []).map((row) => ({
+      userId: row.userId,
+      expiredAt: row.expiredAt ? Number(row.expiredAt) : null,
+      lastAlertAt: row.lastAlertAt ? Number(row.lastAlertAt) : null,
+      alertCount: Number(row.alertCount || 0),
+      resolvedAt: row.resolvedAt ? Number(row.resolvedAt) : null,
+      note: row.note || '',
+      telegramMessageId: row.telegramMessageId ? String(row.telegramMessageId) : null,
+    }));
+    sessionExpiryCache = new Map(list.map((s) => [s.userId, s]));
+    sessionExpiryCacheAt = now;
+    return list;
+  }
+  await init();
+  const r = await pool.query('SELECT user_id, expired_at, last_alert_at, alert_count, resolved_at, note, telegram_message_id FROM session_expiry_state');
+  const list = r.rows.map((row) => ({
+    userId: row.user_id,
+    expiredAt: row.expired_at ? Number(row.expired_at) : null,
+    lastAlertAt: row.last_alert_at ? Number(row.last_alert_at) : null,
+    alertCount: Number(row.alert_count || 0),
+    resolvedAt: row.resolved_at ? Number(row.resolved_at) : null,
+    note: row.note || '',
+    telegramMessageId: row.telegram_message_id ? String(row.telegram_message_id) : (row.telegramMessageId || null),
+  }));
+  sessionExpiryCache = new Map(list.map((s) => [s.userId, s]));
+  sessionExpiryCacheAt = now;
+  return list;
+}
+
+/**
+ * Returns a Map<userId, state> of all session expiry states.
+ * Allows zero-query in-memory lookups for watcher cycles.
+ */
+async function getSessionExpiryStatesMap({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && sessionExpiryCache && (now - sessionExpiryCacheAt < SESSION_EXPIRY_CACHE_TTL_MS)) {
+    return sessionExpiryCache;
+  }
+  await getAllSessionExpiryStates({ forceRefresh });
+  return sessionExpiryCache;
+}
 
 async function getSessionExpiryState(userId) {
   if (!userId || typeof userId !== 'string' || !userId.trim()) return null;
@@ -1413,7 +1496,7 @@ async function getSessionExpiryState(userId) {
   const r = await pool.query('SELECT * FROM session_expiry_state WHERE user_id=$1', [userId]);
   if (!r.rows[0]) return null;
   const row = r.rows[0];
-  return {
+  const obj = {
     userId: row.user_id,
     expiredAt: row.expired_at ? Number(row.expired_at) : null,
     lastAlertAt: row.last_alert_at ? Number(row.last_alert_at) : null,
@@ -1422,6 +1505,10 @@ async function getSessionExpiryState(userId) {
     note: row.note || '',
     telegramMessageId: row.telegram_message_id ? String(row.telegram_message_id) : (row.telegramMessageId || null),
   };
+  if (sessionExpiryCache) {
+    sessionExpiryCache.set(userId, obj);
+  }
+  return obj;
 }
 
 /** Record that this user's session expired (evidence-based — see scraper). */
@@ -1430,6 +1517,7 @@ async function markSessionExpired(userId, note = '') {
     console.error(`[db] markSessionExpired rejected invalid userId: ${typeof userId}`);
     return null;
   }
+  invalidateSessionExpiryCache();
   const now = Date.now();
   if (!USE_PG) {
     let e = data.sessionExpiry.find((s) => s.userId === userId);
@@ -1464,6 +1552,7 @@ async function recordSessionExpiryAlert(userId, messageId = null) {
     console.error(`[db] recordSessionExpiryAlert rejected invalid userId: ${typeof userId}`);
     return null;
   }
+  invalidateSessionExpiryCache();
   const now = Date.now();
   const msgIdStr = messageId ? String(messageId).trim() : null;
   if (!USE_PG) {
@@ -1533,6 +1622,7 @@ async function getSessionExpiryMessageIds(userId) {
 /** Clear the recorded Telegram message ID for session expiry (e.g. after deletion). */
 async function clearSessionExpiryTelegramMessage(userId) {
   if (!userId || typeof userId !== 'string' || !userId.trim()) return;
+  invalidateSessionExpiryCache();
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
     if (e) { e.telegramMessageId = null; persistJson(); }
@@ -1551,6 +1641,7 @@ async function clearSessionExpiryTelegramMessage(userId) {
 /** Reconnect succeeded or verified authenticated scrape -> clear expiry state so a future expiry alerts again. */
 async function clearSessionExpiry(userId, { maxExpiredAt = null } = {}) {
   if (!userId || typeof userId !== 'string' || !userId.trim()) return false;
+  invalidateSessionExpiryCache();
   const now = Date.now();
   if (!USE_PG) {
     const e = data.sessionExpiry.find((s) => s.userId === userId);
@@ -2815,7 +2906,7 @@ module.exports={
   // per-user sync bookkeeping
   touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
   // session-expiry state (PostgreSQL-backed)
-  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, markSessionExpired, recordSessionExpiryAlert, getSessionExpiryMessageIds, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
+  SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, getAllSessionExpiryStates, getSessionExpiryStatesMap, invalidateSessionExpiryCache, markSessionExpired, recordSessionExpiryAlert, getSessionExpiryMessageIds, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
   // scheduled message auto-deletions
   addScheduledDeletion, listPendingDeletions, removeScheduledDeletion,
   // notification log / analytics

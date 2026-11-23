@@ -123,7 +123,7 @@ async function deleteSessionExpiredAlert(userId, log = console) {
  * (SessionExpiredError). Network failures must call this with evidence=false,
  * which records the error but sends nothing.
  */
-async function maybeNotifySessionExpired(log = console, userId, { evidence = true, isManualAdminAlert = false } = {}) {
+async function maybeNotifySessionExpired(log = console, userId, { user: userObj = null, evidence = true, isManualAdminAlert = false } = {}) {
   try {
     const logger = (log && typeof log.log === 'function') ? log : console;
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
@@ -150,19 +150,23 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
       // Reliable expiry evidence: mark the event if this is a new one.
       const before = await db.getSessionExpiryState(userId);
       const isNewEvent = !before || !before.expiredAt || before.resolvedAt;
-      if (isNewEvent) await db.markSessionExpired(userId, 'session-expired');
-      const state = await db.getSessionExpiryState(userId);
+      let state = before;
+      if (isNewEvent) {
+        state = await db.markSessionExpired(userId, 'session-expired');
+      }
       if (!isManualAdminAlert && state && state.lastAlertAt && Date.now() - state.lastAlertAt < COOLDOWN_MS) {
         log.log(`[alerts] user=${userId} expiry alert already sent for this event — skip.`);
         return false;
       }
       if (!isConfigured()) {
-        log.log('[alerts] Telegram not configured (TELEGRAM_BOT_TOKEN missing) — expiry alert skipped.');
+        log.log('[alerts] Telegram not configured (TELEGRAM_BOT_TOKEN missing) — recording expiry alert state to prevent query looping.');
+        await db.recordSessionExpiryAlert(userId, null).catch(() => {});
         return false;
       }
 
-      // Check whether user has Telegram and credentials saved for Telegram reconnect button
-      const user = await db.getUserById(userId);
+      // Check whether user has Telegram and credentials saved for Telegram reconnect button.
+      // Reuses user object passed from watcher/caller to eliminate redundant getUserById queries.
+      const user = userObj || (await db.getUserById(userId));
       const savedEncrypted = user && (user.qumsPasswordEncrypted || (await db.getQumsEncryptedPassword(userId)));
       const canTelegramReconnect = Boolean(user && user.telegramChatId && user.qumsQid && savedEncrypted);
 
@@ -175,7 +179,8 @@ async function maybeNotifySessionExpired(log = console, userId, { evidence = tru
       };
       const sent = await sendMessage(userId, SESSION_EXPIRED_TEXT, log, sendOpts);
       if (!sent) {
-        log.log('[alerts] user has not linked Telegram — expiry alert skipped (the next cycle retries).');
+        log.log('[alerts] user has not linked Telegram or message undeliverable — recording alert state to prevent repeated query retries.');
+        await db.recordSessionExpiryAlert(userId, null).catch(() => {});
         return false;
       }
       const messageId = sendOpts.messageId || null;
@@ -349,6 +354,8 @@ async function notifyNewErpSessionExpired(userId, log = console) {
       const msgId = opts.messageId ? String(opts.messageId) : null;
       await db.recordNotification(userId, 'session_expired', { erpType: 'NEW', messageId: msgId }, log).catch(() => {});
       await db.recordSessionExpiryAlert(userId, msgId).catch(() => {});
+    } else {
+      await db.recordSessionExpiryAlert(userId, null).catch(() => {});
     }
     return Boolean(sent);
   } catch (err) {
@@ -463,6 +470,8 @@ async function notifySessionConflict(userId, log = console) {
       const msgId = opts.messageId ? String(opts.messageId) : null;
       await db.recordNotification(userId, 'session_conflict', { erpType: 'NEW', messageId: msgId }, log).catch(() => {});
       await db.recordSessionExpiryAlert(userId, msgId).catch(() => {});
+    } else {
+      await db.recordSessionExpiryAlert(userId, null).catch(() => {});
     }
     return Boolean(sent);
   } catch (err) {

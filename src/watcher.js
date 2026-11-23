@@ -372,6 +372,7 @@ async function runWatcherPass(log = console) {
     }
     return Boolean(u.qumsSessionPath);
   });
+  const expiryMap = await db.getSessionExpiryStatesMap().catch(() => null);
   const users = [];
   for (const user of allUsers) {
     if (user.activeErpType === 'NEW') {
@@ -390,9 +391,11 @@ async function runWatcherPass(log = console) {
     }
 
     if (user.qumsSessionStatus === 'expired') {
-      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      const state = expiryMap ? expiryMap.get(user.id) : await db.getSessionExpiryState(user.id).catch(() => null);
       if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+        if (state) state.lastAlertAt = Date.now();
+        else if (expiryMap) expiryMap.set(user.id, { userId: user.id, lastAlertAt: Date.now() });
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
@@ -956,6 +959,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     }
     return Boolean(u.qumsSessionPath);
   });
+  const expiryMap = await db.getSessionExpiryStatesMap().catch(() => null);
   const users = [];
   for (const user of allUsers) {
     if (user.activeErpType === 'NEW') {
@@ -974,9 +978,11 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     }
 
     if (user.qumsSessionStatus === 'expired') {
-      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      const state = expiryMap ? expiryMap.get(user.id) : await db.getSessionExpiryState(user.id).catch(() => null);
       if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+        if (state) state.lastAlertAt = Date.now();
+        else if (expiryMap) expiryMap.set(user.id, { userId: user.id, lastAlertAt: Date.now() });
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;

@@ -964,6 +964,12 @@ async function executeNewErp1ClickReconnect(user, chatId, log = console, alertMe
       const { clearSessionAlert } = require('./alerts');
       await clearSessionAlert(user.id, log).catch(() => {});
 
+      // Controlled post-reconnect reconciliation of missed attendance & assignments
+      const catchup = require('./catchup');
+      catchup.runReconnectCatchup(user.id, sessionPath, log, { skipConfirmation: true }).catch((cErr) => {
+        log.log(`[telegram-reconnect] post-reconnect catchup warning: ${cErr.message}`);
+      });
+
       if (alertMessageId && bot && typeof bot.deleteMessage === 'function') {
         await bot.deleteMessage(chatId, alertMessageId).catch(() => {});
       }

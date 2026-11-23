@@ -227,12 +227,15 @@ async function runAssignmentCycle(opts = {}) {
 /** One pass over ALL users with a linked QUMS session. */
 async function runAssignmentPass(log = console, { mode = 'new', dryRun = false } = {}) {
   const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
+  const expiryMap = await db.getSessionExpiryStatesMap().catch(() => null);
   const users = [];
   for (const user of allUsers) {
     if (user.qumsSessionStatus === 'expired') {
-      const state = await db.getSessionExpiryState(user.id).catch(() => null);
+      const state = expiryMap ? expiryMap.get(user.id) : await db.getSessionExpiryState(user.id).catch(() => null);
       if (!state || !state.lastAlertAt) {
         await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => {});
+        if (state) state.lastAlertAt = Date.now();
+        else if (expiryMap) expiryMap.set(user.id, { userId: user.id, lastAlertAt: Date.now() });
       }
       log.log(`[Watcher] Skipping user ${user.id}: QUMS session unavailable.`);
       continue;
