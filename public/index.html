@@ -767,13 +767,44 @@
         }
         periods.forEach((p) => {
           const row = document.createElement('li');
-          const subject = document.createElement('span');
+
+          const left = document.createElement('div');
+          left.className = 'today-item-left';
+
+          const subject = document.createElement('div');
+          subject.className = 'today-item-title';
           subject.textContent = (p.period ? p.period + ' · ' : '') + (p.subject || p.subjectCode || 'Class');
-          const meta = document.createElement('span');
+
+          const meta = document.createElement('div');
           meta.className = 'period';
-          meta.textContent = [p.duration, p.employee, p.room ? 'Room: ' + p.room : ''].filter(Boolean).join(' • ');
-          row.appendChild(subject);
-          row.appendChild(meta);
+          const metaTeacher = p.employee || p.teacher || '';
+          meta.textContent = [p.duration, p.room ? 'Room: ' + p.room : '', metaTeacher].filter(Boolean).join(' • ');
+
+          left.appendChild(subject);
+          left.appendChild(meta);
+
+          const right = document.createElement('div');
+          right.className = 'today-item-right';
+
+          const badge = document.createElement('span');
+          const status = String(p.status || '').toLowerCase();
+          const att = String(p.attendance || '').toLowerCase();
+
+          if (status === 'present' || att === 'present' || att === 'p') {
+            badge.className = 'badge-present';
+            badge.innerHTML = '✅ Present';
+          } else if (status === 'absent' || att === 'absent' || att === 'a') {
+            badge.className = 'badge-absent';
+            badge.innerHTML = '❌ Absent';
+          } else {
+            badge.className = 'badge-not-marked';
+            badge.innerHTML = '⏳ Not Marked';
+          }
+
+          right.appendChild(badge);
+
+          row.appendChild(left);
+          row.appendChild(right);
           list.appendChild(row);
         });
       } catch (err) {

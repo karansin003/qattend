@@ -1914,18 +1914,46 @@ a.btn-danger:hover {
 .today-list li {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   font-size: .86rem;
-  padding: 8px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
   margin-bottom: 6px;
   background: #fff;
+  transition: background .15s ease;
+}
+
+.today-list li:hover {
+  background: #f8fafc;
+}
+
+.today-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.today-item-title {
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+  line-height: 1.35;
 }
 
 .today-list .period {
   color: var(--muted);
-  white-space: nowrap;
+  font-size: .78rem;
+  line-height: 1.3;
+}
+
+.today-item-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 /* ---- soft status badges (setup pages) ---- */
@@ -2463,7 +2491,9 @@ a.btn-danger:hover {
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 11.5px;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .badge-absent {
@@ -2473,7 +2503,9 @@ a.btn-danger:hover {
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 11.5px;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .badge-not-marked {
@@ -2483,7 +2515,9 @@ a.btn-danger:hover {
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 11.5px;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* Blue details button */

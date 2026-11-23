@@ -925,14 +925,147 @@ app.get('/api/today', requireAuth, async (req, res) => {
 
       const todayRows = rows.filter((r) => (r.day && r.day.toLowerCase() === istDayName.toLowerCase()) || r.dayOfWeek === targetDow);
 
-      const periods = todayRows.map((r, i) => ({
-        period: `P${i + 1}`,
-        duration: r.periodTime || '',
-        subject: r.subjectName || 'Class',
-        subjectCode: r.subjectCode || '',
-        employee: r.facultyName || 'TBA',
-        room: r.classroom || 'Classroom',
-      }));
+      // Correlate attendance status for today from New ERP attendance cache / live
+      let todayRecords = [];
+      try {
+        const cachedAtt = await db.getNewErpAttendanceCache(userId);
+        const dailyRecords = (cachedAtt && Array.isArray(cachedAtt.dailyRecords)) ? cachedAtt.dailyRecords : [];
+
+        const istParts = new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Kolkata',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).formatToParts(new Date());
+        const getPart = (t) => (istParts.find((p) => p.type === t) || {}).value || '';
+        const todayIso = `${getPart('year')}-${getPart('month')}-${getPart('day')}`;
+        const todayDmy = `${getPart('day')}-${getPart('month')}-${getPart('year')}`;
+        const todaySlash = `${getPart('day')}/${getPart('month')}/${getPart('year')}`;
+
+        todayRecords = dailyRecords.filter((r) => {
+          const d = String(r.date || r.lectureDate || r.rawDate || '').trim();
+          return d === todayIso || d === todayDmy || d === todaySlash;
+        });
+
+        if (forceFresh && fs.existsSync(sp)) {
+          try {
+            const liveAtt = await newErpClient.scrapeNewErpAttendance({ sessionPath: sp });
+            if (liveAtt && liveAtt.dailyRecords) {
+              await db.saveNewErpAttendanceCache(userId, liveAtt);
+              todayRecords = (liveAtt.dailyRecords || []).filter((r) => {
+                const d = String(r.date || r.lectureDate || r.rawDate || '').trim();
+                return d === todayIso || d === todayDmy || d === todaySlash;
+              });
+            }
+          } catch {}
+        }
+      } catch {
+        todayRecords = [];
+      }
+
+      const matchedIndices = new Set();
+      const normalizeCode = (s) => String(s || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      const normalizeTitle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+
+      const periods = todayRows.map((r, i) => {
+        const rowCode = normalizeCode(r.subjectCode || r.rawData?.subjectCode);
+        const rowTitle = normalizeTitle(r.subjectName);
+        const rowTime = String(r.periodTime || '').replace(/\s+/g, '');
+
+        let match = null;
+
+        if (rowCode) {
+          const idx = todayRecords.findIndex((rec, idx) => {
+            if (matchedIndices.has(idx)) return false;
+            const recCode = normalizeCode(rec.subjectCode);
+            return recCode && (recCode === rowCode || recCode.includes(rowCode) || rowCode.includes(recCode));
+          });
+          if (idx !== -1) {
+            matchedIndices.add(idx);
+            match = todayRecords[idx];
+          }
+        }
+
+        if (!match && rowTitle) {
+          const idx = todayRecords.findIndex((rec, idx) => {
+            if (matchedIndices.has(idx)) return false;
+            const recTitle = normalizeTitle(rec.subjectName || rec.subject);
+            return recTitle && (recTitle === rowTitle || recTitle.includes(rowTitle) || rowTitle.includes(recTitle));
+          });
+          if (idx !== -1) {
+            matchedIndices.add(idx);
+            match = todayRecords[idx];
+          }
+        }
+
+        if (!match && rowTime) {
+          const idx = todayRecords.findIndex((rec, idx) => {
+            if (matchedIndices.has(idx)) return false;
+            const recTime = String(rec.time || rec.lectureTime || '').replace(/\s+/g, '');
+            return recTime && (rowTime.includes(recTime) || recTime.includes(rowTime));
+          });
+          if (idx !== -1) {
+            matchedIndices.add(idx);
+            match = todayRecords[idx];
+          }
+        }
+
+        let status = 'unmarked';
+        let attendance = 'Not Marked';
+
+        if (match) {
+          const rawStatus = String(match.attendanceStatus || match.statusRaw || match.status || '').toLowerCase();
+          if (rawStatus.includes('present') || rawStatus === 'p') {
+            status = 'present';
+            attendance = 'Present';
+          } else if (rawStatus.includes('absent') || rawStatus === 'a') {
+            status = 'absent';
+            attendance = 'Absent';
+          } else {
+            status = 'unmarked';
+            attendance = 'Not Marked';
+          }
+        }
+
+        return {
+          period: `P${i + 1}`,
+          duration: r.periodTime || (match && (match.time || match.lectureTime)) || '',
+          subject: r.subjectName || (match && (match.subjectName || match.subject)) || 'Class',
+          subjectCode: r.subjectCode || (match && match.subjectCode) || '',
+          employee: r.facultyName || (match && (match.facultyName || match.faculty)) || 'TBA',
+          teacher: r.facultyName || (match && (match.facultyName || match.faculty)) || 'TBA',
+          room: r.classroom || (match && match.room) || 'Classroom',
+          status,
+          attendance,
+        };
+      });
+
+      // Also append any recorded lectures for today not in the weekly timetable (e.g. extra/makeup lectures)
+      todayRecords.forEach((rec, idx) => {
+        if (!matchedIndices.has(idx)) {
+          const rawStatus = String(rec.attendanceStatus || rec.statusRaw || rec.status || '').toLowerCase();
+          let status = 'unmarked';
+          let attendance = 'Not Marked';
+          if (rawStatus.includes('present') || rawStatus === 'p') {
+            status = 'present';
+            attendance = 'Present';
+          } else if (rawStatus.includes('absent') || rawStatus === 'a') {
+            status = 'absent';
+            attendance = 'Absent';
+          }
+          periods.push({
+            period: `P${periods.length + 1}`,
+            duration: rec.time || rec.lectureTime || '',
+            subject: rec.subjectName || rec.subject || 'Class',
+            subjectCode: rec.subjectCode || '',
+            employee: rec.facultyName || rec.faculty || 'TBA',
+            teacher: rec.facultyName || rec.faculty || 'TBA',
+            room: rec.room || 'Classroom',
+            status,
+            attendance,
+          });
+        }
+      });
 
       const payload = { date: new Date().toISOString(), periods };
       return res.json(payload);
@@ -962,11 +1095,34 @@ app.get('/api/today', requireAuth, async (req, res) => {
       }
       if (timetable) {
         const todayPeriods = getTimetableForDate(timetable, new Date());
-        periods = mergeScheduleWithRoom(periods, todayPeriods);
+        periods = combineTimetableWithLiveAttendance(todayPeriods, periods);
       }
     } catch {
       // Silently keep periods without room/teacher enrichment
     }
+
+    // Ensure status, attendance, employee, teacher are consistently formatted
+    periods = (periods || []).map((p) => {
+      let status = (p.status || '').toLowerCase();
+      const att = String(p.attendance || '').trim();
+      if (!status || status === 'other') {
+        if (/present|^p$/i.test(att)) status = 'present';
+        else if (/absent|^a$/i.test(att)) status = 'absent';
+        else status = 'unmarked';
+      }
+      const attendance = (status === 'present')
+        ? 'Present'
+        : (status === 'absent')
+          ? 'Absent'
+          : (att && !/^(n\.?m\.?|-|not\s*marked)$/i.test(att) ? att : 'Not Marked');
+      return {
+        ...p,
+        employee: p.employee || p.teacher || 'TBA',
+        teacher: p.teacher || p.employee || 'TBA',
+        status,
+        attendance,
+      };
+    });
 
     const payload = { date: new Date().toISOString(), periods };
     todayCache.set(userId, { data: payload, timestamp: Date.now() });
