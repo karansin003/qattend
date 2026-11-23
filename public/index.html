@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
   <link rel="shortcut icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/style.css?v=20261107-3" />
+  <link rel="stylesheet" href="/style.css?v=20261123-4" />
   <script src="/site.js" defer></script>
   <style>
     /* Full-width 50-50 Segmented Control for Attendance System & Time Table */
@@ -192,9 +192,9 @@
       </div>
 
       <div id="todayBox" class="hidden">
-        <div class="today-box-header">
-          <div class="section-title">Today's classes</div>
-          <button type="button" class="btn-close-today" id="todayCloseBtn" aria-label="Close today's classes" title="Close">✕</button>
+        <div class="today-box-header" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; margin-bottom: 8px;">
+          <div class="section-title" style="margin: 0;">Today's classes</div>
+          <button type="button" class="btn-close-today" id="todayCloseBtn" aria-label="Close today's classes" title="Close" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; border-radius: 8px; border: 1px solid var(--line, #e2e8f0); background: #ffffff; color: var(--muted, #64748b); font-size: 15px; font-weight: 700; line-height: 1; cursor: pointer;">✕</button>
         </div>
         <ul class="today-list" id="todayList"></ul>
       </div>
