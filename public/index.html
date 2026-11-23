@@ -192,7 +192,10 @@
       </div>
 
       <div id="todayBox" class="hidden">
-        <div class="section-title" style="margin-top:16px;">Today's classes</div>
+        <div class="today-box-header">
+          <div class="section-title">Today's classes</div>
+          <button type="button" class="btn-close-today" id="todayCloseBtn" aria-label="Close today's classes" title="Close">✕</button>
+        </div>
         <ul class="today-list" id="todayList"></ul>
       </div>
 
@@ -1389,6 +1392,14 @@
         $('tabNewTimetable').click();
       }
     });
+
+    if ($('todayCloseBtn')) {
+      $('todayCloseBtn').addEventListener('click', () => {
+        const box = $('todayBox');
+        if (box) box.classList.add('hidden');
+        if ($('todayLoadBtn')) $('todayLoadBtn').disabled = false;
+      });
+    }
 
 
     // Instant First Paint from localStorage cache if present (0ms display!)

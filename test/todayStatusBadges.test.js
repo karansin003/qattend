@@ -182,4 +182,18 @@ assert.deepStrictEqual(renderBadge(result[0]), { class: 'badge-present', text: '
 assert.deepStrictEqual(renderBadge(result[1]), { class: 'badge-absent', text: '❌ Absent' });
 assert.deepStrictEqual(renderBadge(result[2]), { class: 'badge-not-marked', text: '⏳ Not Marked' });
 
-console.log('✅ All today status badges tests passed!');
+// 4. Verify Close Button elements in public/index.html & public/style.css
+const fs = require('fs');
+const path = require('path');
+const htmlContent = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf-8');
+const cssContent = fs.readFileSync(path.join(__dirname, '../public/style.css'), 'utf-8');
+
+assert.ok(htmlContent.includes('id="todayCloseBtn"'), 'index.html must contain todayCloseBtn');
+assert.ok(htmlContent.includes('class="today-box-header"'), 'index.html must contain today-box-header');
+assert.ok(htmlContent.includes('btn-close-today'), 'index.html must contain btn-close-today');
+assert.ok(htmlContent.includes("box.classList.add('hidden')"), 'index.html must contain box close handler');
+
+assert.ok(cssContent.includes('.today-box-header'), 'style.css must define .today-box-header');
+assert.ok(cssContent.includes('.btn-close-today'), 'style.css must define .btn-close-today');
+
+console.log('✅ All today status badges and close button tests passed!');

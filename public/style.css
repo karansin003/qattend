@@ -1905,6 +1905,46 @@ a.btn-danger:hover {
   margin-top: 10px;
 }
 
+.today-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  margin-bottom: 6px;
+}
+
+.today-box-header .section-title {
+  margin: 0;
+}
+
+.btn-close-today {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.btn-close-today:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.btn-close-today:active {
+  transform: scale(0.95);
+}
+
 .today-list {
   margin: 10px 0 0;
   padding: 0;
