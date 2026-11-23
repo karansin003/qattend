@@ -1933,16 +1933,18 @@ a.btn-danger:hover {
   cursor: pointer;
   transition: all 0.15s ease;
   padding: 0;
+  margin-top: -6px;
 }
 
 .btn-close-today:hover {
   background: #fee2e2;
   color: #b91c1c;
   border-color: #fca5a5;
+  transform: translateY(-1px);
 }
 
 .btn-close-today:active {
-  transform: scale(0.95);
+  transform: translateY(0);
 }
 
 .today-list {
