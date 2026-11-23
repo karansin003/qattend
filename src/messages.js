@@ -455,6 +455,54 @@ function formatDateAttendanceReport(dateInfo, rows, options = {}) {
   return lines.join('\n');
 }
 
+/**
+ * Format date-wise timetable routine report for Telegram.
+ * dateInfo: { day, month, year, ymd, formattedDate }
+ * dayName: 'Monday', 'Tuesday', etc.
+ * rows: array of routine class records for that weekday [{ period, duration, subject, subjectCode, teacher, room }]
+ * options: { studentName, isFuture, isTomorrow }
+ */
+function formatRoutineReport(dateInfo, dayName, rows, options = {}) {
+  const { day, month, year, ymd } = dateInfo;
+  const fullDate = fullDateLabelFromYMD(ymd || `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+  const student = options.studentName ? `Hi *${options.studentName}*! ` : '';
+  const tag = options.isTomorrow ? ' (Tomorrow)' : (options.isFuture ? ' (Future Date)' : '');
+  const lines = [
+    `📅 *Class Routine${tag}* — ${dayName}, ${fullDate}`,
+    '',
+  ];
+
+  const list = (rows || []).filter((r) => r && (r.period || r.subject || r.subjectCode));
+  if (!list.length) {
+    const isWeekend = ['Saturday', 'Sunday'].includes(dayName);
+    if (isWeekend) {
+      lines.push(`🎉 ${student}No classes scheduled for ${dayName} (Weekend / Off Day).\nEnjoy your day!`);
+    } else {
+      lines.push(`🎉 ${student}No classes scheduled for ${dayName} (Holiday / Break ya Off Day).\nEnjoy your day!`);
+    }
+    return lines.join('\n');
+  }
+
+  const classCountText = `${list.length} ${list.length === 1 ? 'class' : 'classes'}`;
+  lines.push(`${student}Here is your schedule for ${dayName} (${classCountText}):`, '');
+
+  list.forEach((r, i) => {
+    const dur = resolveDuration(r.duration, r.period);
+    const timeLabel = dur || r.period || `P${i + 1}`;
+    const subName = r.subject || r.subjectCode || 'Class';
+    const subCode = (r.subjectCode && r.subject && r.subjectCode !== r.subject) ? ` (${r.subjectCode})` : '';
+    lines.push(`${i + 1}. 🕐 *${timeLabel}* — 📚 *${subName}*${subCode}`);
+    const extras = [];
+    if (r.room) extras.push(`📍 Room: ${r.room}`);
+    const teacher = r.teacher || r.employee || r.facultyName;
+    if (teacher) extras.push(`👨‍🏫 ${teacher}`);
+    if (extras.length) lines.push(`   ${extras.join(' • ')}`);
+    if (i < list.length - 1) lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
 module.exports = {
   dateLabelIST,
   dateLabelFromYMD,
@@ -466,6 +514,7 @@ module.exports = {
   formatAttendanceMessage,
   formatTodayAttendanceStatus,
   formatDateAttendanceReport,
+  formatRoutineReport,
   splitTelegramMessage,
   formatNewAssignment,
   formatAssignmentDeadlineReminder,

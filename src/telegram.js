@@ -739,16 +739,32 @@ async function handleUserMessage(msg, log = console) {
     return;
   }
 
-  if (/^\/attend[ae]nce(?:@\w+)?/i.test(text) || ['attendance', 'attendence'].includes(lower)) {
+  if (/^\/attend[ae]nce(?:@\w+)?$/i.test(text) || ['attendance', 'attendence'].includes(lower)) {
     await handleAttendance(chatId, log);
     return;
   }
 
   if (
-    /^\/today(?:@\w+)?/i.test(text) ||
+    /^\/today(?:@\w+)?$/i.test(text) ||
     /^(?:today|today['s]*\s*class(?:es)?|aaj\s*(?:ki\s*)?class(?:es)?|timetable|classes|schedule)$/i.test(lower.trim())
   ) {
     await handleToday(chatId, log);
+    return;
+  }
+
+  if (
+    /^\/tomorrow(?:@\w+)?$/i.test(text) ||
+    /^(?:tomorrow|kal\s*ki\s*class(?:es)?|kal\s*ka\s*routine|kal\s*ka\s*schedule|aane\s*wala\s*kal)$/i.test(lower.trim())
+  ) {
+    await handleTomorrow(chatId, log);
+    return;
+  }
+
+  if (
+    /^\/yesterday(?:@\w+)?$/i.test(text) ||
+    /^(?:yesterday|kal\s*ki\s*attendance|beeta\s*kal)$/i.test(lower.trim())
+  ) {
+    await handleYesterday(chatId, log);
     return;
   }
 
@@ -794,8 +810,20 @@ async function handleUserMessage(msg, log = console) {
 
   const dateMatch = parseDateCommand(text);
   if (dateMatch) {
-    await handleDateAttendance(chatId, dateMatch, msg, log);
+    await handleDateRouter(chatId, dateMatch, msg, log);
     return;
+  }
+
+  const naturalDateMatch = parseNaturalDate(text);
+  if (naturalDateMatch) {
+    const user = await db.getUserByTelegramChatId(chatId);
+    if (user && isWaitingCaptcha(user.id)) {
+      // User is currently solving a CAPTCHA — do not intercept as a date!
+      // Let it fall through to captcha submission below.
+    } else {
+      await handleDateRouter(chatId, naturalDateMatch, msg, log);
+      return;
+    }
   }
 
   if (text.startsWith('/')) {
@@ -1489,8 +1517,12 @@ async function handleHelp(chatId, log = console) {
     '',
     'Available commands:',
     '📊 /attendance — Full attendance summary (auto-deletes in 1 minute)',
-    '📅 /today — Today\'s attendance status: Present/Absent breakdown (auto-deletes in 1 minute)',
-    '📅 /DD/MM/YY — Full attendance for any specific date, e.g. /12/10/26 (auto-deletes in 1 minute)',
+    '📅 /today — Today\'s attendance status & timetable routine (auto-deletes in 1 minute)',
+    '📅 /tomorrow — Tomorrow\'s class timetable routine (auto-deletes in 1 minute)',
+    '📅 /yesterday — Yesterday\'s historical attendance records (auto-deletes in 1 minute)',
+    '📅 /routine [DD/MM/YY] — View timetable routine for any date (e.g. /routine 24/11/26)',
+    '📅 /attendance [DD/MM/YY] — Attendance records for any past date',
+    '📅 /date DD/MM/YY or /DD/MM/YY — Check attendance or routine for any date (e.g. /24/11/26)',
     '📚 /assignments — View pending assignments & deadlines',
     'ℹ️ /status — Check your QUMS & Telegram account status',
     '🔄 /reconnect — Reconnect your QUMS session via Telegram (CAPTCHA)',
@@ -1932,24 +1964,291 @@ async function handleToday(chatId, log = console) {
   }
 }
 
+function getIstYmd(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+function getIstDateAtNoon(year, month, day) {
+  const y = String(year).padStart(4, '0');
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return new Date(`${y}-${m}-${d}T12:00:00+05:30`);
+}
+
+function getIstDayOfWeek(d) {
+  const weekdayStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+  }).format(d);
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return map[weekdayStr] ?? d.getDay();
+}
+
 function parseDateCommand(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
 
-  // Keyword check: yesterday / kal
-  if (/^(?:\/?yesterday|kal|kal\s*ki\s*(?:attendance|class(?:es)?))$/i.test(trimmed)) {
+  // Keyword check: tomorrow
+  if (/^(?:\/?tomorrow|kal\s*ki\s*class(?:es)?|kal\s*ka\s*routine|kal\s*ka\s*schedule|aane\s*wala\s*kal)$/i.test(lower)) {
     const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    istNow.setDate(istNow.getDate() - 1);
+    istNow.setDate(istNow.getDate() + 1);
     const day = istNow.getDate();
     const month = istNow.getMonth() + 1;
     const year = istNow.getFullYear();
     return {
+      type: 'tomorrow',
       day,
       month,
       year,
       rawText: trimmed,
       formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
       ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    };
+  }
+
+  // Keyword check: yesterday
+  if (/^(?:\/?yesterday|kal\s*ki\s*attendance|beeta\s*kal)$/i.test(lower) || lower === 'yesterday') {
+    const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    istNow.setDate(istNow.getDate() - 1);
+    const day = istNow.getDate();
+    const month = istNow.getMonth() + 1;
+    const year = istNow.getFullYear();
+    return {
+      type: 'yesterday',
+      day,
+      month,
+      year,
+      rawText: trimmed,
+      formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+      ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    };
+  }
+
+  // Explicit /routine [date | tomorrow | yesterday | today]
+  const routineMatch = trimmed.match(/^\/routine(?:@\w+)?(?:\s+(.+))?$/i);
+  if (routineMatch) {
+    const target = (routineMatch[1] || '').trim();
+    if (!target || /^(?:today|aaj)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'routine',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:tomorrow|kal)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() + 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'routine',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:yesterday)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() - 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'routine',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    const dm = target.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})$/);
+    if (dm) {
+      const day = Number(dm[1]);
+      const month = Number(dm[2]);
+      const rawYear = Number(dm[3]);
+      const year = dm[3].length === 2 ? 2000 + rawYear : rawYear;
+      return {
+        type: 'routine',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    return {
+      type: 'routine_invalid',
+      rawText: trimmed,
+      targetText: target,
+    };
+  }
+
+  // Explicit /attendance [date | tomorrow | yesterday | today]
+  const attMatch = trimmed.match(/^\/attend[ae]nce(?:@\w+)?\s+(.+)$/i);
+  if (attMatch) {
+    const target = attMatch[1].trim();
+    if (/^(?:today|aaj)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'attendance',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:tomorrow|kal)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() + 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'attendance',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:yesterday)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() - 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'attendance',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    const dm = target.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})$/);
+    if (dm) {
+      const day = Number(dm[1]);
+      const month = Number(dm[2]);
+      const rawYear = Number(dm[3]);
+      const year = dm[3].length === 2 ? 2000 + rawYear : rawYear;
+      return {
+        type: 'attendance',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    return {
+      type: 'attendance_invalid',
+      rawText: trimmed,
+      targetText: target,
+    };
+  }
+
+  // Explicit /date [date | tomorrow | yesterday | today]
+  const dateCmdMatch = trimmed.match(/^\/date(?:@\w+)?(?:\s+(.+))?$/i);
+  if (dateCmdMatch) {
+    const target = (dateCmdMatch[1] || '').trim();
+    if (!target || /^(?:today|aaj)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'date',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:tomorrow|kal)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() + 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'date',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    if (/^(?:yesterday)$/i.test(target)) {
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      istNow.setDate(istNow.getDate() - 1);
+      const day = istNow.getDate();
+      const month = istNow.getMonth() + 1;
+      const year = istNow.getFullYear();
+      return {
+        type: 'date',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    const dm = target.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})$/);
+    if (dm) {
+      const day = Number(dm[1]);
+      const month = Number(dm[2]);
+      const rawYear = Number(dm[3]);
+      const year = dm[3].length === 2 ? 2000 + rawYear : rawYear;
+      return {
+        type: 'date',
+        day,
+        month,
+        year,
+        rawText: trimmed,
+        formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+        ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }
+    return {
+      type: 'date_invalid',
+      rawText: trimmed,
+      targetText: target,
     };
   }
 
@@ -1962,6 +2261,28 @@ function parseDateCommand(text) {
   const year = m[3].length === 2 ? 2000 + rawYear : rawYear;
 
   return {
+    type: 'date',
+    day,
+    month,
+    year,
+    rawText: trimmed,
+    formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+    ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+}
+
+function parseNaturalDate(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  const m = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})$/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const rawYear = Number(m[3]);
+  const year = m[3].length === 2 ? 2000 + rawYear : rawYear;
+
+  return {
+    type: 'natural_date',
     day,
     month,
     year,
@@ -2006,71 +2327,165 @@ function isFutureDate(day, month, year, now = new Date()) {
   return false;
 }
 
-async function handleDateAttendance(chatId, dateInfo, msg = null, log = console) {
+async function handleTomorrow(chatId, log = console) {
+  const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  istNow.setDate(istNow.getDate() + 1);
+  const day = istNow.getDate();
+  const month = istNow.getMonth() + 1;
+  const year = istNow.getFullYear();
+  const dateInfo = {
+    type: 'tomorrow',
+    day,
+    month,
+    year,
+    rawText: '/tomorrow',
+    formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+    ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+  await handleRoutineDate(chatId, dateInfo, null, log, { isTomorrow: true });
+}
+
+async function handleYesterday(chatId, log = console) {
+  const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  istNow.setDate(istNow.getDate() - 1);
+  const day = istNow.getDate();
+  const month = istNow.getMonth() + 1;
+  const year = istNow.getFullYear();
+  const dateInfo = {
+    type: 'yesterday',
+    day,
+    month,
+    year,
+    rawText: '/yesterday',
+    formattedDate: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`,
+    ymd: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+  await handlePastDateAttendance(chatId, dateInfo, null, log);
+}
+
+async function handleRoutineDate(chatId, dateInfo, msg = null, log = console, options = {}) {
   const user = await db.getUserByTelegramChatId(chatId);
   if (!user) {
     await reply(chatId, MSG.STATUS_NONE, log);
     return;
   }
 
-  // Ensure user's command message is scheduled for deletion after 60s
   if (msg && msg.message_id) {
     scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
   }
 
-  if (!isValidCalendarDate(dateInfo.day, dateInfo.month, dateInfo.year)) {
-    const sentMsg = await reply(
-      chatId,
-      `⚠️ *Invalid Date*\n\n"${dateInfo.rawText}" is not a valid calendar date.\nPlease check the day, month, and leap year.${AUTO_DELETE_FOOTNOTE}`,
-      log
-    );
-    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-    }
-    return;
-  }
+  try {
+    const { formatRoutineReport } = require('./messages');
+    const d = getIstDateAtNoon(dateInfo.year, dateInfo.month, dateInfo.day);
+    const dow = getIstDayOfWeek(d); // 0=Sun, 1=Mon, ..., 6=Sat
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayName = dayNames[dow];
 
-  if (isFutureDate(dateInfo.day, dateInfo.month, dateInfo.year)) {
-    const sentMsg = await reply(
-      chatId,
-      `📅 *Future Date*\n\nCannot lookup attendance for future date ${dateInfo.formattedDate}.\nPlease request today's or a past date.${AUTO_DELETE_FOOTNOTE}`,
-      log
-    );
-    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-    }
-    return;
-  }
+    let rows = [];
 
-  // --- NEW ERP DATE ATTENDANCE ---
-  if (isUserNewErp(user)) {
-    if (user.newErpSessionStatus === 'expired') {
-      const { baseUrl } = require('./alerts');
-      const opts = {
-        replyMarkup: {
-          inline_keyboard: [
-            [{ text: '⚡ 1-Click Reconnect', callback_data: 'new_erp_1click_reconnect' }],
-            [{ text: '🌐 Open Webpage', url: `${baseUrl()}/dashboard?reconnect=1` }],
-          ],
-        },
-        category: 'ALERT',
-      };
-      await reply(
-        chatId,
-        '⚠️ *New ERP Session Logged Out*\n\nAapka session logout ho gaya hai.\n\nNeeche button dabakar 1-Click me reconnect karein:',
-        log,
-        opts
-      );
+    if (isUserNewErp(user)) {
+      const dayDow = dow === 0 ? 7 : dow; // 1=Mon ... 7=Sun
+      const ttRes = await db.getNewErpTimetable(user.id).catch(() => null);
+      const dayRows = (ttRes?.timetable?.rows || []).filter((r) => r.dayOfWeek === dayDow);
+      if (dayRows && dayRows.length > 0) {
+        rows = dayRows.map((r, i) => ({
+          period: `P${i + 1}`,
+          duration: r.periodTime || '',
+          subject: r.subjectName || 'Class',
+          subjectCode: r.rawData?.subjectCode || '',
+          teacher: r.facultyName || 'TBA',
+          room: r.classroom || 'New Building, Room No. F-209',
+        }));
+      }
+      const studentName = user.newErpStudentName || user.studentName || 'Student';
+      const text = formatRoutineReport(dateInfo, dayName, rows, {
+        studentName,
+        isTomorrow: options.isTomorrow,
+        isFuture: options.isFuture,
+      }) + AUTO_DELETE_FOOTNOTE;
+      const sentMsg = await reply(chatId, text, log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
       return;
     }
 
+    // Old ERP (QUMS)
+    const dbSched = await db.getWeeklySchedule(user.id, dow).catch(() => null);
+    if (dbSched && dbSched.rows && dbSched.rows.length) {
+      rows = dbSched.rows.map((r) => ({
+        period: r.period,
+        duration: r.duration || '',
+        subject: r.subject,
+        subjectCode: r.subjectCode,
+        teacher: r.teacher,
+        room: r.room,
+      }));
+    } else {
+      // If DB weekly schedule is empty, try live scrape if session exists
+      const { resolveUserRuntime } = require('./credentials');
+      const { scrapeTimetable } = require('./scraper');
+      await db.ensureSessionOnDisk(user).catch(() => {});
+      const runtime = resolveUserRuntime(user);
+      if (fs.existsSync(runtime.sessionPath)) {
+        try {
+          const timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
+          if (timetable && Array.isArray(timetable.cells)) {
+            const periodsForDay = timetable.cells
+              .filter((c) => c.dayOfWeek === dow)
+              .map((c) => ({
+                period: c.period,
+                duration: c.duration || '',
+                subject: c.subject,
+                subjectCode: c.subjectCode,
+                teacher: c.teacher,
+                room: c.room,
+              }));
+            if (periodsForDay.length) {
+              await db.upsertWeeklySchedule(user.id, dow, periodsForDay).catch(() => {});
+              rows = periodsForDay;
+            }
+          }
+        } catch {
+          // Non-fatal — fallback to empty routine
+        }
+      }
+    }
+
+    const studentName = user.studentName || 'Student';
+    const text = formatRoutineReport(dateInfo, dayName, rows, {
+      studentName,
+      isTomorrow: options.isTomorrow,
+      isFuture: options.isFuture,
+    }) + AUTO_DELETE_FOOTNOTE;
+    const sentMsg = await reply(chatId, text, log);
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+  } catch (err) {
+    log.error(`[telegram] handleRoutineDate failed: ${err.message}`);
+    const sentMsg = await reply(chatId, `⚠️ Could not load class routine for ${dateInfo.formattedDate}: ${err.message}${AUTO_DELETE_FOOTNOTE}`, log);
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+  }
+}
+
+async function handlePastDateAttendance(chatId, dateInfo, msg = null, log = console) {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await reply(chatId, MSG.STATUS_NONE, log);
+    return;
+  }
+
+  if (msg && msg.message_id) {
+    scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+  }
+
+  // --- NEW ERP PAST DATE ATTENDANCE ---
+  if (isUserNewErp(user)) {
     const ymd = `${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}-${String(dateInfo.day).padStart(2, '0')}`;
     let cache = await db.getNewErpAttendanceCache(user.id);
     let recordsForDate = (cache?.dailyRecords || []).filter((r) => r.date === ymd);
 
-    if (!recordsForDate.length && (!cache || !cache.dailyRecords || !cache.dailyRecords.length) && user.newErpSessionPath && fs.existsSync(user.newErpSessionPath)) {
+    if (!recordsForDate.length && user.newErpSessionPath && fs.existsSync(user.newErpSessionPath)) {
       try {
         const newErpClient = require('./new-erp-client');
         const liveAtt = await newErpClient.scrapeNewErpAttendance({ sessionPath: user.newErpSessionPath }, log);
@@ -2079,7 +2494,7 @@ async function handleDateAttendance(chatId, dateInfo, msg = null, log = console)
           recordsForDate = (liveAtt.dailyRecords || []).filter((r) => r.date === ymd);
         }
       } catch (err) {
-        log.log(`[telegram] New ERP date live fetch: ${err.message}`);
+        log.log(`[telegram] New ERP date live fetch non-fatal: ${err.message}`);
       }
     }
 
@@ -2100,171 +2515,101 @@ async function handleDateAttendance(chatId, dateInfo, msg = null, log = console)
       };
     });
 
-    const { formatDateAttendanceReport } = require('./messages');
-    const text = formatDateAttendanceReport(dateInfo, mapped) + '\n' + AUTO_DELETE_FOOTNOTE;
-    const sentMsg = await reply(chatId, text, log);
-    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    const { formatDateAttendanceReport, splitTelegramMessage } = require('./messages');
+    const reportText = formatDateAttendanceReport(dateInfo, mapped, {
+      studentName: user.newErpStudentName || user.studentName,
+      isCached: true,
+    });
+    const fullText = reportText + AUTO_DELETE_FOOTNOTE;
+    const chunks = splitTelegramMessage(fullText, 4000);
+    for (const chunk of chunks) {
+      const sentMsg = await reply(chatId, chunk, log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
     }
     return;
   }
 
-  if (!user.qumsQid || !user.qumsSessionPath) {
-    const sentMsg = await reply(
-      chatId,
-      `⚠️ *QUMS Setup Pending*\n\nPlease complete QUMS setup on the web dashboard first to view your attendance.${AUTO_DELETE_FOOTNOTE}`,
-      log
-    );
-    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-    }
-    return;
-  }
-
-  if (user.qumsSessionStatus === 'expired') {
-    const sentMsg = await reply(
-      chatId,
-      `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`,
-      log
-    );
-    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-    }
-    return;
-  }
-
+  // --- OLD ERP (QUMS) PAST DATE ATTENDANCE ---
   try {
     const { resolveUserRuntime } = require('./credentials');
     const {
       scrapeMonthRegister,
-      scrapeTodaysAttendance,
       scrapeTimetable,
       teacherForRecord,
       roomForRecord,
-      istDateString,
     } = require('./scraper');
     const { formatDateAttendanceReport, splitTelegramMessage } = require('./messages');
 
     let recordsForDate = [];
     let isLiveSuccess = false;
 
-    await db.ensureSessionOnDisk(user).catch(() => {});
-    const runtime = resolveUserRuntime(user);
+    // 1. Database-first: check known_attendance & attendance_records
+    const known = await db.listKnownAttendance(user.id).catch(() => []);
+    const cached = (known || []).filter(
+      (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
+    );
+    if (cached && cached.length) {
+      recordsForDate = cached;
+    } else {
+      const qid = user.qumsQid || '';
+      const dbRecords = await db.listAttendanceRecords(user.id, qid).catch(() => []);
+      const matchedDb = (dbRecords || []).filter((r) => r.classDate === dateInfo.ymd);
+      if (matchedDb && matchedDb.length) {
+        recordsForDate = matchedDb.map((r) => ({
+          date: r.classDate,
+          subject: r.subjectName,
+          subjectCode: r.subjectCode,
+          status: r.status,
+          statusRaw: r.status === 'present' ? 'P' : 'A',
+          period: '',
+          duration: '',
+        }));
+      }
+    }
 
-    if (fs.existsSync(runtime.sessionPath)) {
-      try {
-        const monthRes = await scrapeMonthRegister({
-          sessionPath: runtime.sessionPath,
-          month: dateInfo.month,
-          year: dateInfo.year,
-        });
-
-        isLiveSuccess = true;
-
-        if (monthRes && Array.isArray(monthRes.records)) {
-          recordsForDate = monthRes.records.filter(
-            (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
-          );
-        }
-
-        // If requested date is today in IST, also check live today's attendance for periods or unmarked statuses
-        if (dateInfo.formattedDate === istDateString()) {
-          try {
-            const todayRows = await scrapeTodaysAttendance({ sessionPath: runtime.sessionPath });
-            if (todayRows && todayRows.length) {
-              if (!recordsForDate.length) {
-                recordsForDate = todayRows.map((tr) => ({
-                  date: dateInfo.ymd,
-                  day: dateInfo.day,
-                  subject: tr.subject,
-                  subjectCode: tr.subjectCode,
-                  period: tr.period,
-                  duration: tr.duration,
-                  teacher: tr.employee,
-                  status: tr.status,
-                  statusRaw: tr.attendance,
-                  lectures: [{ status: tr.status, statusRaw: tr.attendance }],
-                }));
-              } else {
-                for (const tr of todayRows) {
-                  const already = recordsForDate.some(
-                    (r) => (r.subjectCode && r.subjectCode === tr.subjectCode) || (r.subject && r.subject === tr.subject)
-                  );
-                  if (!already && tr.status === 'unmarked') {
-                    recordsForDate.push({
-                      date: dateInfo.ymd,
-                      day: dateInfo.day,
-                      subject: tr.subject,
-                      subjectCode: tr.subjectCode,
-                      period: tr.period,
-                      duration: tr.duration,
-                      teacher: tr.employee,
-                      status: 'unmarked',
-                      statusRaw: tr.attendance,
-                      lectures: [{ status: 'unmarked', statusRaw: tr.attendance }],
-                    });
-                  }
-                }
-              }
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-
-        // Cross-match timetable for teacher / room enrichment
+    // 2. If not in DB, and session exists on disk, attempt live scrape non-fatally
+    if (!recordsForDate.length) {
+      await db.ensureSessionOnDisk(user).catch(() => {});
+      const runtime = resolveUserRuntime(user);
+      if (fs.existsSync(runtime.sessionPath)) {
         try {
-          const timetable = await scrapeTimetable({ sessionPath: runtime.sessionPath });
-          if (timetable) {
-            recordsForDate.forEach((r) => {
-              if (!r.teacher) r.teacher = teacherForRecord(timetable, r);
-              if (!r.room) r.room = roomForRecord(timetable, r);
-            });
-          }
-        } catch {
-          // Non-fatal
-        }
-      } catch (fetchErr) {
-        log.log(`[telegram] live date attendance scrape error for user ${user.id}: ${fetchErr.message}`);
-        if (fetchErr.name === 'SessionExpiredError' || /session expired/i.test(fetchErr.message)) {
-          await db.markSessionExpired(user.id).catch(() => {});
-          await db.updateUser(user.id, { qumsSessionStatus: 'expired' }).catch(() => {});
-          const { maybeNotifySessionExpired } = require('./alerts');
-          const sent = await maybeNotifySessionExpired(log, user.id, { evidence: true }).catch(() => false);
-          if (!sent) {
-            const sentMsg = await reply(
-              chatId,
-              `⚠️ *QUMS Session Expired*\n\nYour QUMS session has expired. Send /reconnect to log in again via Telegram.${AUTO_DELETE_FOOTNOTE}`,
-              log
+          const monthRes = await scrapeMonthRegister({
+            sessionPath: runtime.sessionPath,
+            month: dateInfo.month,
+            year: dateInfo.year,
+          });
+          if (monthRes && Array.isArray(monthRes.records)) {
+            recordsForDate = monthRes.records.filter(
+              (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
             );
-            const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-            if (messageId) {
-              scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+            if (recordsForDate.length) {
+              isLiveSuccess = true;
+              await db.upsertKnownAttendance(user.id, recordsForDate).catch(() => {});
             }
           }
-          return;
+        } catch (fetchErr) {
+          log.log(`[telegram] live date attendance scrape error (non-fatal): ${fetchErr.message}`);
+          // CRITICAL: Do NOT mark session expired or call maybeNotifySessionExpired!
         }
       }
     }
 
-    let isCached = false;
-    if (!isLiveSuccess || !recordsForDate.length) {
-      const known = await db.listKnownAttendance(user.id).catch(() => []);
-      const cached = (known || []).filter(
-        (r) => r.date === dateInfo.ymd || (r.day === dateInfo.day && r.date && r.date.startsWith(`${dateInfo.year}-${String(dateInfo.month).padStart(2, '0')}`))
-      );
-      if (cached && cached.length) {
-        recordsForDate = cached;
-        isCached = !isLiveSuccess;
-      }
+    // Enrich with timetable teacher/room if available
+    const dbSched = await db.getWeeklySchedule(user.id).catch(() => null);
+    if (recordsForDate.length && dbSched && dbSched.rows) {
+      recordsForDate.forEach((r) => {
+        const match = dbSched.rows.find((s) => s.subjectCode === r.subjectCode || s.subject === r.subject);
+        if (match) {
+          if (!r.teacher) r.teacher = match.teacher;
+          if (!r.room) r.room = match.room;
+        }
+      });
     }
 
     const reportText = formatDateAttendanceReport(dateInfo, recordsForDate, {
       studentName: user.studentName,
-      isCached,
+      isCached: !isLiveSuccess,
     });
     const fullText = reportText + AUTO_DELETE_FOOTNOTE;
 
@@ -2272,23 +2617,101 @@ async function handleDateAttendance(chatId, dateInfo, msg = null, log = console)
     for (const chunk of chunks) {
       const sentMsg = await reply(chatId, chunk, log);
       const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-      if (messageId) {
-        scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-      }
+      if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
     }
   } catch (err) {
-    log.error(`[telegram] handleDateAttendance failed: ${err.message}`);
+    log.error(`[telegram] handlePastDateAttendance failed: ${err.message}`);
     const sentMsg = await reply(
       chatId,
       `⚠️ Could not fetch attendance for ${dateInfo.formattedDate}: ${err.message}${AUTO_DELETE_FOOTNOTE}`,
       log
     );
     const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
-    if (messageId) {
-      scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
-    }
+    if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
   }
 }
+
+async function handleDateRouter(chatId, parsedCommand, msg = null, log = console) {
+  if (msg && msg.message_id) {
+    scheduleAutoDelete(chatId, msg.message_id, AUTO_DELETE_DELAY_MS, log);
+  }
+
+  if (
+    parsedCommand.type === 'routine_invalid' ||
+    parsedCommand.type === 'attendance_invalid' ||
+    parsedCommand.type === 'date_invalid'
+  ) {
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ *Invalid Date Format*\n\n"${parsedCommand.targetText || parsedCommand.rawText}" is not a recognized date format.\nPlease send dates in DD/MM/YY format (e.g. 24/11/26).${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    return;
+  }
+
+  if (!isValidCalendarDate(parsedCommand.day, parsedCommand.month, parsedCommand.year)) {
+    const sentMsg = await reply(
+      chatId,
+      `⚠️ *Invalid Date*\n\n"${parsedCommand.rawText}" is not a valid calendar date.\nPlease check the day, month, and leap year.${AUTO_DELETE_FOOTNOTE}`,
+      log
+    );
+    const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+    if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+    return;
+  }
+
+  const todayYmd = getIstYmd();
+  const targetYmd = parsedCommand.ymd;
+
+  if (parsedCommand.type === 'tomorrow') {
+    await handleTomorrow(chatId, log);
+    return;
+  }
+
+  if (parsedCommand.type === 'yesterday') {
+    await handleYesterday(chatId, log);
+    return;
+  }
+
+  if (parsedCommand.type === 'routine') {
+    await handleRoutineDate(chatId, parsedCommand, msg, log, { isFuture: targetYmd > todayYmd });
+    return;
+  }
+
+  if (parsedCommand.type === 'attendance') {
+    if (targetYmd > todayYmd) {
+      const text =
+        `📅 *Future Date Attendance Unavailable*\n\n` +
+        `Cannot lookup attendance records for ${parsedCommand.formattedDate} because this date is in the future.\n\n` +
+        `💡 To view the scheduled classes for this day, send:\n` +
+        `\`/routine ${parsedCommand.formattedDate}\`${AUTO_DELETE_FOOTNOTE}`;
+      const sentMsg = await reply(chatId, text, log);
+      const messageId = (sentMsg && typeof sentMsg === 'object' && sentMsg.message_id) ? sentMsg.message_id : null;
+      if (messageId) scheduleAutoDelete(chatId, messageId, AUTO_DELETE_DELAY_MS, log);
+      return;
+    }
+    if (targetYmd === todayYmd) {
+      await handleToday(chatId, log);
+      return;
+    }
+    await handlePastDateAttendance(chatId, parsedCommand, msg, log);
+    return;
+  }
+
+  // Auto-dispatch for /date, /DD/MM/YY, and natural DD/MM/YY:
+  if (targetYmd < todayYmd) {
+    await handlePastDateAttendance(chatId, parsedCommand, msg, log);
+  } else if (targetYmd === todayYmd) {
+    await handleToday(chatId, log);
+  } else {
+    // Future date -> routine
+    await handleRoutineDate(chatId, parsedCommand, msg, log, { isFuture: true });
+  }
+}
+
+const handleDateAttendance = handleDateRouter;
 
 async function handleAssignments(chatId, log = console) {
   const user = await db.getUserByTelegramChatId(chatId);
@@ -2573,8 +2996,17 @@ module.exports = {
   handleHelp,
   handleAttendance,
   handleToday,
+  handleTomorrow,
+  handleYesterday,
+  handleRoutineDate,
+  handlePastDateAttendance,
+  handleDateRouter,
   handleDateAttendance,
   parseDateCommand,
+  parseNaturalDate,
+  getIstYmd,
+  getIstDateAtNoon,
+  getIstDayOfWeek,
   isValidCalendarDate,
   isFutureDate,
   handleAssignments,

@@ -90,10 +90,15 @@ function assertSessionFile(sessionPath) {
 
 function looksLikeLoginHtml(html) {
   const lower = (html || '').toLowerCase();
-  const hasLoginForm = /<input[^>]+type=["']password["']/.test(lower);
-  const titleSaysLogin = /<title>[^<]*(login|sign in)/.test(lower);
-  const noStudentData = !/var\s+RegID\s*=\s*'/i.test(lower);
-  return (hasLoginForm && noStudentData) || titleSaysLogin;
+  const titleSaysLogin = /<title>[^<]*(login|sign in)/i.test(lower);
+  const hasLoginForm = /<input[^>]+type=["']password["']/i.test(lower);
+  const hasStudentData =
+    /var\s+RegID\s*=\s*['"]?\d+/i.test(lower) ||
+    /\bRegID\s*[:=]\s*['"]?\d+/i.test(lower) ||
+    /name=['"]RegID['"][^>]*value=['"]\d+/i.test(lower) ||
+    /data-regid=['"]\d+/i.test(lower) ||
+    /logout|sign\s*out/i.test(lower);
+  return titleSaysLogin || (hasLoginForm && !hasStudentData);
 }
 
 /**
