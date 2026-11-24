@@ -750,7 +750,7 @@
       list.appendChild(li);
       box.classList.remove('hidden');
       try {
-        const res = await fetch('/api/today');
+        const res = await fetch('/api/today?fresh=1');
         if (res.status === 401) { location.href = '/login'; return; }
         const data = await res.json();
         list.textContent = '';

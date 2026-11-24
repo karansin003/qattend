@@ -196,4 +196,38 @@ assert.ok(htmlContent.includes("box.classList.add('hidden')"), 'index.html must 
 assert.ok(cssContent.includes('.today-box-header'), 'style.css must define .today-box-header');
 assert.ok(cssContent.includes('.btn-close-today'), 'style.css must define .btn-close-today');
 
-console.log('✅ All today status badges and close button tests passed!');
+// 5. Verify mergeScheduleWithRoom preserves exact portal Today's Attendance rows
+const { mergeScheduleWithRoom } = require('../src/scraper');
+
+const mockPortalTodayRows = [
+  { period: 'P1', duration: '09:00 - 09:55', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', employee: 'RAJ KUMAR', attendance: 'N.M.', status: 'unmarked' },
+  { period: 'P2', duration: '09:55 - 10:50', subject: 'Scala for Data Science - Tools and Techniques', subjectCode: 'CS35365', employee: 'BHANU PARTAP', attendance: 'N.M.', status: 'unmarked' },
+  { period: 'P6', duration: '13:35 - 14:30', subject: 'Corporate Communication', subjectCode: 'AE35362', employee: 'RIYANSHU SAINI', attendance: 'N.M.', status: 'unmarked' },
+  { period: 'P7', duration: '14:30 - 15:25', subject: 'Technical Skills Development-IV', subjectCode: 'SE35369', employee: 'GURNAM SINGH', attendance: 'N.M.', status: 'unmarked' },
+  { period: 'P8', duration: '15:25 - 16:20', subject: 'Technical Skills Development-IV', subjectCode: 'SE35369', employee: 'GURNAM SINGH', attendance: 'N.M.', status: 'unmarked' },
+];
+
+const mockTimetablePeriods = [
+  { period: 'P1', duration: '09:00 - 09:55', subject: 'Design and Analysis of Algorithm', subjectCode: 'CS35303', teacher: 'RAJ KUMAR', room: 'A-004' },
+  { period: 'P2', duration: '09:55 - 10:50', subject: 'Scala for Data Science - Tools and Techniques', subjectCode: 'CS35365', teacher: 'BHANU PARTAP', room: 'A-112' },
+  { period: 'P3', duration: '10:50 - 11:45', subject: 'Design and Analysis of Algorithm Lab', subjectCode: 'CS35303', teacher: 'RAJ KUMAR', room: 'E-202A' }, // Timetable-only lab (NOT in today's attendance)
+  { period: 'P6', duration: '13:35 - 14:30', subject: 'Corporate Communication', subjectCode: 'AE35362', teacher: 'RIYANSHU SAINI', room: 'A-213' },
+  { period: 'P7', duration: '14:30 - 15:25', subject: 'Technical Skills Development-IV', subjectCode: 'SE35369', teacher: 'GURNAM SINGH', room: 'E-203' },
+  { period: 'P8', duration: '15:25 - 16:20', subject: 'Technical Skills Development-IV', subjectCode: 'SE35369', teacher: 'GURNAM SINGH', room: 'E-203' },
+];
+
+const mergedResults = mergeScheduleWithRoom(mockPortalTodayRows, mockTimetablePeriods);
+assert.strictEqual(mergedResults.length, 5, 'Must have exactly 5 classes from portal Today Attendance, NOT 6');
+assert.strictEqual(mergedResults[0].period, 'P1');
+assert.strictEqual(mergedResults[0].room, 'A-004');
+assert.strictEqual(mergedResults[1].period, 'P2');
+assert.strictEqual(mergedResults[1].room, 'A-112');
+assert.strictEqual(mergedResults[2].period, 'P6');
+assert.strictEqual(mergedResults[2].room, 'A-213');
+assert.strictEqual(mergedResults[3].period, 'P7');
+assert.strictEqual(mergedResults[3].room, 'E-203');
+assert.strictEqual(mergedResults[4].period, 'P8');
+assert.strictEqual(mergedResults[4].room, 'E-203');
+assert.strictEqual(mergedResults.some(r => r.period === 'P3'), false, 'P3 Lab must not be included');
+
+console.log('✅ All today status badges, close button, and portal Today Attendance parity tests passed!');

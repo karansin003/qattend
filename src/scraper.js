@@ -1515,6 +1515,7 @@ function mergeScheduleWithRoom(todaysRows, timetablePeriods) {
       subject: row.subject,
       subjectCode: row.subjectCode,
       teacher: row.employee || (match && match.teacher) || '',
+      employee: row.employee || (match && match.teacher) || '',
       attendance: row.attendance,
       status: row.status,
       key: row.key,

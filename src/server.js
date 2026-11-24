@@ -1095,7 +1095,23 @@ app.get('/api/today', requireAuth, async (req, res) => {
       }
       if (timetable) {
         const todayPeriods = getTimetableForDate(timetable, new Date());
-        periods = combineTimetableWithLiveAttendance(todayPeriods, periods);
+        if (periods && periods.length > 0) {
+          // Authoritative source is Today's Attendance from the portal; only enrich room/teacher without adding timetable phantom classes
+          periods = mergeScheduleWithRoom(periods, todayPeriods);
+        } else if (todayPeriods && todayPeriods.length > 0) {
+          // Fallback only if portal Today's Attendance has no rows
+          periods = todayPeriods.map((tp) => ({
+            period: tp.period,
+            duration: tp.duration,
+            subject: tp.subject,
+            subjectCode: tp.subjectCode,
+            employee: tp.teacher,
+            teacher: tp.teacher,
+            room: tp.room,
+            status: 'unmarked',
+            attendance: 'Not Marked',
+          }));
+        }
       }
     } catch {
       // Silently keep periods without room/teacher enrichment
