@@ -115,6 +115,29 @@ function isWithinCollegeHours(hourDecimal) {
   return hourDecimal >= COLLEGE_START_HOUR && hourDecimal < COLLEGE_END_HOUR;
 }
 
+/**
+ * Daily Night Sleep Window (11:00 PM – 08:00 AM IST across all 7 days).
+ * Returns true if current IST hour is >= 23 or < 8.
+ * Sundays remain active during daytime hours (08:00 – 22:59 IST).
+ */
+function isSleepWindowIST(d = new Date()) {
+  try {
+    const dateObj = typeof d === 'string' || typeof d === 'number' ? new Date(d) : (d || new Date());
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour12: false,
+      hour: 'numeric',
+    }).formatToParts(dateObj);
+    const hour = parseInt(parts.find((p) => p.type === 'hour')?.value, 10) % 24;
+    return hour >= 23 || hour < 8;
+  } catch {
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const dateObj = typeof d === 'string' || typeof d === 'number' ? new Date(d) : (d || new Date());
+    const hour = new Date(dateObj.getTime() + istOffset).getUTCHours();
+    return hour >= 23 || hour < 8;
+  }
+}
+
 function loadState(file) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -218,6 +241,10 @@ async function runWatcherCycle(opts = {}) {
   const sendFn = opts.sendFn || ((text) => sendMessage(opts.userId, text, log, { category: 'ATTENDANCE' }));
   const stateFile = opts.stateFile || LEGACY_STATE_FILE;
   const force = !!opts.force;
+
+  if (!force && isSleepWindowIST()) {
+    return { skipped: true, reason: 'sleep-window' };
+  }
 
   const now = istNow();
   if (!force && !isWithinCollegeHours(now.hourDecimal)) {
@@ -364,7 +391,12 @@ async function runWatcherCycle(opts = {}) {
 }
 
 /** One full watcher pass over ALL users with a linked QUMS session. */
-async function runWatcherPass(log = console) {
+async function runWatcherPass(log = console, opts = {}) {
+  const force = !!(opts && opts.force);
+  if (!force && isSleepWindowIST()) {
+    log.log('[watcher] sleep window (11:00 PM - 08:00 AM IST) — pass skip.');
+    return { users: 0, skipped: true, reason: 'sleep-window' };
+  }
   const allUsers = (await db.allUsers()).filter((u) => {
     if (u.isSuspended || u.status === 'suspended') return false;
     if (u.activeErpType === 'NEW') {
@@ -415,6 +447,7 @@ async function runWatcherPass(log = console) {
   watcherStatus.fastLastRunAt = new Date().toISOString();
   watcherStatus.fastLastUsers = users.length;
   const results = [];
+  const syncedUserIds = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
 
@@ -455,7 +488,7 @@ async function runWatcherPass(log = console) {
           stateFile: stateFileFor(user.id),
           userEmail: user.email,
         });
-        await db.touchUserSync(user.id, { attendance: true, error: '' });
+        syncedUserIds.push(user.id);
         log.log(`[attendance] user=${user.id} checked New ERP today's attendance`);
         results.push({ email: user.email, ...r });
       } catch (err) {
@@ -491,7 +524,7 @@ async function runWatcherPass(log = console) {
       if (!r || !r.skipped) {
         await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
       }
-      await db.touchUserSync(user.id, { attendance: true, error: '' });
+      syncedUserIds.push(user.id);
       log.log(`[attendance] user=${user.id} checked today's attendance`);
       results.push({ email: user.email, ...r });
     } catch (err) {
@@ -501,6 +534,11 @@ async function runWatcherPass(log = console) {
     }
     // eslint-disable-next-line no-await-in-loop
     if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
+  }
+  if (syncedUserIds.length) {
+    await db.batchTouchUserSync(syncedUserIds, { attendance: true }).catch((err) => {
+      log.error(`[watcher] batchTouchUserSync failed: ${err.message}`);
+    });
   }
   return { users: users.length, results };
 }
@@ -672,6 +710,10 @@ async function runMonthRegisterCycle(opts = {}) {
   const userId = opts.userId;
   if (!userId) throw new Error('runMonthRegisterCycle: userId required');
 
+  if (!opts.force && isSleepWindowIST()) {
+    return { skipped: true, reason: 'sleep-window' };
+  }
+
   const user = await db.getUserById(userId);
   const isNewErp = user && (user.activeErpType === 'NEW' || (Boolean(user.newErpSessionPath || user.newErpEmail) && !user.qumsSessionPath));
   const qid = (user && (isNewErp ? (user.newErpQid || user.qumsQid) : (user.qumsQid || user.newErpQid))) || '';
@@ -702,6 +744,28 @@ async function runMonthRegisterCycle(opts = {}) {
 
   const months = (Array.isArray(fetched) ? fetched : [fetched]).filter(Boolean);
   const records = months.flatMap((m) => (m.records || []).filter((r) => r.status !== 'unmarked'));
+  const first = months[0] || {};
+
+  // Delta/Hash-Based known_attendance check (Phase 3 optimization)
+  let existingHash = null;
+  if (!opts.force && records.length > 0) {
+    const scrapedHash = db.computeRecordsHash(records);
+    existingHash = await db.getKnownAttendanceHash(userId);
+    if (existingHash && existingHash === scrapedHash) {
+      log.log(`[watcher] user=${userId} month register hash matched (${existingHash.slice(0, 8)}) — 0 changes, skipped full JSON download`);
+      return {
+        skipped: false,
+        bootstrap: false,
+        hashMatched: true,
+        year: first.year,
+        month: first.month,
+        months: months.map((m) => `${m.year}-${String(m.month).padStart(2, '0')}`),
+        totalMarked: records.length,
+        notified: [],
+      };
+    }
+  }
+
   const known = await db.listKnownAttendance(userId);
   const diff = monthRegisterDiff(records, known);
   let pending = diff.pending;
@@ -883,9 +947,10 @@ async function runMonthRegisterCycle(opts = {}) {
     }
   }
 
-  if (bootstrap) await db.upsertKnownAttendance(userId, records);
+  if (bootstrap || pending.length > 0 || diff.reseed.length > 0 || !existingHash) {
+    await db.upsertKnownAttendance(userId, records);
+  }
 
-  const first = months[0] || {};
   return {
     skipped: false,
     bootstrap,
@@ -952,6 +1017,11 @@ async function runBaselineForUser(userId, log = console) {
 
 /** One full month-register pass over ALL users with a linked QUMS session. */
 async function runMonthRegisterPass(log = console, opts = {}) {
+  const force = !!(opts && opts.force);
+  if (!force && isSleepWindowIST()) {
+    log.log('[watcher] month-register: sleep window (11:00 PM - 08:00 AM IST) — pass skip.');
+    return { users: 0, skipped: true, reason: 'sleep-window' };
+  }
   const allUsers = (await db.allUsers()).filter((u) => {
     if (u.isSuspended || u.status === 'suspended') return false;
     if (u.activeErpType === 'NEW') {
@@ -1023,6 +1093,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
   );
 
   const results = [];
+  const syncedUserIds = [];
   for (const user of users) {
     log.log(`[Watcher] Checking user: ${user.id}`); // 15C/15I — userId POORE loop me carry hota hai
 
@@ -1051,7 +1122,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
           },
           sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
         });
-        await db.touchUserSync(user.id, { attendance: true, error: '' });
+        syncedUserIds.push(user.id);
         log.log(`[attendance] user=${user.id} checked New ERP backdated lecture records`);
         results.push({ email: user.email, ...r });
       } catch (err) {
@@ -1084,7 +1155,7 @@ async function runMonthRegisterPass(log = console, opts = {}) {
         sendFn: (text) => sendMessage(user.id, text, log, { category: 'ATTENDANCE' }),
       });
       await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
-      await db.touchUserSync(user.id, { attendance: true, error: '' });
+      syncedUserIds.push(user.id);
       log.log(`[attendance] user=${user.id} checked month register [${monthKeys.join(',')}]`);
       results.push({ email: user.email, ...r });
     } catch (err) {
@@ -1094,6 +1165,11 @@ async function runMonthRegisterPass(log = console, opts = {}) {
     }
     // eslint-disable-next-line no-await-in-loop
     if (process.env.NODE_ENV !== 'test') await new Promise((r) => setTimeout(r, 500)); // stagger users — portal load kam
+  }
+  if (syncedUserIds.length) {
+    await db.batchTouchUserSync(syncedUserIds, { attendance: true }).catch((err) => {
+      log.error(`[watcher] batchTouchUserSync failed: ${err.message}`);
+    });
   }
   return { users: users.length, months: monthKeys, results };
 }
@@ -1351,9 +1427,11 @@ module.exports = {
   mapWithConcurrency,
   startMonthRegisterWatcher,
   runWatcherCycle,
+  runFastAttendanceCycle: runWatcherCycle,
   runWatcherPass,
   runMonthRegisterCycle,
   runMonthRegisterPass,
+  isSleepWindowIST,
   runBaselineForUser,
   pendingNotifications,
   pendingMonthNotifications,

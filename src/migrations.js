@@ -349,6 +349,12 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key)`,
     ],
   },
+  {
+    id: '023_known_attendance_records_hash',
+    statements: [
+      `ALTER TABLE known_attendance ADD COLUMN IF NOT EXISTS records_hash TEXT;`,
+    ],
+  },
 ];
 
 /**

@@ -675,15 +675,25 @@ const ALL_USERS_COLUMNS = [
 
 const usersMapCache = new Map();
 let usersMapCacheAt = 0;
+let cachedUsers = null;
+let cachedUsersAt = 0;
+const ALL_USERS_CACHE_TTL_MS = 120 * 1000; // 120 seconds (2 minutes)
 const USERS_CACHE_TTL_MS = Number(process.env.USERS_CACHE_TTL_MS || 30 * 1000); // 30 seconds
 
 function invalidateUsersCache() {
+  cachedUsers = null;
+  cachedUsersAt = 0;
   usersMapCache.clear();
   usersMapCacheAt = 0;
 }
 
-async function allUsers() {
+async function allUsers(opts = {}) {
+  const forceFresh = Boolean(opts && opts.forceFresh);
   if (!USE_PG) return data.users.slice();
+  const now = Date.now();
+  if (!forceFresh && cachedUsers && (now - cachedUsersAt < ALL_USERS_CACHE_TTL_MS)) {
+    return cachedUsers.slice();
+  }
   await init();
   const r = await pool.query(`SELECT ${ALL_USERS_COLUMNS} FROM users ORDER BY created_at`);
   const list = r.rows.map(fromUserRow);
@@ -691,8 +701,10 @@ async function allUsers() {
   for (const u of list) {
     if (u && u.id) usersMapCache.set(u.id, u);
   }
-  usersMapCacheAt = Date.now();
-  return list;
+  usersMapCacheAt = now;
+  cachedUsers = list;
+  cachedUsersAt = now;
+  return list.slice();
 }
 
 /**
@@ -1008,6 +1020,7 @@ async function getUserById(id, { useCache = true } = {}) {
 
 async function createUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended }) {
   const user = blankUser({ email, passwordHash, firebaseUid, emailVerified, isSuspended });
+  invalidateUsersCache();
   if (!USE_PG) { data.users.push(user); persistJson(); return user; }
   await init();
   const r = await pool.query(
@@ -1124,6 +1137,56 @@ async function touchUserSync(userId, { attendance, assignment, profile, error } 
   return { ok: true, touched: (r.rowCount || 0) > 0 };
 }
 
+/**
+ * Batch sync bookkeeping (Optimization 4) — updates multiple users in a single bulk query:
+ * UPDATE users SET attendance_last_checked_at = NOW(), last_attendance_sync_at = NOW(), updated_at = NOW() WHERE id = ANY($1::text[]);
+ */
+async function batchTouchUserSync(userIds, { attendance = true, assignment = false } = {}) {
+  const ids = Array.from(new Set((userIds || []).filter(Boolean)));
+  if (!ids.length) return { ok: true, count: 0 };
+  if (!USE_PG) {
+    const now = new Date().toISOString();
+    let count = 0;
+    for (const id of ids) {
+      const u = data.users.find((x) => x.id === id);
+      if (u) {
+        if (attendance) {
+          u.attendanceLastCheckedAt = now;
+          u.lastAttendanceSyncAt = now;
+        }
+        if (assignment) {
+          u.assignmentLastCheckedAt = now;
+          u.lastAssignmentSyncAt = now;
+        }
+        u.updatedAt = now;
+        count++;
+      }
+    }
+    if (count) persistJson();
+    return { ok: true, count };
+  }
+  const sets = [];
+  if (attendance) {
+    sets.push('attendance_last_checked_at = NOW()');
+    sets.push('last_attendance_sync_at = NOW()');
+  }
+  if (assignment) {
+    sets.push('assignment_last_checked_at = NOW()');
+    sets.push('last_assignment_sync_at = NOW()');
+  }
+  if (!sets.length) {
+    sets.push('attendance_last_checked_at = NOW()');
+    sets.push('last_attendance_sync_at = NOW()');
+  }
+  sets.push('updated_at = NOW()');
+  await init();
+  const r = await pool.query(
+    `UPDATE users SET ${sets.join(', ')} WHERE id = ANY($1::text[])`,
+    [ids]
+  );
+  return { ok: true, count: r.rowCount || 0 };
+}
+
 async function setUserAdmin(userId, isAdmin) {
   return updateUser(userId, { isAdmin: Boolean(isAdmin) });
 }
@@ -1180,6 +1243,7 @@ async function setSystemSetting(key, value) {
 }
 
 async function deleteUser(userId) {
+  invalidateUsersCache();
   const user = await getUserById(userId);
   if (!USE_PG) {
     const before = data.users.length;
@@ -1261,6 +1325,36 @@ async function consumeResetToken(token) {
   return getUserByEmail(r.rows[0].email);
 }
 
+function computeRecordsHash(records) {
+  if (!Array.isArray(records) || !records.length) return '';
+  const entries = records
+    .filter((r) => r && (r.key || (r.date && r.subjectCode)))
+    .map((r) => {
+      const key = r.key || `${r.date}-${r.subjectCode}`;
+      const statusRaw = r.statusRaw != null && String(r.statusRaw).trim() !== ''
+        ? String(r.statusRaw).trim().toUpperCase()
+        : String(r.status || '').trim().toUpperCase();
+      return `${key}:${statusRaw}`;
+    })
+    .sort();
+  return crypto.createHash('sha256').update(entries.join('|')).digest('hex');
+}
+
+async function getKnownAttendanceHash(userId) {
+  if (!userId) return null;
+  if (!USE_PG) {
+    const e = data.knownAttendance.find((k) => k.userId === userId);
+    return (e && e.recordsHash) || null;
+  }
+  await init();
+  try {
+    const r = await pool.query('SELECT records_hash FROM known_attendance WHERE user_id=$1', [userId]);
+    return r.rows[0] ? (r.rows[0].records_hash || null) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 async function listKnownAttendance(userId) {
   if (!USE_PG) { const e=data.knownAttendance.find(k=>k.userId===userId); return e ? e.records.slice() : []; }
   await init(); const r=await pool.query('SELECT records FROM known_attendance WHERE user_id=$1',[userId]); return r.rows[0] ? r.rows[0].records : [];
@@ -1270,8 +1364,19 @@ async function addKnownAttendance(userId, records) {
   const current = await listKnownAttendance(userId); const seen=new Set(current.map(r=>r.key)); let added=0;
   for (const rec of records || []) { if(!rec||!rec.key||seen.has(rec.key)) continue; current.push({...rec,seenAt:new Date().toISOString()}); seen.add(rec.key); added++; }
   const trimmed=current.slice(-5000);
-  if (!USE_PG) { let e=data.knownAttendance.find(k=>k.userId===userId); if(!e){e={userId,records:[]};data.knownAttendance.push(e);} e.records=trimmed; if(added)persistJson(); return added; }
-  await init(); await pool.query(`INSERT INTO known_attendance(user_id,records) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records`,[userId,JSON.stringify(trimmed)]); return added;
+  const recordsHash = computeRecordsHash(records);
+  if (!USE_PG) { let e=data.knownAttendance.find(k=>k.userId===userId); if(!e){e={userId,records:[],recordsHash:''};data.knownAttendance.push(e);} e.records=trimmed; e.recordsHash=recordsHash; if(added)persistJson(); return added; }
+  await init();
+  try {
+    await pool.query(`INSERT INTO known_attendance(user_id,records,records_hash) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records, records_hash=EXCLUDED.records_hash`,[userId,JSON.stringify(trimmed),recordsHash]);
+  } catch (err) {
+    if (/column "records_hash"/i.test(err.message)) {
+      await pool.query(`INSERT INTO known_attendance(user_id,records) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records`,[userId,JSON.stringify(trimmed)]);
+    } else {
+      throw err;
+    }
+  }
+  return added;
 }
 
 /**
@@ -1305,14 +1410,31 @@ async function upsertKnownAttendance(userId, records) {
     byKey.set(rec.key, next);
   }
   const trimmed = Array.from(byKey.values()).slice(-5000);
+  const recordsHash = computeRecordsHash(records);
+
   if (!USE_PG) {
     let e = data.knownAttendance.find((k) => k.userId === userId);
     if (!e) { e = { userId, records: [] }; data.knownAttendance.push(e); }
     e.records = trimmed;
+    e.recordsHash = recordsHash;
     if (changed) persistJson();
   } else {
     await init();
-    await pool.query(`INSERT INTO known_attendance(user_id,records) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records`, [userId, JSON.stringify(trimmed)]);
+    try {
+      await pool.query(
+        `INSERT INTO known_attendance(user_id,records,records_hash) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records, records_hash=EXCLUDED.records_hash`,
+        [userId, JSON.stringify(trimmed), recordsHash]
+      );
+    } catch (err) {
+      if (/column "records_hash"/i.test(err.message)) {
+        await pool.query(
+          `INSERT INTO known_attendance(user_id,records) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET records=EXCLUDED.records`,
+          [userId, JSON.stringify(trimmed)]
+        );
+      } else {
+        throw err;
+      }
+    }
   }
 
   // Also mirror into attendance_records table for structured relational queries
@@ -2904,7 +3026,8 @@ module.exports={
   // migrations / schema
   runMigrations, schemaHealth, importLocalJsonData, sslConfig,
   // per-user sync bookkeeping
-  touchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
+  touchUserSync, batchTouchUserSync, setUserAdmin, setUserSuspended, getQumsEncryptedPassword,
+  computeRecordsHash, getKnownAttendanceHash,
   // session-expiry state (PostgreSQL-backed)
   SESSION_ALERT_COOLDOWN_MS, getSessionExpiryState, getAllSessionExpiryStates, getSessionExpiryStatesMap, invalidateSessionExpiryCache, markSessionExpired, recordSessionExpiryAlert, getSessionExpiryMessageIds, clearSessionExpiry, clearSessionExpiryTelegramMessage, listSessionExpiredUsers,
   // scheduled message auto-deletions

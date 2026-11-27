@@ -80,6 +80,29 @@ function assignmentKey(a) {
   return a.id ? `new:${a.id}` : `new:${assignmentFingerprint(a)}`;
 }
 
+/**
+ * Daily Night Sleep Window (11:00 PM – 08:00 AM IST across all 7 days).
+ * Returns true if current IST hour is >= 23 or < 8.
+ * Sundays remain active during daytime hours (08:00 – 22:59 IST).
+ */
+function isSleepWindowIST(d = new Date()) {
+  try {
+    const dateObj = typeof d === 'string' || typeof d === 'number' ? new Date(d) : (d || new Date());
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour12: false,
+      hour: 'numeric',
+    }).formatToParts(dateObj);
+    const hour = parseInt(parts.find((p) => p.type === 'hour')?.value, 10) % 24;
+    return hour >= 23 || hour < 8;
+  } catch {
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const dateObj = typeof d === 'string' || typeof d === 'number' ? new Date(d) : (d || new Date());
+    const hour = new Date(dateObj.getTime() + istOffset).getUTCHours();
+    return hour >= 23 || hour < 8;
+  }
+}
+
 /** One reminder per assignment per deadline date. */
 function reminderKey(a, deadlineYMD) {
   return `reminder:${a.id || assignmentFingerprint(a)}:${deadlineYMD}`;
@@ -140,6 +163,11 @@ async function runAssignmentCycle(opts = {}) {
   const log = opts.log || console;
   const userId = opts.userId;
   if (!userId) throw new Error('runAssignmentCycle: userId required');
+
+  if (!opts.force && isSleepWindowIST()) {
+    return { mode: opts.mode || 'new', total: 0, notified: [], skipped: true, reason: 'sleep-window' };
+  }
+
   const mode = opts.mode || 'new';
   const fetchFn = opts.fetchFn || ((u) => scrapeAssignments({ sessionPath: u.qumsSessionPath }));
   const defaultSendFn = async (text, sendOptions = {}) => {
@@ -225,7 +253,11 @@ async function runAssignmentCycle(opts = {}) {
 }
 
 /** One pass over ALL users with a linked QUMS session. */
-async function runAssignmentPass(log = console, { mode = 'new', dryRun = false } = {}) {
+async function runAssignmentPass(log = console, { mode = 'new', dryRun = false, force = false } = {}) {
+  if (!force && isSleepWindowIST()) {
+    log.log('[assignments] sleep window (11:00 PM - 08:00 AM IST) — pass skip.');
+    return { users: 0, skipped: true, reason: 'sleep-window' };
+  }
   const allUsers = (await db.allUsers()).filter((u) => u.qumsSessionPath);
   const expiryMap = await db.getSessionExpiryStatesMap().catch(() => null);
   const users = [];
@@ -256,6 +288,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
   else assignmentStatus.lastNewAt = new Date().toISOString();
   assignmentStatus.lastUsers = users.length;
   let notified = 0;
+  const syncedUserIds = [];
   for (const user of users) {
     try {
       const startedAt = Date.now();
@@ -271,8 +304,7 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
       });
       notified += (r.notified || []).length;
       await db.clearSessionExpiry(user.id, { maxExpiredAt: startedAt }).catch(() => {});
-      // eslint-disable-next-line no-await-in-loop
-      await db.touchUserSync(user.id, { assignment: true, error: '' });
+      syncedUserIds.push(user.id);
       log.log(`[assignment] user=${user.id} checked assignments (mode=${mode}, found=${(r.notified || []).length})`);
     } catch (err) {
       log.error(`[assignment] user=${user.id} pass FAILED: ${err.name || 'Error'}: ${err.message}`);
@@ -288,6 +320,11 @@ async function runAssignmentPass(log = console, { mode = 'new', dryRun = false }
     }
     // eslint-disable-next-line no-await-in-loop
     if (process.env.NODE_ENV !== 'test') await new Promise((res) => setTimeout(res, 500)); // stagger users
+  }
+  if (syncedUserIds.length) {
+    await db.batchTouchUserSync(syncedUserIds, { assignment: true }).catch((err) => {
+      log.error(`[assignments] batchTouchUserSync failed: ${err.message}`);
+    });
   }
   log.log(`[assignments] ${mode} pass done: ${notified} notification(s).`);
   return { users: users.length, notified };
@@ -334,6 +371,7 @@ module.exports = {
   getAssignmentStatus,
   runAssignmentCycle,
   runAssignmentPass,
+  isSleepWindowIST,
   pendingNewAssignments,
   pendingDeadlineReminders,
   assignmentKey,
